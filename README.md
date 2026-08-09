@@ -1,80 +1,98 @@
 # ghosvt
 
-Full-screen macOS virtual terminals on **libghostty-vt**, with a Metal host.
+Fullscreen macOS multi-VT terminal on **libghostty-vt** + **Metal**.
 
-Linux-style multi-console: **⌘F1…Fn** and **⌘1…n** switch VTs. Each VT runs a banner then either your shell (`console-mode = shell`, default) or **`/usr/bin/login`** (`console-mode = login`). Exit respawns that VT.
+Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Each VT shows a short banner, then either your shell or `login`, and respawns when that process exits.
 
 ## Requirements
 
 - macOS 14+
 - Xcode / Swift 6 toolchain
-- Zig (same major as Ghostty; see [ghostty build docs](https://ghostty.org/docs/install/build))
-- Non-sandboxed app (setuid `login` will not work under App Sandbox)
+- Zig (same major as Ghostty; see [Ghostty build docs](https://ghostty.org/docs/install/build))
+- Non-sandboxed build (`login` needs a non-sandbox environment)
+
+## Build
+
+```bash
+# once: vendor ghostty (if missing)
+git clone --depth 1 https://github.com/ghostty-org/ghostty.git Vendor/ghostty
+
+./scripts/build-libghostty.sh
+swift build --disable-sandbox -c release
+swift run --disable-sandbox -c release
+# or
+./scripts/run.sh
+```
+
+Refresh libghostty-vt after updating `Vendor/ghostty`:
+
+```bash
+./scripts/build-libghostty.sh
+swift build --disable-sandbox -c release
+```
 
 ## Terminfo
 
 Bundled Ghostty terminfo under `Sources/Ghosvt/Resources/terminfo/`:
 
-- `TERM=xterm-ghostty`
-- `TERMINFO=<bundle>/Resources/terminfo`
-- `COLORTERM=truecolor`
-- `TERM_PROGRAM=ghosvt`
+| Variable | Value |
+|----------|--------|
+| `TERM` | `xterm-ghostty` (fallback `xterm-256color`) |
+| `TERMINFO` | bundle `Resources/terminfo` when present |
+| `COLORTERM` | `truecolor` |
+| `TERM_PROGRAM` | `ghosvt` |
+| `TERM_PROGRAM_VERSION` | `0.1.0` |
 
-`console-mode = login` uses `login -p` so TERM/TERMINFO reach the user shell. `console-mode = shell` runs `$SHELL -l` with the host environment. Refresh terminfo from Ghostty.app:
+Refresh from Ghostty.app:
 
 ```bash
 ./scripts/fetch-terminfo.sh
 ```
 
-## Build
+## Console modes
 
-```bash
-# once: vendor ghostty (if not present)
-git clone --depth 1 https://github.com/ghostty-org/ghostty.git Vendor/ghostty
+| `console-mode` | Behavior |
+|----------------|----------|
+| **`shell`** (default) | Banner + `$SHELL -l` (or `pw_shell` / `/bin/zsh`); host environment kept |
+| **`login`** | Banner + scrubbed env + `/usr/bin/login -p` (getty-style) |
 
-./scripts/build-libghostty.sh
-swift build -c release
-swift run -c release
-# or
-./scripts/run.sh
-```
-
-## Fonts
-
-Embedded (same Ghostty CDN pins):
-
-- **JetBrains Mono** 2.304 — Regular / Bold / ExtraBold / Italic / BoldItalic / ExtraBoldItalic + variable
-- **Nerd Fonts Symbols Only** 3.4.0 — cascade for icons (`SymbolsNerdFont` + mono)
-- Terminal SGR bold draws with **ExtraBold** (falls back to Bold if missing)
-
-Loaded at runtime from `Sources/Ghosvt/Resources/Fonts/`. Refresh with:
-
-```bash
-./scripts/fetch-fonts.sh
-```
+Alias: `getty` → `login`.
 
 ## Config
 
-Ghostty-style file: **`~/.config/ghosvt/config`**
+Ghostty-style file: **`~/.config/ghosvt/config`**  
+(or `$XDG_CONFIG_HOME/ghosvt/config`). Missing file → defaults.
 
 ```
 # ~/.config/ghosvt/config
 vt-count = 6
-font-size = 16
-scrollback-limit = 50000000
+font-size = 20
 console-mode = shell
+scrollback-limit = 50000000
+scroll-to-bottom = keystroke, no-output
 max-aspect = 3:2
+copy-on-select = true
+font-ligatures = true
 ```
 
-`scrollback-limit` is bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`; default **50 MB**). Use `unlimited` for no byte cap. Zero disables scrollback.
+### Options
 
-`console-mode` is **`shell`** (default for now: banner + `$SHELL -l`) or **`login`** (banner + `/usr/bin/login -p`).
+| Key | Default | Notes |
+|-----|---------|--------|
+| `vt-count` | `6` | 1…12 |
+| `font-size` | `20` | Points |
+| `console-mode` | `shell` | `shell` \| `login` (alias `getty`) |
+| `scrollback-limit` | `50000000` | Bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`). `unlimited` or `0` (off) |
+| `scrollback-limit-bytes` | — | Alias for `scrollback-limit` |
+| `scroll-to-bottom` | `keystroke, no-output` | Comma list: `keystroke` / `no-keystroke` / `output` / `no-output` |
+| `max-aspect` / `max-aspect-ratio` | `3:2` | Cap content width/height (`3:2`, `3/2`, or float). Wider screens letterbox |
+| `copy-on-select` | `true` | Copy selection to pasteboard on mouse-up |
+| `font-ligatures` / `ligatures` | `true` | OpenType liga/calt on shaped runs |
+| `scroll-spring-k` | `120` | Overscroll spring stiffness |
+| `scroll-spring-c` | `14` | Overscroll damping |
+| `scroll-friction` | `6` | Coast friction |
 
-`scroll-to-bottom` matches Ghostty (default **`keystroke, no-output`**). Comma list of `keystroke` / `no-keystroke` / `output` / `no-output`.
-
-`max-aspect` caps content width/height (default **3:2**). Accepts `3:2`, `3/2`, or a float like `1.5`. Wider screens letterbox with background bars.
-
-Missing file → defaults. No Application Support path.
+Bools: `true` / `yes` / `on` / `1`.
 
 ## Keys
 
@@ -84,19 +102,47 @@ Missing file → defaults. No Application Support path.
 | **⌘0** | VT 10 (if `vt-count` ≥ 10) |
 | **⌘F1…⌘F*n*** | Same |
 | **⌘← / ⌘→** | Previous / next VT |
+| **⌘C** | Copy selection |
+| **⌘V** | Paste |
 | **⌘Q** | Quit |
+| **Shift+Enter** / **Alt+Enter** | Send LF (`\n`) — newline for apps like Grok Build |
+| **Enter** | Send CR (`\r`) |
+| Wheel / trackpad | Scroll history (spring overscroll) |
+| Mouse drag | Host selection (or app mouse when tracking; Shift forces host select) |
 
-## Status
+VT switch shows a brief **VT *n*** label in the **upper-right** of the content area.
 
-- Fullscreen Metal host
-- libghostty-vt + PTY + banner + `console-mode` (login / shell) + respawn
-- Multi-VT manager (lazy spawn), **⌘1… / ⌘F1…** switch
-- **PR2 Metal renderer finished:** dirty-gated rebuilds, cursor styles + blink, underline/faint, poll budget, ASCII prewarm, Nerd glyph fallback
-- Letterboxed content on ultrawide (`max-aspect`, default 3:2)
-- Embedded JetBrains Mono (+ Nerd symbol faces)
-- Config loader (`~/.config/ghosvt/config`)
+## Display
 
-**Next:** PR4 bouncy scroll physics.
+- Fullscreen Metal host at launch
+- Content capped by `max-aspect` (default 3:2); side bars clear to the live terminal / FS TUI background
+- Adaptive-Sync: `present(afterMinimumDuration:)` within the screen’s refresh range when the panel reports VRR
+- Cursor defaults: cell-foreground fill / cell-background text (OSC 12 can still set a fixed cursor color)
+
+## Rendering & VT
+
+- Dirty-aware grid rebuild, CoreText shaping (horizontal placement aligned with Ghostty), glyph atlas
+- Embedded **JetBrains Mono** (+ Nerd Symbols cascade); SGR bold uses ExtraBold when available
+- Ghostty-style sprites (blocks, box drawing, braille, powerline, etc.); DECTCEM cursor hide
+- Selection invert with correct ink; copy-on-select default on
+- PTY gather + parse threads (Ghostty-style ring / bridge policy) so bulk IO does not stall Metal
+
+## Fonts
+
+Refresh embedded fonts:
+
+```bash
+./scripts/fetch-fonts.sh
+```
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/build-libghostty.sh` | Build `libghostty-vt.a` (ReleaseFast) |
+| `scripts/run.sh` | Build release + run |
+| `scripts/fetch-terminfo.sh` | Refresh bundled terminfo |
+| `scripts/fetch-fonts.sh` | Refresh embedded fonts |
 
 ## License
 
