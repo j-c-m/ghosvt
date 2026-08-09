@@ -26,7 +26,7 @@ final class TerminalSession {
     private var cellHeightPx: UInt32 = 16
 
     private let lock = NSLock()
-    private let scrollbackLines: Int
+    private let scrollbackLimitBytes: Int
 
     /// Last integer row pushed to `ghostty_terminal_scroll_viewport`.
     private var lastSyncedIntegerRow: UInt64?
@@ -55,9 +55,9 @@ final class TerminalSession {
     private var mouseEvent: GhosttyMouseEvent?
     private var mouseButtonsDown: Set<Int> = []
 
-    init(index: Int, scrollbackLines: Int) {
+    init(index: Int, scrollbackLimitBytes: Int) {
         self.index = index
-        self.scrollbackLines = scrollbackLines
+        self.scrollbackLimitBytes = scrollbackLimitBytes
     }
 
     /// Apply config spring/friction constants to this session's physics.
@@ -603,9 +603,19 @@ final class TerminalSession {
         }
         terminal = term
 
-        var lines = scrollbackLines
-        withUnsafePointer(to: &lines) { ptr in
-            _ = ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, UnsafeRawPointer(ptr))
+        // Ghostty-style scrollback-limit (bytes). NULL would mean unlimited;
+        // zero disables scrollback. Do not set max-lines — bytes alone bind.
+        if scrollbackLimitBytes == Int.max {
+            _ = ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, nil)
+        } else {
+            var bytes = scrollbackLimitBytes
+            withUnsafePointer(to: &bytes) { ptr in
+                _ = ghostty_terminal_set(
+                    term,
+                    GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                    UnsafeRawPointer(ptr)
+                )
+            }
         }
         // Spacegray Eighties with overrides (fg/bg/cursor + ANSI 0–15).
         DefaultColors.apply(to: term)

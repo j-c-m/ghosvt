@@ -61,9 +61,11 @@ Ghostty-style file: **`~/.config/ghosvt/config`**
 # ~/.config/ghosvt/config
 vt-count = 6
 font-size = 16
-scrollback-lines = 10000
+scrollback-limit = 50000000
 max-aspect = 3:2
 ```
+
+`scrollback-limit` is bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`; default **50 MB**). Use `unlimited` for no byte cap. Zero disables scrollback.
 
 `max-aspect` caps content width/height (default **3:2**). Accepts `3:2`, `3/2`, or a float like `1.5`. Wider screens letterbox with background bars.
 

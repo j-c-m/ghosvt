@@ -4,7 +4,9 @@ import Foundation
 struct Config: Sendable {
     var vtCount: Int = 6
     var fontSize: CGFloat = 20
-    var scrollbackLines: Int = 10_000
+    /// Scrollback cap in bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`).
+    /// Default 50 MB matches Ghostty. Zero disables scrollback.
+    var scrollbackLimitBytes: Int = 50_000_000
     /// Max content width/height (e.g. 1.5 for 3:2). Wider screens letterbox.
     var maxAspect: CGFloat = 3.0 / 2.0
     var scrollSpringK: Double = 120
@@ -47,8 +49,13 @@ struct Config: Sendable {
                 if let n = Int(value) { cfg.vtCount = min(12, max(1, n)) }
             case "font-size":
                 if let n = Double(value) { cfg.fontSize = CGFloat(n) }
-            case "scrollback-lines":
-                if let n = Int(value) { cfg.scrollbackLines = max(0, n) }
+            case "scrollback-limit", "scrollback-limit-bytes":
+                // Ghostty: `scrollback-limit` is a compat alias for bytes.
+                if value.lowercased() == "unlimited" {
+                    cfg.scrollbackLimitBytes = Int.max
+                } else if let n = Int(value) {
+                    cfg.scrollbackLimitBytes = max(0, n)
+                }
             case "max-aspect", "max-aspect-ratio":
                 if let aspect = parseAspect(value) {
                     cfg.maxAspect = aspect
