@@ -167,7 +167,7 @@ final class TerminalRenderer {
 
         var defFg = colors.foreground
         var defBg = colors.background
-        // Both zero usually means unset; use CGA host defaults (bg is truly black).
+        // Both zero usually means unset; use host defaults (bg may be black).
         if defFg.r == 0, defFg.g == 0, defFg.b == 0,
            defBg.r == 0, defBg.g == 0, defBg.b == 0 {
             defFg = DefaultColors.foreground
