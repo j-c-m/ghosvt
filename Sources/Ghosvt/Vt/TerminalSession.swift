@@ -157,80 +157,84 @@ final class TerminalSession {
 
         let mods = KeyBridge.mapMods(event.modifierFlags)
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let gkey = KeyBridge.mapKey(event)
+        let text = KeyBridge.encoderText(for: event)
 
         // --- Classic Ctrl+key → C0 byte (Ctrl-C = 0x03, Ctrl-D = 0x04, …) ---
-        // Prefer this over the key encoder: Kitty-protocol encodings break login/shells
-        // that expect raw C0 controls.
-        if flags.contains(.control), !flags.contains(.command) {
+        // Prefer this over Kitty-protocol encodings for login/shell C0 controls.
+        if flags.contains(.control), !flags.contains(.command), !KeyBridge.requiresEncoder(gkey) {
             if let c0 = Self.classicControlByte(for: event) {
                 return [c0]
             }
         }
 
-        var utf8: [UInt8] = []
-        if let chars = event.characters, !chars.isEmpty {
-            utf8 = Array(chars.utf8)
-        }
-
-        // AppKit often already folds Ctrl into a single C0 in `characters`.
-        if utf8.count == 1 {
-            let b = utf8[0]
-            if b < 0x20 || b == 0x7F {
-                return utf8
-            }
-        }
-
-        // Printable text (no Ctrl/Cmd): raw UTF-8.
-        if !flags.contains(.control), !flags.contains(.command), !utf8.isEmpty {
-            let onlyControls = utf8.allSatisfy { $0 < 0x20 || $0 == 0x7F }
-            if !onlyControls {
-                return utf8
-            }
+        // Plain printable (no Ctrl/Cmd/Option): raw UTF-8. Never for arrows/F-keys —
+        // AppKit puts those in U+F700… PUA and `encoderText` already drops them.
+        if !flags.contains(.control),
+           !flags.contains(.command),
+           !flags.contains(.option),
+           !KeyBridge.requiresEncoder(gkey),
+           let text, !text.isEmpty {
+            return Array(text.utf8)
         }
 
         ghostty_key_encoder_setopt_from_terminal(encoder, terminal)
+        // Prefer Option-as-Alt (ESC prefix / meta) over dead-key glyphs for shells.
+        var optionAsAlt = GHOSTTY_OPTION_AS_ALT_TRUE
+        withUnsafePointer(to: &optionAsAlt) { ptr in
+            ghostty_key_encoder_setopt(
+                encoder,
+                GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT,
+                UnsafeRawPointer(ptr)
+            )
+        }
 
-        let gkey = KeyBridge.mapKey(event)
+        let action: GhosttyKeyAction = event.isARepeat
+            ? GHOSTTY_KEY_ACTION_REPEAT
+            : GHOSTTY_KEY_ACTION_PRESS
         ghostty_key_event_set_key(keyEvent, gkey)
-        ghostty_key_event_set_action(keyEvent, GHOSTTY_KEY_ACTION_PRESS)
+        ghostty_key_event_set_action(keyEvent, action)
         ghostty_key_event_set_mods(keyEvent, mods)
+        ghostty_key_event_set_consumed_mods(keyEvent, KeyBridge.consumedMods(for: event))
         ghostty_key_event_set_unshifted_codepoint(keyEvent, KeyBridge.unshiftedCodepoint(event))
+        ghostty_key_event_set_composing(keyEvent, false)
 
-        var consumed: GhosttyMods = 0
-        if KeyBridge.unshiftedCodepoint(event) != 0, (mods & GhosttyMods(GHOSTTY_MODS_SHIFT)) != 0 {
-            consumed |= GhosttyMods(GHOSTTY_MODS_SHIFT)
-        }
-        // Ctrl is consumed when AppKit already produced a C0 (we handled above);
-        // for encoder path still mark ctrl as consumed for letter keys.
-        if flags.contains(.control) {
-            consumed |= GhosttyMods(GHOSTTY_MODS_CTRL)
-        }
-        ghostty_key_event_set_consumed_mods(keyEvent, consumed)
+        let encoded: [UInt8] = {
+            if let text, !text.isEmpty {
+                return Array(text.utf8).withUnsafeBufferPointer { utf8Buf -> [UInt8] in
+                    ghostty_key_event_set_utf8(keyEvent, utf8Buf.baseAddress, utf8Buf.count)
+                    return Self.runKeyEncoder(encoder, keyEvent: keyEvent)
+                }
+            }
+            ghostty_key_event_set_utf8(keyEvent, nil, 0)
+            return Self.runKeyEncoder(encoder, keyEvent: keyEvent)
+        }()
 
-        return utf8.withUnsafeBufferPointer { utf8Buf -> [UInt8] in
-            if !utf8.isEmpty {
-                ghostty_key_event_set_utf8(keyEvent, utf8Buf.baseAddress, utf8Buf.count)
-            } else {
-                ghostty_key_event_set_utf8(keyEvent, nil, 0)
-            }
-
-            var out = [UInt8](repeating: 0, count: 128)
-            var written: Int = 0
-            let res = out.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
-                ghostty_key_encoder_encode(encoder, keyEvent, buf.baseAddress, buf.count, &written)
-            }
-            if res == GHOSTTY_SUCCESS, written > 0 {
-                return Array(out.prefix(written))
-            }
-            if !utf8.isEmpty { return utf8 }
-            switch event.keyCode {
-            case 36: return [0x0D] // Return → CR
-            case 48: return [0x09] // Tab
-            case 51: return [0x7F] // Backspace
-            case 53: return [0x1B] // Escape
-            default: return []
-            }
+        if !encoded.isEmpty {
+            return encoded
         }
+        if let legacy = KeyBridge.legacySequence(for: gkey, mods: mods), !legacy.isEmpty {
+            return legacy
+        }
+        if let text, !text.isEmpty {
+            return Array(text.utf8)
+        }
+        return []
+    }
+
+    private static func runKeyEncoder(
+        _ encoder: GhosttyKeyEncoder,
+        keyEvent: GhosttyKeyEvent
+    ) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: 128)
+        var written: Int = 0
+        let res = out.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
+            ghostty_key_encoder_encode(encoder, keyEvent, buf.baseAddress, buf.count, &written)
+        }
+        if res == GHOSTTY_SUCCESS, written > 0 {
+            return Array(out.prefix(written))
+        }
+        return []
     }
 
     /// Map Ctrl+key to a classic C0 control byte for PTY input.
