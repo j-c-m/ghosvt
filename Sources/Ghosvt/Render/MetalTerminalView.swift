@@ -36,7 +36,13 @@ final class MetalTerminalView: MTKView {
         enableSetNeedsDisplay = false
         preferredFramesPerSecond = 60
         autoResizeDrawable = true
-        clearColor = MTLClearColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1)
+        let bg = DefaultColors.background
+        clearColor = MTLClearColor(
+            red: Double(bg.r) / 255,
+            green: Double(bg.g) / 255,
+            blue: Double(bg.b) / 255,
+            alpha: 1
+        )
 
         renderer = TerminalRenderer(device: device, pixelFormat: colorPixelFormat, padPoints: pad)
         if renderer == nil {

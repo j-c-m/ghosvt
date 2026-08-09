@@ -396,15 +396,8 @@ final class TerminalSession {
         withUnsafePointer(to: &lines) { ptr in
             _ = ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, UnsafeRawPointer(ptr))
         }
-        // Default theme so login banner is visible before any OSC colors.
-        var fg = GhosttyColorRgb(r: 230, g: 230, b: 230)
-        var bg = GhosttyColorRgb(r: 12, g: 12, b: 16)
-        withUnsafePointer(to: &fg) { ptr in
-            _ = ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, UnsafeRawPointer(ptr))
-        }
-        withUnsafePointer(to: &bg) { ptr in
-            _ = ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, UnsafeRawPointer(ptr))
-        }
+        // IBM 5153 CGA Black defaults (fg/bg/cursor + ANSI 0–15).
+        DefaultColors.apply(to: term)
 
         // Advertise as xterm-ghostty (matches bundled terminfo / Ghostty capabilities).
         terminfoNameBytes.withUnsafeBufferPointer { buf in

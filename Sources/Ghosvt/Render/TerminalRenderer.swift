@@ -24,7 +24,7 @@ final class TerminalRenderer {
     private var gridRows = 0
     private var lastDrawnCount = 0
     private var lastLayoutKey: LayoutKey?
-    private var lastDefBg = (r: UInt8(12), g: UInt8(12), b: UInt8(16))
+    private var lastDefBg = (r: DefaultColors.background.r, g: DefaultColors.background.g, b: DefaultColors.background.b)
     private var lastIndicator: String?
     private var lastBlinkOn = true
     private var lastVisualY: Float = 0
@@ -167,10 +167,11 @@ final class TerminalRenderer {
 
         var defFg = colors.foreground
         var defBg = colors.background
+        // Both zero usually means unset; use CGA host defaults (bg is truly black).
         if defFg.r == 0, defFg.g == 0, defFg.b == 0,
            defBg.r == 0, defBg.g == 0, defBg.b == 0 {
-            defFg.r = 230; defFg.g = 230; defFg.b = 230
-            defBg.r = 12; defBg.g = 12; defBg.b = 16
+            defFg = DefaultColors.foreground
+            defBg = DefaultColors.background
         }
         lastDefBg = (defBg.r, defBg.g, defBg.b)
 
