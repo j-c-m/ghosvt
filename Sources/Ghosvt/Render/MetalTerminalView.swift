@@ -14,6 +14,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private let pad: CGFloat = 4
     private var lastCols: UInt16 = 0
     private var lastRows: UInt16 = 0
+    private var lastCellW: UInt32 = 0
+    private var lastCellH: UInt32 = 0
     private var lastScale: CGFloat = 0
     private var lastFontSize: CGFloat = 0
     private var lastFrameTime: CFTimeInterval = 0
@@ -22,6 +24,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var selectRectangle = false
     private var trackingArea: NSTrackingArea?
     private var focusObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     /// Last logged display range (minInterval, maxInterval, maxFps); skip repeat logs.
     private var lastLoggedDisplay: (minI: CFTimeInterval, maxI: CFTimeInterval, fps: Int)?
 
@@ -118,13 +121,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeFocusObservers()
+        removeWorkspaceObservers()
         window?.makeFirstResponder(self)
-        applyDisplayRefreshRate()
-        refreshMetrics(force: true)
+        rebindDisplay()
         spawnIfNeeded()
         updateTrackingAreas()
         if window != nil {
             installFocusObservers()
+            installWorkspaceObservers()
         }
     }
 
@@ -151,6 +155,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         focusObservers.removeAll()
     }
 
+    private func removeWorkspaceObservers() {
+        let nc = NSWorkspace.shared.notificationCenter
+        for o in workspaceObservers {
+            nc.removeObserver(o)
+        }
+        workspaceObservers.removeAll()
+    }
+
     private func installFocusObservers() {
         removeFocusObservers()
         guard let window else { return }
@@ -174,15 +186,64 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 self?.manager?.active.encodeFocus(gained: false)
             }
         })
+        // Fullscreen move / drag to another display: scale, grid, VRR.
         focusObservers.append(nc.addObserver(
             forName: NSWindow.didChangeScreenNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.applyDisplayRefreshRate()
+                self?.rebindDisplay()
             }
         })
+    }
+
+    private func installWorkspaceObservers() {
+        removeWorkspaceObservers()
+        let nc = NSWorkspace.shared.notificationCenter
+        // Pause only when displays actually sleep — not willSleep (can cancel).
+        workspaceObservers.append(nc.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.isPaused = true
+            }
+        })
+        // Both wake paths may fire; resumeAfterSleep gates on isPaused.
+        workspaceObservers.append(nc.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.resumeAfterSleep()
+            }
+        })
+        workspaceObservers.append(nc.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.resumeAfterSleep()
+            }
+        })
+    }
+
+    /// Adaptive-Sync + HiDPI metrics + resize all live VTs (SIGWINCH).
+    private func rebindDisplay() {
+        applyDisplayRefreshRate()
+        refreshMetrics(force: true)
+        applyResize()
+    }
+
+    /// Idempotent: second wake notification is a no-op if already resumed.
+    private func resumeAfterSleep() {
+        guard isPaused else { return }
+        isPaused = false
+        rebindDisplay()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -229,14 +290,21 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         manager.ensureActiveStarted(cols: g.cols, rows: g.rows, cellWidthPx: g.cellW, cellHeightPx: g.cellH)
         lastCols = g.cols
         lastRows = g.rows
+        lastCellW = g.cellW
+        lastCellH = g.cellH
     }
 
+    /// Push cols/rows and cell pixel size to all live VTs when either changes
+    /// (scale-only moves keep cols/rows but must update ws_xpixel/ws_ypixel).
     private func applyResize() {
         guard let manager, let g = gridSize() else { return }
-        if g.cols != lastCols || g.rows != lastRows {
+        if g.cols != lastCols || g.rows != lastRows
+            || g.cellW != lastCellW || g.cellH != lastCellH {
             manager.resizeAll(cols: g.cols, rows: g.rows, cellWidthPx: g.cellW, cellHeightPx: g.cellH)
             lastCols = g.cols
             lastRows = g.rows
+            lastCellW = g.cellW
+            lastCellH = g.cellH
         }
     }
 

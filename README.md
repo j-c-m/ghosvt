@@ -117,6 +117,8 @@ VT switch shows a brief **VT *n*** label in the **upper-right** of the content a
 - Fullscreen Metal host at launch
 - Content capped by `max-aspect` (default 3:2); side bars clear to the live terminal / FS TUI background
 - Adaptive-Sync: `present(afterMinimumDuration:)` within the screen’s refresh range when the panel reports VRR
+- HiDPI: cell metrics and glyph atlas rebuild on `backingScaleFactor` change
+- Multi-monitor / sleep: on screen change or wake, rebind refresh rate + metrics + resize all live VTs; pause drawing while displays/system sleep
 - Cursor defaults: cell-foreground fill / cell-background text (OSC 12 can still set a fixed cursor color)
 
 ## Rendering & VT
