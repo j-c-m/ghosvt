@@ -11,7 +11,7 @@ struct Config: Sendable {
     var scrollSpringC: Double = 14
     var scrollFriction: Double = 6
     /// When true, mouse-up copies the selection to the pasteboard automatically.
-    var copyOnSelect: Bool = false
+    var copyOnSelect: Bool = true
     /// Enable OpenType liga/calt on shaped runs (JetBrains Mono programming ligatures).
     var fontLigatures: Bool = true
 
