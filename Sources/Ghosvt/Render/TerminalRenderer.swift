@@ -33,6 +33,8 @@ final class TerminalRenderer {
     var lastDrawnCount = 0
     var lastLayoutKey: LayoutKey?
     var lastDefBg = (r: DefaultColors.background.r, g: DefaultColors.background.g, b: DefaultColors.background.b)
+    /// Color used to clear the full drawable (letterbox bars match terminal / FS TUI).
+    private(set) var lastLetterboxBg = DefaultColors.background
     var lastIndicator: String?
     var lastBlinkOn = true
     var lastVisualY: Float = 0
@@ -306,7 +308,13 @@ final class TerminalRenderer {
             lastLayoutKey = layout
         }
 
+        // After grid rebuild so edge samples match this frame's FS TUI cells.
+        let letterboxBg = letterboxBackground(defBg: defBg)
+        lastLetterboxBg = letterboxBg
+
         // Idle: reuse previous GPU buffer only when nothing visual moved.
+        // Still full-clear with the current letterbox sample (updates when the
+        // sample source changes — edge cache / defBg after a dirty rebuild).
         if !needGridRebuild && !blinkChanged && !indicatorChanged && !visualChanged
             && !cursorChanged && lastDrawnCount > 0 {
             present(
@@ -314,8 +322,7 @@ final class TerminalRenderer {
                 drawable: drawable,
                 rpd: renderPassDescriptor,
                 pw: pw, ph: ph,
-                defBg: defBg,
-                clearColor: clearColor,
+                letterboxBg: letterboxBg,
                 contentActive: false
             )
             return
@@ -369,9 +376,20 @@ final class TerminalRenderer {
             drawable: drawable,
             rpd: renderPassDescriptor,
             pw: pw, ph: ph,
-            defBg: defBg,
-            clearColor: clearColor,
+            letterboxBg: letterboxBg,
             contentActive: true
         )
+    }
+
+    /// Full-drawable clear color for max-aspect letterbox bars.
+    /// Prefer painted edge cells (FS TUI) when the grid exists; else terminal default bg.
+    /// Samples `rowCellCache` (pre-selection), never post-invert `gridCells` fill.
+    func letterboxBackground(defBg: GhosttyColorRgb) -> GhosttyColorRgb {
+        guard gridCols > 0, gridRows > 0, rowCellCache.count >= gridCols * gridRows else {
+            return defBg
+        }
+        // Mid-row left edge sits against the side letterbox on ultra-wide layouts.
+        let idx = (gridRows / 2) * gridCols
+        return rowCellCache[idx].bg
     }
 }

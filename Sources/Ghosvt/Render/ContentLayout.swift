@@ -2,7 +2,8 @@ import CoreGraphics
 import Foundation
 
 /// Centers a terminal content rect inside the drawable, capping max width/height.
-/// Wider screens (e.g. 21:9) get side bars of background color.
+/// Wider screens (e.g. 21:9) get side letterbox bars cleared to the live terminal /
+/// FS TUI background (see `TerminalRenderer.letterboxBackground`).
 enum ContentLayout {
     /// Content rect in the same unit space as `size` (points or pixels), top-left origin.
     /// - Parameter maxAspect: Maximum width/height (e.g. `1.5` for 3:2).

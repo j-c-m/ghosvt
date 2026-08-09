@@ -48,8 +48,7 @@ extension TerminalRenderer {
         rpd: MTLRenderPassDescriptor,
         pw: Float,
         ph: Float,
-        defBg: GhosttyColorRgb,
-        clearColor: MTLClearColor,
+        letterboxBg: GhosttyColorRgb,
         contentActive: Bool = true
     ) {
         if let ub = uniformBuffer {
@@ -59,11 +58,12 @@ extension TerminalRenderer {
             }
         }
 
+        // Clear the full drawable so max-aspect letterbox bars match the TUI/terminal bg.
         rpd.colorAttachments[0].loadAction = .clear
         rpd.colorAttachments[0].clearColor = MTLClearColor(
-            red: Double(defBg.r) / 255,
-            green: Double(defBg.g) / 255,
-            blue: Double(defBg.b) / 255,
+            red: Double(letterboxBg.r) / 255,
+            green: Double(letterboxBg.g) / 255,
+            blue: Double(letterboxBg.b) / 255,
             alpha: 1
         )
         rpd.colorAttachments[0].storeAction = .store
@@ -85,7 +85,6 @@ extension TerminalRenderer {
         enc.endEncoding()
         presentPaced(cmd, drawable: drawable, contentActive: contentActive)
         cmd.commit()
-        _ = clearColor
     }
 
     /// `present(_:afterMinimumDuration:)` so Adaptive-Sync can hold frames in-range.

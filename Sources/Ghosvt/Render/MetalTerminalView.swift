@@ -290,6 +290,30 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             visualOffsetRows: visualOffset,
             fontLigatures: config.fontLigatures
         )
+        syncLetterboxChrome(from: renderer)
+    }
+
+    /// Keep MTKView clear + window chrome in lockstep with terminal / FS TUI background.
+    private func syncLetterboxChrome(from renderer: TerminalRenderer) {
+        let bg = renderer.lastLetterboxBg
+        let next = MTLClearColor(
+            red: Double(bg.r) / 255,
+            green: Double(bg.g) / 255,
+            blue: Double(bg.b) / 255,
+            alpha: 1
+        )
+        let eps = 1.0 / 512.0
+        if abs(clearColor.red - next.red) > eps
+            || abs(clearColor.green - next.green) > eps
+            || abs(clearColor.blue - next.blue) > eps {
+            clearColor = next
+            window?.backgroundColor = NSColor(
+                srgbRed: CGFloat(bg.r) / 255,
+                green: CGFloat(bg.g) / 255,
+                blue: CGFloat(bg.b) / 255,
+                alpha: 1
+            )
+        }
     }
 
     // MARK: - Input
