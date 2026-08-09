@@ -1358,21 +1358,38 @@ final class TerminalRenderer {
         var style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style)
 
-        // Host theme: cursor = cell-foreground (#ccc). Prefer explicit terminal
-        // cursor color; otherwise DefaultColors.cursor / defFg.
-        var cur = DefaultColors.cursor
-        if colors.cursor_has_value {
-            cur = colors.cursor
-        } else if defFg.r != 0 || defFg.g != 0 || defFg.b != 0 {
-            cur = defFg
+        // Defaults match Ghostty:
+        //   cursor-color = cell-foreground
+        //   cursor-text  = cell-background
+        // OSC 12 (colors.cursor_has_value) overrides only the fill color.
+        var cr = Float(defFg.r) / 255
+        var cgC = Float(defFg.g) / 255
+        var cb = Float(defFg.b) / 255
+        var tr = Float(DefaultColors.background.r) / 255
+        var tg = Float(DefaultColors.background.g) / 255
+        var tb = Float(DefaultColors.background.b) / 255
+        let idx = Int(cy) * layout.cols + Int(cx)
+        if idx >= 0, idx < gridCells.count {
+            let cell = gridCells[idx]
+            // cell-foreground → cursor fill; cell-background → cursor-text.
+            cr = cell.fr
+            cgC = cell.fg
+            cb = cell.fb
+            tr = cell.br
+            tg = cell.bg
+            tb = cell.bb
+            if cr == 0, cgC == 0, cb == 0, cell.fa < 0.5 {
+                cr = Float(defFg.r) / 255
+                cgC = Float(defFg.g) / 255
+                cb = Float(defFg.b) / 255
+            }
         }
-        let cr = Float(cur.r) / 255
-        let cg = Float(cur.g) / 255
-        let cb = Float(cur.b) / 255
-        // cursor-text = cell-background (glyph under block).
-        let tr = Float(DefaultColors.background.r) / 255
-        let tg = Float(DefaultColors.background.g) / 255
-        let tb = Float(DefaultColors.background.b) / 255
+        if colors.cursor_has_value {
+            cr = Float(colors.cursor.r) / 255
+            cgC = Float(colors.cursor.g) / 255
+            cb = Float(colors.cursor.b) / 255
+        }
+
         let x = (layout.originX + layout.padPx + Float(cx) * layout.cellW)
             .rounded(.toNearestOrAwayFromZero)
         let y = (layout.originY + layout.padPx + Float(cy) * layout.cellH + visualY)
@@ -1386,29 +1403,29 @@ final class TerminalRenderer {
             instances.append(.make(
                 originX: x, originY: y, width: w, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 1,
-                br: cr, bg: cg, bb: cb, ba: 1
+                fr: cr, fg: cgC, fb: cb, fa: 1,
+                br: cr, bg: cgC, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
             let h = max(2, ch * 0.12).rounded(.toNearestOrAwayFromZero)
             instances.append(.make(
                 originX: x, originY: y + ch - h, width: cw, height: h,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 1,
-                br: cr, bg: cg, bb: cb, ba: 1
+                fr: cr, fg: cgC, fb: cb, fa: 1,
+                br: cr, bg: cgC, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
             let t: Float = max(1, min(cw, ch) * 0.08).rounded(.toNearestOrAwayFromZero)
-            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-        default: // block: solid cursor bg, then redraw cell glyph in cursor-text color
+            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+        default: // block: fill = cursor color, then glyph in cursor-text
             instances.append(.make(
                 originX: x, originY: y, width: cw, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
                 fr: tr, fg: tg, fb: tb, fa: 1,
-                br: cr, bg: cg, bb: cb, ba: 1
+                br: cr, bg: cgC, bb: cb, ba: 1
             ))
             appendCursorCellGlyph(
                 to: &instances,
