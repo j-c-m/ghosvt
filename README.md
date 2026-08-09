@@ -62,7 +62,10 @@ Ghostty-style file: **`~/.config/ghosvt/config`**
 vt-count = 6
 font-size = 16
 scrollback-lines = 10000
+max-aspect = 3:2
 ```
+
+`max-aspect` caps content width/height (default **3:2**). Accepts `3:2`, `3/2`, or a float like `1.5`. Wider screens letterbox with background bars.
 
 Missing file → defaults. No Application Support path.
 
@@ -82,7 +85,7 @@ Missing file → defaults. No Application Support path.
 - libghostty-vt + PTY + banner + `/usr/bin/login` + respawn
 - Multi-VT manager (lazy spawn), **⌘1… / ⌘F1…** switch
 - **PR2 Metal renderer finished:** dirty-gated rebuilds, cursor styles + blink, underline/faint, poll budget, ASCII prewarm, Nerd glyph fallback
-- 16:10 letterboxed content on ultrawide
+- Letterboxed content on ultrawide (`max-aspect`, default 3:2)
 - Embedded JetBrains Mono (+ Nerd symbol faces)
 - Config loader (`~/.config/ghosvt/config`)
 

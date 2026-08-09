@@ -72,9 +72,9 @@ final class MetalTerminalView: MTKView {
         renderer?.resetAtlas()
     }
 
-    /// Terminal area in view points (≤ 16:9, centered).
+    /// Terminal area in view points (≤ max-aspect, centered).
     private func contentRectPoints() -> CGRect {
-        ContentLayout.contentRect(in: bounds.size)
+        ContentLayout.contentRect(in: bounds.size, maxAspect: config.maxAspect)
     }
 
     private func gridSize() -> (cols: UInt16, rows: UInt16, cellW: UInt32, cellH: UInt32)? {
@@ -119,7 +119,7 @@ final class MetalTerminalView: MTKView {
         let indicator = manager.tickIndicator()
         let scale = window?.backingScaleFactor ?? 2
         // Content rect in drawable pixels (same aspect cap as grid sizing).
-        let contentPx = ContentLayout.contentRect(in: drawableSize)
+        let contentPx = ContentLayout.contentRect(in: drawableSize, maxAspect: config.maxAspect)
 
         renderer.draw(
             session: manager.active,
