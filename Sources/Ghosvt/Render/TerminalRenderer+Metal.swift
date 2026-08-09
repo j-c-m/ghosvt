@@ -30,6 +30,18 @@ extension TerminalRenderer {
         }
     }
 
+    /// Minimum on-screen time for this frame within the display’s Adaptive-Sync range.
+    /// Active: GPU-paced (clamped). Idle on VRR: hold at the slowest supported rate.
+    func presentDuration(contentActive: Bool) -> CFTimeInterval {
+        if !adaptiveSync {
+            return displayMinInterval
+        }
+        if contentActive {
+            return min(displayMaxInterval, max(displayMinInterval, gpuTimeEMA.value))
+        }
+        return displayMaxInterval
+    }
+
     func present(
         count: Int,
         drawable: CAMetalDrawable,
@@ -37,7 +49,8 @@ extension TerminalRenderer {
         pw: Float,
         ph: Float,
         defBg: GhosttyColorRgb,
-        clearColor: MTLClearColor
+        clearColor: MTLClearColor,
+        contentActive: Bool = true
     ) {
         if let ub = uniformBuffer {
             var uni = FrameUniforms(viewportX: pw, viewportY: ph)
@@ -70,9 +83,27 @@ extension TerminalRenderer {
         }
 
         enc.endEncoding()
-        cmd.present(drawable)
+        presentPaced(cmd, drawable: drawable, contentActive: contentActive)
         cmd.commit()
         _ = clearColor
+    }
+
+    /// `present(_:afterMinimumDuration:)` so Adaptive-Sync can hold frames in-range.
+    private func presentPaced(
+        _ cmd: MTLCommandBuffer,
+        drawable: CAMetalDrawable,
+        contentActive: Bool
+    ) {
+        let duration = presentDuration(contentActive: contentActive)
+        cmd.present(drawable, afterMinimumDuration: duration)
+        // WWDC21: EMA of GPU time drives the next active frame’s minimum duration.
+        let ema = gpuTimeEMA
+        cmd.addCompletedHandler { buffer in
+            let gpu = buffer.gpuEndTime - buffer.gpuStartTime
+            guard gpu > 0, gpu.isFinite else { return }
+            let alpha = 0.25
+            ema.value = gpu * alpha + ema.value * (1.0 - alpha)
+        }
     }
 
     func cellTextUTF8(_ cells: GhosttyRenderStateRowCells) -> String? {
@@ -131,7 +162,7 @@ extension TerminalRenderer {
               let enc = cmd.makeRenderCommandEncoder(descriptor: rpd)
         else { return }
         enc.endEncoding()
-        cmd.present(drawable)
+        presentPaced(cmd, drawable: drawable, contentActive: false)
         cmd.commit()
     }
 

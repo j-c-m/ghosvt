@@ -42,6 +42,22 @@ final class TerminalRenderer {
     var blinkPeriod: CFTimeInterval = 0.53
     var prewarmedKey: String?
 
+    // MARK: Display pacing (Adaptive-Sync / fixed refresh)
+    /// Shortest frame hold (1 / max Hz).
+    var displayMinInterval: CFTimeInterval = 1.0 / 60.0
+    /// Longest frame hold (1 / min Hz). Equal to min on fixed-rate panels.
+    var displayMaxInterval: CFTimeInterval = 1.0 / 60.0
+    /// True when the screen reports a refresh range (ProMotion / Adaptive-Sync).
+    var adaptiveSync = false
+    /// EMA of GPU command-buffer time for content-paced presents (WWDC21).
+    let gpuTimeEMA = GPUTimeEMA(1.0 / 60.0)
+
+    /// Mutable Double shared with MTL completed handlers (pacing only).
+    final class GPUTimeEMA: @unchecked Sendable {
+        var value: CFTimeInterval
+        init(_ value: CFTimeInterval) { self.value = value }
+    }
+
     struct LayoutKey: Equatable {
         var originX: Float
         var originY: Float
@@ -110,6 +126,18 @@ final class TerminalRenderer {
         underlineExtras.removeAll(keepingCapacity: true)
         gridCols = 0
         gridRows = 0
+    }
+
+    /// Apply the screen’s refresh interval range for Adaptive-Sync pacing.
+    func configureDisplay(minInterval: CFTimeInterval, maxInterval: CFTimeInterval) {
+        let lo = max(minInterval, 1.0 / 1000.0)
+        let hi = max(maxInterval, lo)
+        displayMinInterval = lo
+        displayMaxInterval = hi
+        adaptiveSync = hi > lo * 1.01
+        // Seed EMA at the fastest supported interval so the first active frames
+        // do not under-pace on a cold start.
+        gpuTimeEMA.value = lo
     }
 
     func draw(
@@ -287,7 +315,8 @@ final class TerminalRenderer {
                 rpd: renderPassDescriptor,
                 pw: pw, ph: ph,
                 defBg: defBg,
-                clearColor: clearColor
+                clearColor: clearColor,
+                contentActive: false
             )
             return
         }
@@ -341,7 +370,8 @@ final class TerminalRenderer {
             rpd: renderPassDescriptor,
             pw: pw, ph: ph,
             defBg: defBg,
-            clearColor: clearColor
+            clearColor: clearColor,
+            contentActive: true
         )
     }
 }

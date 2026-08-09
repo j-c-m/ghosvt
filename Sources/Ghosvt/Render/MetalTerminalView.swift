@@ -22,6 +22,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var selectRectangle = false
     private var trackingArea: NSTrackingArea?
     private var focusObservers: [NSObjectProtocol] = []
+    /// Last logged display range (minInterval, maxInterval, maxFps); skip repeat logs.
+    private var lastLoggedDisplay: (minI: CFTimeInterval, maxI: CFTimeInterval, fps: Int)?
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
@@ -39,8 +41,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         framebufferOnly = true
         isPaused = false
         enableSetNeedsDisplay = false
-        // Match the display max rate (0 is not valid — it stops the draw timer).
-        applyDisplayRefreshRate()
         autoResizeDrawable = true
         let bg = DefaultColors.background
         clearColor = MTLClearColor(
@@ -54,25 +54,63 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if renderer == nil {
             fputs("ghosvt: failed to create TerminalRenderer\n", stderr)
         }
+        // After renderer exists: Adaptive-Sync range + present pacing.
+        applyDisplayRefreshRate()
     }
 
-    /// Match the screen’s highest refresh rate (e.g. 144 Hz fixed, 120 Hz ProMotion).
-    /// MTKView rejects 0 (stops drawing); it then picks the closest supported rate.
+    /// Configure MTKView + Metal for true Adaptive-Sync (or fixed-rate pacing).
+    ///
+    /// - `preferredFramesPerSecond`: allow draws up to max Hz.
+    /// - `present(_:afterMinimumDuration:)` (in the renderer): hold each frame within
+    ///   `[minimumRefreshInterval, maximumRefreshInterval]` so VRR panels can vary rate.
+    /// Fullscreen is required for Adaptive-Sync on macOS (app enters FS at launch).
     private func applyDisplayRefreshRate() {
         let screen = window?.screen ?? NSScreen.main
-        var fps = 60
+        var minInterval: CFTimeInterval = 1.0 / 60.0
+        var maxInterval: CFTimeInterval = 1.0 / 60.0
+        var maxFps = 60
+
         if let screen {
+            let minI = screen.minimumRefreshInterval
+            let maxI = screen.maximumRefreshInterval
+            if minI > 0, minI.isFinite { minInterval = minI }
+            if maxI > 0, maxI.isFinite { maxInterval = maxI }
+            if maxInterval < minInterval {
+                swap(&minInterval, &maxInterval)
+            }
+
             // Prefer the higher of the two APIs — external 144 Hz panels and
             // ProMotion sometimes disagree on which field is authoritative.
             let fromMax = screen.maximumFramesPerSecond
-            if fromMax > 0 { fps = max(fps, fromMax) }
-            let minInterval = screen.minimumRefreshInterval
-            if minInterval > 0, minInterval.isFinite {
-                let fromInterval = Int((1.0 / minInterval).rounded())
-                if fromInterval > 0 { fps = max(fps, fromInterval) }
-            }
+            if fromMax > 0 { maxFps = max(maxFps, fromMax) }
+            let fromInterval = Int((1.0 / minInterval).rounded())
+            if fromInterval > 0 { maxFps = max(maxFps, fromInterval) }
         }
-        preferredFramesPerSecond = max(1, fps)
+
+        // Draw callback at the panel’s ceiling; present duration paces Adaptive-Sync.
+        preferredFramesPerSecond = max(1, maxFps)
+
+        renderer?.configureDisplay(minInterval: minInterval, maxInterval: maxInterval)
+
+        let next = (minI: minInterval, maxI: maxInterval, fps: maxFps)
+        if let prev = lastLoggedDisplay,
+           abs(prev.minI - next.minI) < 1e-9,
+           abs(prev.maxI - next.maxI) < 1e-9,
+           prev.fps == next.fps {
+            return
+        }
+        lastLoggedDisplay = next
+
+        let adaptive = maxInterval > minInterval * 1.01
+        let minFpsLog = Int((1.0 / maxInterval).rounded())
+        if adaptive {
+            fputs(
+                "ghosvt: Adaptive-Sync \(minFpsLog)–\(maxFps) Hz (present afterMinimumDuration)\n",
+                stderr
+            )
+        } else {
+            fputs("ghosvt: display \(maxFps) Hz fixed (paced present)\n", stderr)
+        }
     }
 
     override var acceptsFirstResponder: Bool { true }
