@@ -99,16 +99,6 @@ final class TerminalSession {
         }
     }
 
-    /// DECTCEM (mode 25) from the live terminal. Used to dual-check render-state.
-    func terminalCursorVisible() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let terminal else { return true }
-        var v: UInt8 = 1
-        let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, &v)
-        return r == GHOSTTY_SUCCESS ? v != 0 : true
-    }
-
     /// Drain PTY → vt_write. Respawns login if the child dies.
     /// Budgeted so one flood cannot stall the main thread indefinitely.
     func pollIO(maxBytes: Int = 256 * 1024, maxReads: Int = 32) {
@@ -1127,7 +1117,9 @@ private func effectXtversion(
     _ terminal: GhosttyTerminal?,
     _ userdata: UnsafeMutableRawPointer?
 ) -> GhosttyString {
-    let s: StaticString = "ghosvt"
+    // Match Ghostty XTVERSION product name so apps that probe CSI > q
+    // take the Ghostty code path (cursor hide, keybinds, etc.).
+    let s: StaticString = "ghostty"
     return GhosttyString(
         ptr: UnsafeRawPointer(s.utf8Start).assumingMemoryBound(to: UInt8.self),
         len: s.utf8CodeUnitCount

@@ -34,19 +34,19 @@ enum DefaultColors {
         GhosttyColorRgb(r: 0xFF, g: 0xFF, b: 0xFF), // 15
     ]
 
-    /// Install fg/bg + ANSI 0–15 on a new terminal.
-    ///
-    /// Cursor color is left unset so the renderer can use Ghostty-style
-    /// `cell-foreground` / `cell-background` invert for the block cursor
-    /// (matches `cursor-color = cell-foreground` in Ghostty config).
+    /// Install fg/bg/cursor + ANSI 0–15 on a new terminal.
     static func apply(to terminal: GhosttyTerminal) {
         var fg = foreground
         var bg = background
+        var cur = cursor
         withUnsafePointer(to: &fg) { ptr in
             _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, UnsafeRawPointer(ptr))
         }
         withUnsafePointer(to: &bg) { ptr in
             _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, UnsafeRawPointer(ptr))
+        }
+        withUnsafePointer(to: &cur) { ptr in
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, UnsafeRawPointer(ptr))
         }
 
         // Start from libghostty’s full 256 palette, then overlay ANSI 0–15.

@@ -203,21 +203,17 @@ final class TerminalRenderer {
 
         // Cursor can move without dirtying cells (e.g. ← at the shell prompt).
         // Track viewport cursor so we recompose and re-shape run breaks.
-        // Read C bools as UInt8 for stable ABI with libghostty-vt.
-        var cursorVisibleU8: UInt8 = 0
-        var cursorInViewportU8: UInt8 = 0
+        var cursorVisible = false
+        var cursorInViewport = false
         var curX: UInt16 = 0
         var curY: UInt16 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisibleU8)
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewportU8)
-        let cursorInViewport = cursorInViewportU8 != 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewport)
         if cursorInViewport {
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &curX)
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &curY)
         }
-        // DECTCEM (mode 25): render-state + live terminal dual-check.
-        let termCursorVis = session.terminalCursorVisible()
-        let cursorVis = cursorVisibleU8 != 0 && termCursorVis && cursorInViewport
+        let cursorVis = cursorVisible && cursorInViewport
         let cursorX = cursorVis ? Int(curX) : -1
         let cursorY = cursorVis ? Int(curY) : -1
         let cursorChanged =
@@ -303,7 +299,6 @@ final class TerminalRenderer {
 
         appendCursor(
             to: &instances,
-            session: session,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -646,16 +641,12 @@ final class TerminalRenderer {
         }
 
         // Cursor on this row → break runs around that column (Ghostty).
-        // Only when DECTCEM is on — otherwise don't force a run break at the
-        // hidden cursor cell (matches Ghostty: no cursor → no special cell).
         var cursorCol: Int?
-        var inViewportU8: UInt8 = 0
-        var modeVisU8: UInt8 = 0
+        var inViewport = false
         var cy: UInt16 = 0
         var cx: UInt16 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewportU8)
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &modeVisU8)
-        if inViewportU8 != 0, modeVisU8 != 0 {
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
+        if inViewport {
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
             if Int(cy) == rowIndex {
@@ -1029,12 +1020,15 @@ final class TerminalRenderer {
         let pwG = entry.pixelW.rounded(.toNearestOrAwayFromZero)
         let phG = entry.pixelH.rounded(.toNearestOrAwayFromZero)
 
+        // Selection: grid cell was fg/bg swapped (selection-bg = cell-fg,
+        // selection-fg = cell-bg). Ink must use the post-swap *foreground*
+        // (fr), not br — br is the selection fill and would make text vanish.
         var ifr = fr, ifg = fg, ifb = fb
         if selected(col) {
             let idx = rowIndex * layout.cols + col
             if idx < gridCells.count {
-                let bgCell = gridCells[idx]
-                ifr = bgCell.br; ifg = bgCell.bg; ifb = bgCell.bb
+                let cell = gridCells[idx]
+                ifr = cell.fr; ifg = cell.fg; ifb = cell.fb
             }
         }
 
@@ -1329,16 +1323,15 @@ final class TerminalRenderer {
     // MARK: - Cursor
 
     private func cursorBlinkOn(renderState: GhosttyRenderState) -> Bool {
-        var blinkingU8: UInt8 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinkingU8)
-        guard blinkingU8 != 0 else { return true }
+        var blinking = false
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinking)
+        guard blinking else { return true }
         let t = CACurrentMediaTime()
         return Int(t / blinkPeriod) % 2 == 0
     }
 
     private func appendCursor(
         to instances: inout [CellInstance],
-        session: TerminalSession,
         renderState: GhosttyRenderState,
         rowIter: GhosttyRenderStateRowIterator,
         cells: GhosttyRenderStateRowCells,
@@ -1351,65 +1344,35 @@ final class TerminalRenderer {
         blinkOn: Bool,
         visualY: Float = 0
     ) {
-        // C `_Bool` — read as UInt8 for stable ABI with libghostty-vt.
-        var cursorVisibleU8: UInt8 = 0
-        var inViewportU8: UInt8 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisibleU8)
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewportU8)
-        // Dual-check live terminal DECTCEM (mode 25) — catches any render-state lag.
-        let termVisible = session.terminalCursorVisible()
-        let cursorVisible = cursorVisibleU8 != 0 && termVisible
-        let inViewport = inViewportU8 != 0
+        var cursorVisible = false
+        var inViewport = false
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
+        guard cursorVisible, inViewport, blinkOn else { return }
 
         var cx: UInt16 = 0
         var cy: UInt16 = 0
-        if inViewport {
-            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
-            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
-        }
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
 
         var style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style)
 
-        // Match Ghostty `renderer/cursor.zig`: mode 25 off → no cursor.
-        guard cursorVisible, inViewport, blinkOn else { return }
-
-        // Ghostty-style cursor colors:
-        // - OSC 12 absolute cursor color if set
-        // - else cell-foreground / cell-background invert of the cell under cursor
-        //   (matches `cursor-color = cell-foreground`, `cursor-text = cell-background`)
-        var cr = Float(defFg.r) / 255
-        var cgC = Float(defFg.g) / 255
-        var cb = Float(defFg.b) / 255
-        var tr = Float(DefaultColors.background.r) / 255
-        var tg = Float(DefaultColors.background.g) / 255
-        var tb = Float(DefaultColors.background.b) / 255
+        // Host theme: cursor = cell-foreground (#ccc). Prefer explicit terminal
+        // cursor color; otherwise DefaultColors.cursor / defFg.
+        var cur = DefaultColors.cursor
         if colors.cursor_has_value {
-            cr = Float(colors.cursor.r) / 255
-            cgC = Float(colors.cursor.g) / 255
-            cb = Float(colors.cursor.b) / 255
-        } else {
-            // Invert the cell under the cursor (fg ↔ bg of that cell).
-            let idx = Int(cy) * layout.cols + Int(cx)
-            if idx >= 0, idx < gridCells.count {
-                let cell = gridCells[idx]
-                // Cell bg becomes cursor fill; cell fg becomes cursor-text.
-                // Prefer glyphExtras ink color if present via cell's stored fg/bg.
-                cr = cell.fr
-                cgC = cell.fg
-                cb = cell.fb
-                tr = cell.br
-                tg = cell.bg
-                tb = cell.bb
-                // If cell has no distinct fg (empty), fall back to theme.
-                if cr == 0, cgC == 0, cb == 0, cell.fa < 0.5 {
-                    cr = Float(defFg.r) / 255
-                    cgC = Float(defFg.g) / 255
-                    cb = Float(defFg.b) / 255
-                }
-            }
+            cur = colors.cursor
+        } else if defFg.r != 0 || defFg.g != 0 || defFg.b != 0 {
+            cur = defFg
         }
-
+        let cr = Float(cur.r) / 255
+        let cg = Float(cur.g) / 255
+        let cb = Float(cur.b) / 255
+        // cursor-text = cell-background (glyph under block).
+        let tr = Float(DefaultColors.background.r) / 255
+        let tg = Float(DefaultColors.background.g) / 255
+        let tb = Float(DefaultColors.background.b) / 255
         let x = (layout.originX + layout.padPx + Float(cx) * layout.cellW)
             .rounded(.toNearestOrAwayFromZero)
         let y = (layout.originY + layout.padPx + Float(cy) * layout.cellH + visualY)
@@ -1423,29 +1386,29 @@ final class TerminalRenderer {
             instances.append(.make(
                 originX: x, originY: y, width: w, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cgC, fb: cb, fa: 1,
-                br: cr, bg: cgC, bb: cb, ba: 1
+                fr: cr, fg: cg, fb: cb, fa: 1,
+                br: cr, bg: cg, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
             let h = max(2, ch * 0.12).rounded(.toNearestOrAwayFromZero)
             instances.append(.make(
                 originX: x, originY: y + ch - h, width: cw, height: h,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cgC, fb: cb, fa: 1,
-                br: cr, bg: cgC, bb: cb, ba: 1
+                fr: cr, fg: cg, fb: cb, fa: 1,
+                br: cr, bg: cg, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
             let t: Float = max(1, min(cw, ch) * 0.08).rounded(.toNearestOrAwayFromZero)
-            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
-            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
-            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
-            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
-        default: // block: invert cell (fill = cell fg, text = cell bg)
+            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+        default: // block: solid cursor bg, then redraw cell glyph in cursor-text color
             instances.append(.make(
                 originX: x, originY: y, width: cw, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
                 fr: tr, fg: tg, fb: tb, fa: 1,
-                br: cr, bg: cgC, bb: cb, ba: 1
+                br: cr, bg: cg, bb: cb, ba: 1
             ))
             appendCursorCellGlyph(
                 to: &instances,
@@ -1566,7 +1529,7 @@ final class TerminalRenderer {
                     )
                 }
                 if entry.pixelW < 0.5 { return }
-                // Redraw glyph in cursor-text color on top of the block fill.
+                // Full-cell text atlas entry (cursor-text): baseline-aligned inside the cell.
                 instances.append(.make(
                     originX: cellX,
                     originY: cellY,
