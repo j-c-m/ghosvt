@@ -125,14 +125,25 @@ final class ShaperCache {
             attrs as CFDictionary
         ) else { return [] }
 
-        let line = CTLineCreateWithAttributedString(attr)
+        // Ghostty: CTTypesetter with forced LTR embedding (level 0) so BiDi
+        // does not reorder runs and break cell-relative x offsets.
+        let level = NSNumber(value: 0)
+        let tsOpts: [CFString: Any] = [
+            kCTTypesetterOptionForcedEmbeddingLevel: level,
+        ]
+        guard let typesetter = CTTypesetterCreateWithAttributedStringAndOptions(
+            attr,
+            tsOpts as CFDictionary
+        ) else { return [] }
+        let line = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: 0))
         guard let runs = CTLineGetGlyphRuns(line) as? [CTRun] else { return [] }
 
         // Ghostty: track cumulative advance (run_offset) and cell pen origin (cell_offset).
+        // Both start at cluster 0 / x 0 (same as Ghostty Offset defaults).
         var runOffsetX: CGFloat = 0
+        var runOffsetCluster: Int = 0
         var cellOffsetX: CGFloat = 0
-        var cellOffsetCluster: Int = -1
-        var maxCluster: Int = 0
+        var cellOffsetCluster: Int = 0
 
         var out: [ShapedCell] = []
         out.reserveCapacity(cellCount)
@@ -159,16 +170,16 @@ final class ShaperCache {
                     continue
                 }
 
-                // When cluster changes, reset cell pen to current run pen (Ghostty heuristic).
+                // When cluster changes, optionally reset cell pen (Ghostty heuristic).
                 if cellOffsetCluster != cluster {
-                    let isAfter = cluster <= maxCluster
+                    let isAfter = cluster <= runOffsetCluster
                     let isFirstInCluster = Self.isFirstCodepoint(
                         utf16Index: utf16Index,
                         cluster: cluster,
                         starts: cellUTF16Starts,
                         textUTF16Count: cellUTF16Starts.last ?? 0
                     )
-                    // Detect ligature tails: first codepoint of a new cluster that was
+                    // Ligature tails: first codepoint of a new cluster that was
                     // already consumed → do not snap cell pen back to the grid.
                     if isFirstInCluster && !isAfter {
                         cellOffsetCluster = cluster
@@ -176,6 +187,7 @@ final class ShaperCache {
                     }
                 }
 
+                // Ghostty: round (not trunc) for i16 bearings.
                 let xOffset = Int16((positions[i].x - cellOffsetX).rounded())
                 let yOffset = Int16(positions[i].y.rounded())
                 out.append(ShapedCell(
@@ -186,7 +198,7 @@ final class ShaperCache {
                 ))
 
                 runOffsetX += advances[i].width
-                maxCluster = max(maxCluster, cluster)
+                runOffsetCluster = max(runOffsetCluster, cluster)
             }
         }
         return out

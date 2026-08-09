@@ -33,11 +33,25 @@ struct CellMetrics {
         let italic = EmbeddedFonts.primary(size: pxSize, bold: false, italic: true)
         let boldItalic = EmbeddedFonts.primary(size: pxSize, bold: true, italic: true)
 
-        var glyph = CGGlyph()
-        var ch: UniChar = 0x004D // M
-        CTFontGetGlyphsForCharacters(regular, &ch, &glyph, 1)
-        var advance = CGSize.zero
-        CTFontGetAdvancesForGlyphs(regular, .horizontal, &glyph, &advance, 1)
+        // Ghostty face_width: max horizontal advance of visible ASCII (32…126),
+        // not only 'M' — some monospaced faces still vary slightly.
+        var faceWidth: CGFloat = 0
+        for code in 32...126 {
+            var ch = UniChar(code)
+            var g = CGGlyph()
+            guard CTFontGetGlyphsForCharacters(regular, &ch, &g, 1), g != 0 else { continue }
+            var adv = CGSize.zero
+            CTFontGetAdvancesForGlyphs(regular, .horizontal, &g, &adv, 1)
+            faceWidth = max(faceWidth, adv.width)
+        }
+        if faceWidth < 0.5 {
+            var ch: UniChar = 0x004D
+            var g = CGGlyph()
+            CTFontGetGlyphsForCharacters(regular, &ch, &g, 1)
+            var adv = CGSize.zero
+            CTFontGetAdvancesForGlyphs(regular, .horizontal, &g, &adv, 1)
+            faceWidth = adv.width
+        }
 
         // CT: ascent/descent/leading are all non-negative (descent is magnitude).
         let ascent = CTFontGetAscent(regular)
@@ -48,7 +62,6 @@ struct CellMetrics {
         //   face_height = ascent + descent + leading
         //   cell_* = round(face_*)
         //   half_line_gap on top and bottom; baseline centered in the rounded cell.
-        let faceWidth = advance.width
         let faceHeight = ascent + descent + leading
         // Default matches Ghostty `adjust-cell-width = 1` (+1 device px).
         let cellWPx = max(1, Int(faceWidth.rounded()) + 1)

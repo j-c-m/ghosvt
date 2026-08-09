@@ -25,6 +25,10 @@ final class GlyphAtlas {
         let cellH: Int
         let cellBaseline: Int
         let fontPx: Int
+        /// Included so horizontal centering (cell − face) is never stale.
+        let cellW: Int
+        /// `faceWidthPx * 1000` quantized for `Hashable`.
+        let faceWMilli: Int
     }
 
     struct Entry {
@@ -200,9 +204,13 @@ final class GlyphAtlas {
             return e
         }
         let baseline = max(0, min(cellBaselinePx, cellHeightPx))
-        let dx = faceWidthPx > 0
+        // Same centering as glyph path / Ghostty coretext.zig.
+        var dx: CGFloat = faceWidthPx > 0
             ? (CGFloat(cellWidthPx) - faceWidthPx) / 2
             : 0
+        if dx < 0 {
+            dx -= dx.rounded(.towardZero)
+        }
         var fonts = [font]
         fonts.append(contentsOf: fallbackFonts)
         for f in fonts {
@@ -279,11 +287,13 @@ final class GlyphAtlas {
         faceWidthPx: CGFloat
     ) -> Entry {
         let cellH = max(1, cellHeightPx)
+        let cellW = max(1, cellWidthPx)
         let baseline = max(0, min(cellBaselinePx, cellH))
         let fontName = (CTFontCopyPostScriptName(font) as String?) ?? "unknown"
         let key = GlyphKey(
             glyph: glyph, fontName: fontName, bold: bold, italic: italic,
-            cellH: cellH, cellBaseline: baseline, fontPx: fontPx
+            cellH: cellH, cellBaseline: baseline, fontPx: fontPx,
+            cellW: cellW, faceWMilli: Int((faceWidthPx * 1000).rounded())
         )
         if let hit = glyphCache[key] {
             glyphHits += 1
@@ -309,18 +319,26 @@ final class GlyphAtlas {
         // Horizontal: full ink around pen x=0 (negative LSB for coding ligas).
         let inkL = bounds.minX
         let inkR = bounds.maxX
-        // Ghostty: center face advance in the (possibly adjusted) cell width.
-        let dx = faceWidthPx > 0
+        // Ghostty coretext.zig: center face advance in the cell; if dx is
+        // negative, only keep the fractional adjustment for subpixel consistency.
+        var dx: CGFloat = faceWidthPx > 0
             ? (CGFloat(max(1, cellWidthPx)) - faceWidthPx) / 2
             : 0
+        if dx < 0 {
+            dx -= dx.rounded(.towardZero)
+        }
+        // Ghostty: x = LSB + dx; offset_x = floor(x) - canvas_padding.
+        let xPos = inkL + dx
+        let floorX = floor(xPos)
+        let fracX = xPos - floorX
 
-        let contentW = max(1, Int(ceil(inkR - inkL)))
+        let contentW = max(1, Int(ceil((inkR - inkL) + fracX)))
         let bw = contentW + padding * 2
         let bh = cellH
-        // Pen: x so ink maps with pad; y = shared cell baseline from bottom.
-        let penX = CGFloat(padding) - inkL
+        // Pen: padding + fractional LSB so subpixel placement matches Ghostty.
+        let penX = CGFloat(padding) + fracX - inkL
         let penY = CGFloat(baseline)
-        let bearingX = Float(inkL + dx) - Float(padding)
+        let bearingX = Float(floorX) - Float(padding)
         // Full-height strip: align bitmap top to cell top.
         let bearingY: Float = 0
 

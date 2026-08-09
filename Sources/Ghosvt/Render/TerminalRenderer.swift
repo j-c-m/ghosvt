@@ -1013,12 +1013,14 @@ final class TerminalRenderer {
         layout: LayoutKey,
         selected: (Int) -> Bool
     ) {
+        // Ghostty: grid origin is integer; bearings/x_offset are whole pixels.
+        // Do not re-round the sum (that shifts ink vs Ghostty by up to 1 px).
         let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
-            .rounded(.toNearestOrAwayFromZero)
-        let ox = (cellX + xOffset + entry.bearingX).rounded(.toNearestOrAwayFromZero)
-        let oy = (rowTop + entry.bearingY - yOffset).rounded(.toNearestOrAwayFromZero)
-        let pwG = entry.pixelW.rounded(.toNearestOrAwayFromZero)
-        let phG = entry.pixelH.rounded(.toNearestOrAwayFromZero)
+            .rounded(.towardZero)
+        let ox = cellX + xOffset + entry.bearingX
+        let oy = rowTop + entry.bearingY - yOffset
+        let pwG = entry.pixelW
+        let phG = entry.pixelH
 
         // Selection: grid cell was fg/bg swapped (selection-bg = cell-fg,
         // selection-fg = cell-bg). Ink must use the post-swap *foreground*
