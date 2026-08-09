@@ -1,0 +1,16 @@
+.font-fetch/
+.build/
+.DS_Store
+.swiftpm/
+.zig-cache-global/
+.zig-cache-local/
+*.a
+*.o
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+build.log
+DerivedData/
+Vendor/ghostty/
+Vendor/ghostty/.zig-cache/
+Vendor/ghostty/zig-out/
+zig-build.log
