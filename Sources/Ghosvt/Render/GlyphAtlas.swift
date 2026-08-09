@@ -18,6 +18,8 @@ final class GlyphAtlas {
 
     struct GlyphKey: Hashable {
         let glyph: UInt16
+        /// Distinguishes JetBrains vs Nerd (glyph IDs are per-face).
+        let fontName: String
         let bold: Bool
         let italic: Bool
         let cellH: Int
@@ -46,12 +48,20 @@ final class GlyphAtlas {
     private var shelfH = 0
     private var textCache: [TextKey: Entry] = [:]
     private var glyphCache: [GlyphKey: Entry] = [:]
+    private var spriteCache: [SpriteKey: Entry] = [:]
     private let padding = 1
     // TEMP: cache hit/miss stats
     private var textHits: UInt64 = 0
     private var textMisses: UInt64 = 0
     private var glyphHits: UInt64 = 0
     private var glyphMisses: UInt64 = 0
+
+    private struct SpriteKey: Hashable {
+        let codepoint: UInt32
+        let cellW: Int
+        let cellH: Int
+        let baseline: Int
+    }
 
     let emptyUV = SIMD4<Float>(0, 0, 0, 0)
 
@@ -79,11 +89,12 @@ final class GlyphAtlas {
 
     func clear() {
         fputs(
-            "ghosvt: glyph clear text(h=\(textHits) m=\(textMisses) n=\(textCache.count)) glyph(h=\(glyphHits) m=\(glyphMisses) n=\(glyphCache.count))\n",
+            "ghosvt: glyph clear text(h=\(textHits) m=\(textMisses) n=\(textCache.count)) glyph(h=\(glyphHits) m=\(glyphMisses) n=\(glyphCache.count)) sprite=\(spriteCache.count)\n",
             stderr
         )
         textCache.removeAll(keepingCapacity: true)
         glyphCache.removeAll(keepingCapacity: true)
+        spriteCache.removeAll(keepingCapacity: true)
         textHits = 0
         textMisses = 0
         glyphHits = 0
@@ -93,6 +104,70 @@ final class GlyphAtlas {
         shelfY = 0
         shelfH = 1
         uploadFull()
+    }
+
+    /// Ghostty-style procedural sprite (braille, box drawing, blocks, powerline, …).
+    func entrySprite(
+        codepoint: UInt32,
+        cellWidthPx: Int,
+        cellHeightPx: Int,
+        cellBaselinePx: Int
+    ) -> Entry {
+        let cellW = max(1, cellWidthPx)
+        let cellH = max(1, cellHeightPx)
+        let baseline = max(0, min(cellBaselinePx, cellH))
+        let key = SpriteKey(codepoint: codepoint, cellW: cellW, cellH: cellH, baseline: baseline)
+        if let hit = spriteCache[key] { return hit }
+
+        var coverage = [UInt8](repeating: 0, count: cellW * cellH)
+        guard SpriteFace.draw(
+            codepoint,
+            width: cellW,
+            height: cellH,
+            baseline: baseline,
+            into: &coverage
+        ) else {
+            let e = Entry(uv: emptyUV)
+            spriteCache[key] = e
+            return e
+        }
+
+        // Blank sprites (e.g. U+2800 braille empty): no ink.
+        if !coverage.contains(where: { $0 > 0 }) {
+            let e = Entry(uv: emptyUV, bearingX: 0, bearingY: 0, pixelW: 0, pixelH: 0)
+            spriteCache[key] = e
+            return e
+        }
+
+        guard let packed = pack(
+            coverage,
+            cellW: cellW,
+            cellH: cellH,
+            bearingX: 0,
+            bearingY: 0,
+            pixelW: Float(cellW),
+            pixelH: Float(cellH)
+        ) else {
+            let e = Entry(uv: emptyUV)
+            spriteCache[key] = e
+            return e
+        }
+        spriteCache[key] = packed
+        return packed
+    }
+
+    /// Back-compat name used by older braille call sites.
+    func entryBraille(
+        codepoint: UInt32,
+        cellWidthPx: Int,
+        cellHeightPx: Int
+    ) -> Entry {
+        entrySprite(
+            codepoint: codepoint,
+            cellWidthPx: cellWidthPx,
+            cellHeightPx: cellHeightPx,
+            cellBaselinePx: cellHeightPx / 4
+        )
     }
 
     func entry(
@@ -131,6 +206,9 @@ final class GlyphAtlas {
         var fonts = [font]
         fonts.append(contentsOf: fallbackFonts)
         for f in fonts {
+            // Skip faces that do not map every code unit (avoids .notdef tofu
+            // from JetBrains Mono blocking Symbols Nerd Font icons).
+            guard Self.fontCovers(f, text: text) else { continue }
             if let packed = rasterizeText(
                 text: text,
                 font: f,
@@ -146,6 +224,39 @@ final class GlyphAtlas {
         let e = Entry(uv: emptyUV)
         textCache[key] = e
         return e
+    }
+
+    /// True if `font` maps every Unicode scalar in `text` (handles surrogates).
+    static func fontCovers(_ font: CTFont, text: String) -> Bool {
+        glyphs(for: text, font: font) != nil
+    }
+
+    /// One glyph per Unicode scalar, or nil if any scalar is missing.
+    /// Surrogate pairs are resolved as a single scalar → one glyph.
+    static func glyphs(for text: String, font: CTFont) -> [CGGlyph]? {
+        guard !text.isEmpty else { return [] }
+        var out: [CGGlyph] = []
+        out.reserveCapacity(text.unicodeScalars.count)
+        for scalar in text.unicodeScalars {
+            var chars = Array(String(scalar).utf16)
+            var gs = [CGGlyph](repeating: 0, count: chars.count)
+            let ok = CTFontGetGlyphsForCharacters(font, &chars, &gs, chars.count)
+            // Non-BMP: typically one real glyph and zeros for the other unit(s).
+            guard ok, let g = gs.first(where: { $0 != 0 }) else { return nil }
+            out.append(g)
+        }
+        return out
+    }
+
+    /// True for Private Use Area (Nerd Font icons live here).
+    static func isPrivateUse(_ text: String) -> Bool {
+        for s in text.unicodeScalars {
+            let v = s.value
+            if (0xE000...0xF8FF).contains(v) { return true }
+            if (0xF0000...0xFFFFD).contains(v) { return true }
+            if (0x100000...0x10FFFD).contains(v) { return true }
+        }
+        return false
     }
 
     /// Rasterize a shaped CGGlyph with a **shared cell baseline**.
@@ -169,8 +280,9 @@ final class GlyphAtlas {
     ) -> Entry {
         let cellH = max(1, cellHeightPx)
         let baseline = max(0, min(cellBaselinePx, cellH))
+        let fontName = (CTFontCopyPostScriptName(font) as String?) ?? "unknown"
         let key = GlyphKey(
-            glyph: glyph, bold: bold, italic: italic,
+            glyph: glyph, fontName: fontName, bold: bold, italic: italic,
             cellH: cellH, cellBaseline: baseline, fontPx: fontPx
         )
         if let hit = glyphCache[key] {
@@ -180,7 +292,7 @@ final class GlyphAtlas {
         }
         glyphMisses += 1
         fputs(
-            "ghosvt: glyph MISS id=\(glyph) b=\(bold) i=\(italic) fontPx=\(fontPx) cellH=\(cellH) bl=\(baseline) size=\(glyphCache.count)\n",
+            "ghosvt: glyph MISS id=\(glyph) font=\(fontName) b=\(bold) i=\(italic) fontPx=\(fontPx) cellH=\(cellH) bl=\(baseline) size=\(glyphCache.count)\n",
             stderr
         )
         logGlyphStatsIfNeeded()

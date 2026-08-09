@@ -36,6 +36,7 @@ final class TerminalRenderer {
     private var lastCursorVisible: Bool = false
     private var blinkPeriod: CFTimeInterval = 0.53
     private var prewarmedKey: String?
+    private var loggedNerdFaces = false
 
     private struct LayoutKey: Equatable {
         var originX: Float
@@ -202,17 +203,21 @@ final class TerminalRenderer {
 
         // Cursor can move without dirtying cells (e.g. ← at the shell prompt).
         // Track viewport cursor so we recompose and re-shape run breaks.
-        var cursorVisible = false
-        var cursorInViewport = false
+        // Read C bools as UInt8 for stable ABI with libghostty-vt.
+        var cursorVisibleU8: UInt8 = 0
+        var cursorInViewportU8: UInt8 = 0
         var curX: UInt16 = 0
         var curY: UInt16 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewport)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisibleU8)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewportU8)
+        let cursorInViewport = cursorInViewportU8 != 0
         if cursorInViewport {
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &curX)
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &curY)
         }
-        let cursorVis = cursorVisible && cursorInViewport
+        // DECTCEM (mode 25): render-state + live terminal dual-check.
+        let termCursorVis = session.terminalCursorVisible()
+        let cursorVis = cursorVisibleU8 != 0 && termCursorVis && cursorInViewport
         let cursorX = cursorVis ? Int(curX) : -1
         let cursorY = cursorVis ? Int(curY) : -1
         let cursorChanged =
@@ -298,6 +303,7 @@ final class TerminalRenderer {
 
         appendCursor(
             to: &instances,
+            session: session,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -640,12 +646,16 @@ final class TerminalRenderer {
         }
 
         // Cursor on this row → break runs around that column (Ghostty).
+        // Only when DECTCEM is on — otherwise don't force a run break at the
+        // hidden cursor cell (matches Ghostty: no cursor → no special cell).
         var cursorCol: Int?
-        var inViewport = false
+        var inViewportU8: UInt8 = 0
+        var modeVisU8: UInt8 = 0
         var cy: UInt16 = 0
         var cx: UInt16 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
-        if inViewport {
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewportU8)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &modeVisU8)
+        if inViewportU8 != 0, modeVisU8 != 0 {
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
             _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
             if Int(cy) == rowIndex {
@@ -818,6 +828,53 @@ final class TerminalRenderer {
         selected: (Int) -> Bool
     ) {
         guard start < end else { return }
+
+        let font = metrics.font(bold: style.bold, italic: style.italic)
+        let shapedFont = ShaperCache.font(font, ligatures: fontLigatures)
+        let nerdFaces = EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
+
+        // Ligatures only when every cell is a normal primary-face glyph.
+        // Sprites (braille/box/blocks/…), Nerd PUA, and missing maps are cell-by-cell.
+        let allPrimary = (start..<end).allSatisfy { col in
+            let t = rowCells[col].text
+            if t.isEmpty { return true }
+            if SpriteFace.covers(text: t) { return false }
+            if GlyphAtlas.isPrivateUse(t) { return false }
+            return GlyphAtlas.fontCovers(shapedFont, text: t)
+        }
+
+        if allPrimary {
+            paintLigatureRun(
+                start: start, end: end, style: style, rowCells: rowCells,
+                rowIndex: rowIndex, metrics: metrics, layout: layout,
+                cellWInt: cellWInt, cellHInt: cellHInt, selected: selected,
+                shapedFont: shapedFont
+            )
+            return
+        }
+
+        paintCellsIndividually(
+            start: start, end: end, style: style, rowCells: rowCells,
+            rowIndex: rowIndex, metrics: metrics, layout: layout,
+            cellWInt: cellWInt, cellHInt: cellHInt, selected: selected,
+            primary: shapedFont, nerdFaces: nerdFaces
+        )
+    }
+
+    /// Shape the whole run (liga/calt) and draw shaper glyphs — primary face only.
+    private func paintLigatureRun(
+        start: Int,
+        end: Int,
+        style: TextStyleKey,
+        rowCells: [RowCell],
+        rowIndex: Int,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        selected: (Int) -> Bool,
+        shapedFont: CTFont
+    ) {
         var text = ""
         var utf16Starts: [Int] = [0]
         for col in start..<end {
@@ -827,8 +884,6 @@ final class TerminalRenderer {
         }
         guard !text.isEmpty else { return }
 
-        let font = metrics.font(bold: style.bold, italic: style.italic)
-        let shapedFont = ShaperCache.font(font, ligatures: fontLigatures)
         let placements = shaper.shape(
             text: text,
             cellUTF16Starts: utf16Starts,
@@ -838,7 +893,6 @@ final class TerminalRenderer {
             ligatures: fontLigatures
         )
 
-        // Full cell-height glyph strips; row top on the integer pixel grid.
         let rowTop = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
             .rounded(.toNearestOrAwayFromZero)
         var fr = Float(style.fr) / 255
@@ -849,7 +903,6 @@ final class TerminalRenderer {
         for p in placements {
             let col = start + Int(p.x)
             guard col < end, col < layout.cols else { continue }
-
             let entry = atlas.entry(
                 glyph: p.glyph,
                 bold: style.bold,
@@ -861,36 +914,160 @@ final class TerminalRenderer {
                 cellWidthPx: cellWInt,
                 faceWidthPx: metrics.faceWidthPx
             )
-            // Skip empty ink (spacer glyphs).
             if entry.pixelW < 0.5 || entry.pixelH < 0.5 { continue }
-
-            let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
-                .rounded(.toNearestOrAwayFromZero)
-            // Bearings + shaper x_offset. Full-cell strips use bearingY=0 (shared baseline).
-            // y_offset is usually 0 for horizontal Latin; apply in cell-bottom space.
-            let ox = (cellX + Float(p.xOffset) + entry.bearingX).rounded(.toNearestOrAwayFromZero)
-            let oy = (rowTop + entry.bearingY - Float(p.yOffset)).rounded(.toNearestOrAwayFromZero)
-            let pwG = entry.pixelW.rounded(.toNearestOrAwayFromZero)
-            let phG = entry.pixelH.rounded(.toNearestOrAwayFromZero)
-
-            var ifr = fr, ifg = fgG, ifb = fb
-            if selected(col) {
-                let idx = rowIndex * layout.cols + col
-                if idx < gridCells.count {
-                    let bgCell = gridCells[idx]
-                    ifr = bgCell.br; ifg = bgCell.bg; ifb = bgCell.bb
-                }
-            }
-
-            // Ink-only, after all cell backgrounds (glyphExtras).
-            glyphExtras.append(.make(
-                originX: ox, originY: oy,
-                width: max(1, pwG), height: max(1, phG),
-                u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
-                fr: ifr, fg: ifg, fb: ifb, fa: 1,
-                br: 0, bg: 0, bb: 0, ba: 0
-            ))
+            appendGlyphExtra(
+                entry: entry,
+                col: col, rowIndex: rowIndex, rowTop: rowTop,
+                xOffset: Float(p.xOffset), yOffset: Float(p.yOffset),
+                fr: fr, fg: fgG, fb: fb,
+                layout: layout, selected: selected
+            )
         }
+    }
+
+    /// One glyph (or text fallback) per cell — Nerd PUA and missing primary maps.
+    private func paintCellsIndividually(
+        start: Int,
+        end: Int,
+        style: TextStyleKey,
+        rowCells: [RowCell],
+        rowIndex: Int,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        selected: (Int) -> Bool,
+        primary: CTFont,
+        nerdFaces: [CTFont]
+    ) {
+        if !loggedNerdFaces {
+            loggedNerdFaces = true
+            let names = nerdFaces.map { (CTFontCopyPostScriptName($0) as String?) ?? "?" }
+            fputs(
+                "ghosvt: nerd faces loaded=\(nerdFaces.count) \(names) fontPx=\(layout.fontPx)\n",
+                stderr
+            )
+        }
+
+        let rowTop = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
+            .rounded(.toNearestOrAwayFromZero)
+        var fr = Float(style.fr) / 255
+        var fgG = Float(style.fg) / 255
+        var fb = Float(style.fb) / 255
+        if style.faint { fr *= 0.5; fgG *= 0.5; fb *= 0.5 }
+
+        for col in start..<end {
+            guard col < layout.cols else { continue }
+            let cellText = rowCells[col].text
+            if cellText.isEmpty { continue }
+
+            let entry: GlyphAtlas.Entry
+            if let cp = cellText.unicodeScalars.first?.value,
+               cellText.unicodeScalars.count == 1,
+               SpriteFace.covers(cp) {
+                // Ghostty sprite face: braille, box drawing, blocks, powerline, …
+                entry = atlas.entrySprite(
+                    codepoint: cp,
+                    cellWidthPx: cellWInt,
+                    cellHeightPx: cellHInt,
+                    cellBaselinePx: metrics.cellBaselinePx
+                )
+            } else if let resolved = resolveGlyphFace(
+                text: cellText, primary: primary, nerdFaces: nerdFaces
+            ) {
+                entry = atlas.entry(
+                    glyph: resolved.glyph,
+                    bold: style.bold,
+                    italic: style.italic,
+                    font: resolved.font,
+                    fontPx: layout.fontPx,
+                    cellHeightPx: cellHInt,
+                    cellBaselinePx: metrics.cellBaselinePx,
+                    cellWidthPx: cellWInt,
+                    faceWidthPx: metrics.faceWidthPx
+                )
+            } else {
+                entry = atlas.entry(
+                    text: cellText,
+                    bold: style.bold,
+                    italic: style.italic,
+                    font: primary,
+                    cellWidthPx: cellWInt,
+                    cellHeightPx: cellHInt,
+                    cellBaselinePx: metrics.cellBaselinePx,
+                    faceWidthPx: metrics.faceWidthPx,
+                    fallbackFonts: nerdFaces
+                )
+            }
+            // U+2800 (blank braille) and missing glyphs: skip ink.
+            if entry.pixelW < 0.5 || entry.pixelH < 0.5 { continue }
+            appendGlyphExtra(
+                entry: entry,
+                col: col, rowIndex: rowIndex, rowTop: rowTop,
+                xOffset: 0, yOffset: 0,
+                fr: fr, fg: fgG, fb: fb,
+                layout: layout, selected: selected
+            )
+        }
+    }
+
+    private func appendGlyphExtra(
+        entry: GlyphAtlas.Entry,
+        col: Int,
+        rowIndex: Int,
+        rowTop: Float,
+        xOffset: Float,
+        yOffset: Float,
+        fr: Float, fg: Float, fb: Float,
+        layout: LayoutKey,
+        selected: (Int) -> Bool
+    ) {
+        let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
+            .rounded(.toNearestOrAwayFromZero)
+        let ox = (cellX + xOffset + entry.bearingX).rounded(.toNearestOrAwayFromZero)
+        let oy = (rowTop + entry.bearingY - yOffset).rounded(.toNearestOrAwayFromZero)
+        let pwG = entry.pixelW.rounded(.toNearestOrAwayFromZero)
+        let phG = entry.pixelH.rounded(.toNearestOrAwayFromZero)
+
+        var ifr = fr, ifg = fg, ifb = fb
+        if selected(col) {
+            let idx = rowIndex * layout.cols + col
+            if idx < gridCells.count {
+                let bgCell = gridCells[idx]
+                ifr = bgCell.br; ifg = bgCell.bg; ifb = bgCell.bb
+            }
+        }
+
+        glyphExtras.append(.make(
+            originX: ox, originY: oy,
+            width: max(1, pwG), height: max(1, phG),
+            u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+            fr: ifr, fg: ifg, fb: ifb, fa: 1,
+            br: 0, bg: 0, bb: 0, ba: 0
+        ))
+    }
+
+    /// Best face + single glyph for a cell: Nerd for PUA / missing primary, else primary.
+    private func resolveGlyphFace(
+        text: String,
+        primary: CTFont,
+        nerdFaces: [CTFont]
+    ) -> (font: CTFont, glyph: CGGlyph)? {
+        guard !text.isEmpty else { return nil }
+        let preferNerd =
+            GlyphAtlas.isPrivateUse(text) || !GlyphAtlas.fontCovers(primary, text: text)
+        let order = preferNerd ? (nerdFaces + [primary]) : ([primary] + nerdFaces)
+        for face in order {
+            guard let glyphs = GlyphAtlas.glyphs(for: text, font: face), glyphs.count == 1 else {
+                continue
+            }
+            return (face, glyphs[0])
+        }
+        return nil
+    }
+
+    private func nerdFallbackFonts(metrics: CellMetrics) -> [CTFont] {
+        EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
     }
 
     private func paintWideOrFallback(
@@ -908,10 +1085,6 @@ final class TerminalRenderer {
         let text = c.text
         guard !text.isEmpty else { return }
         let font = metrics.font(bold: c.bold, italic: c.italic)
-        let fallbacks = [
-            EmbeddedFonts.primaryNerdMono(size: CGFloat(cellHInt) * 0.85),
-            EmbeddedFonts.primaryNerd(size: CGFloat(cellHInt) * 0.85),
-        ]
         let span = c.isWideHead ? 2 : 1
         let entry = atlas.entry(
             text: text,
@@ -922,7 +1095,7 @@ final class TerminalRenderer {
             cellHeightPx: cellHInt,
             cellBaselinePx: metrics.cellBaselinePx,
             faceWidthPx: metrics.faceWidthPx * CGFloat(span),
-            fallbackFonts: fallbacks
+            fallbackFonts: nerdFallbackFonts(metrics: metrics)
         )
         let x = layout.originX + layout.padPx + Float(col) * layout.cellW
         let y = layout.originY + layout.padPx + Float(rowIndex) * layout.cellH
@@ -1037,10 +1210,7 @@ final class TerminalRenderer {
                 cellHeightPx: cellHInt,
                 cellBaselinePx: metrics.cellBaselinePx,
                 faceWidthPx: metrics.faceWidthPx * CGFloat(span),
-                fallbackFonts: [
-                    EmbeddedFonts.primaryNerdMono(size: CGFloat(cellHInt) * 0.85),
-                    EmbeddedFonts.primaryNerd(size: CGFloat(cellHInt) * 0.85),
-                ]
+                fallbackFonts: nerdFallbackFonts(metrics: metrics)
             )
             u0 = entry.uv.x
             v0 = entry.uv.y
@@ -1159,15 +1329,16 @@ final class TerminalRenderer {
     // MARK: - Cursor
 
     private func cursorBlinkOn(renderState: GhosttyRenderState) -> Bool {
-        var blinking = false
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinking)
-        guard blinking else { return true }
+        var blinkingU8: UInt8 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinkingU8)
+        guard blinkingU8 != 0 else { return true }
         let t = CACurrentMediaTime()
         return Int(t / blinkPeriod) % 2 == 0
     }
 
     private func appendCursor(
         to instances: inout [CellInstance],
+        session: TerminalSession,
         renderState: GhosttyRenderState,
         rowIter: GhosttyRenderStateRowIterator,
         cells: GhosttyRenderStateRowCells,
@@ -1180,35 +1351,65 @@ final class TerminalRenderer {
         blinkOn: Bool,
         visualY: Float = 0
     ) {
-        var cursorVisible = false
-        var inViewport = false
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
-        guard cursorVisible, inViewport, blinkOn else { return }
+        // C `_Bool` — read as UInt8 for stable ABI with libghostty-vt.
+        var cursorVisibleU8: UInt8 = 0
+        var inViewportU8: UInt8 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisibleU8)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewportU8)
+        // Dual-check live terminal DECTCEM (mode 25) — catches any render-state lag.
+        let termVisible = session.terminalCursorVisible()
+        let cursorVisible = cursorVisibleU8 != 0 && termVisible
+        let inViewport = inViewportU8 != 0
 
         var cx: UInt16 = 0
         var cy: UInt16 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
+        if inViewport {
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
+        }
 
         var style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style)
 
-        // Host theme: cursor = cell-foreground (#ccc). Prefer explicit terminal
-        // cursor color; otherwise DefaultColors.cursor / defFg.
-        var cur = DefaultColors.cursor
+        // Match Ghostty `renderer/cursor.zig`: mode 25 off → no cursor.
+        guard cursorVisible, inViewport, blinkOn else { return }
+
+        // Ghostty-style cursor colors:
+        // - OSC 12 absolute cursor color if set
+        // - else cell-foreground / cell-background invert of the cell under cursor
+        //   (matches `cursor-color = cell-foreground`, `cursor-text = cell-background`)
+        var cr = Float(defFg.r) / 255
+        var cgC = Float(defFg.g) / 255
+        var cb = Float(defFg.b) / 255
+        var tr = Float(DefaultColors.background.r) / 255
+        var tg = Float(DefaultColors.background.g) / 255
+        var tb = Float(DefaultColors.background.b) / 255
         if colors.cursor_has_value {
-            cur = colors.cursor
-        } else if defFg.r != 0 || defFg.g != 0 || defFg.b != 0 {
-            cur = defFg
+            cr = Float(colors.cursor.r) / 255
+            cgC = Float(colors.cursor.g) / 255
+            cb = Float(colors.cursor.b) / 255
+        } else {
+            // Invert the cell under the cursor (fg ↔ bg of that cell).
+            let idx = Int(cy) * layout.cols + Int(cx)
+            if idx >= 0, idx < gridCells.count {
+                let cell = gridCells[idx]
+                // Cell bg becomes cursor fill; cell fg becomes cursor-text.
+                // Prefer glyphExtras ink color if present via cell's stored fg/bg.
+                cr = cell.fr
+                cgC = cell.fg
+                cb = cell.fb
+                tr = cell.br
+                tg = cell.bg
+                tb = cell.bb
+                // If cell has no distinct fg (empty), fall back to theme.
+                if cr == 0, cgC == 0, cb == 0, cell.fa < 0.5 {
+                    cr = Float(defFg.r) / 255
+                    cgC = Float(defFg.g) / 255
+                    cb = Float(defFg.b) / 255
+                }
+            }
         }
-        let cr = Float(cur.r) / 255
-        let cg = Float(cur.g) / 255
-        let cb = Float(cur.b) / 255
-        // cursor-text = cell-background (glyph under block).
-        let tr = Float(DefaultColors.background.r) / 255
-        let tg = Float(DefaultColors.background.g) / 255
-        let tb = Float(DefaultColors.background.b) / 255
+
         let x = (layout.originX + layout.padPx + Float(cx) * layout.cellW)
             .rounded(.toNearestOrAwayFromZero)
         let y = (layout.originY + layout.padPx + Float(cy) * layout.cellH + visualY)
@@ -1222,29 +1423,29 @@ final class TerminalRenderer {
             instances.append(.make(
                 originX: x, originY: y, width: w, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 1,
-                br: cr, bg: cg, bb: cb, ba: 1
+                fr: cr, fg: cgC, fb: cb, fa: 1,
+                br: cr, bg: cgC, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
             let h = max(2, ch * 0.12).rounded(.toNearestOrAwayFromZero)
             instances.append(.make(
                 originX: x, originY: y + ch - h, width: cw, height: h,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 1,
-                br: cr, bg: cg, bb: cb, ba: 1
+                fr: cr, fg: cgC, fb: cb, fa: 1,
+                br: cr, bg: cgC, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
             let t: Float = max(1, min(cw, ch) * 0.08).rounded(.toNearestOrAwayFromZero)
-            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
-        default: // block: solid cursor bg, then redraw cell glyph in cursor-text color
+            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cgC, fb: cb, fa: 1, br: cr, bg: cgC, bb: cb, ba: 1))
+        default: // block: invert cell (fill = cell fg, text = cell bg)
             instances.append(.make(
                 originX: x, originY: y, width: cw, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
                 fr: tr, fg: tg, fb: tb, fa: 1,
-                br: cr, bg: cg, bb: cb, ba: 1
+                br: cr, bg: cgC, bb: cb, ba: 1
             ))
             appendCursorCellGlyph(
                 to: &instances,
@@ -1338,24 +1539,34 @@ final class TerminalRenderer {
                 _ = ghostty_render_state_row_cells_get(
                     cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &st
                 )
-                let font = metrics.font(bold: st.bold, italic: st.italic)
                 let span = wideHead ? 2 : 1
-                let entry = atlas.entry(
-                    text: text,
-                    bold: st.bold,
-                    italic: st.italic,
-                    font: font,
-                    cellWidthPx: cellWInt * span,
-                    cellHeightPx: cellHInt,
-                    cellBaselinePx: metrics.cellBaselinePx,
-                    faceWidthPx: metrics.faceWidthPx * CGFloat(span),
-                    fallbackFonts: [
-                        EmbeddedFonts.primaryNerdMono(size: CGFloat(cellHInt) * 0.85),
-                        EmbeddedFonts.primaryNerd(size: CGFloat(cellHInt) * 0.85),
-                    ]
-                )
+                let entry: GlyphAtlas.Entry
+                if let cp = text.unicodeScalars.first?.value,
+                   text.unicodeScalars.count == 1,
+                   SpriteFace.covers(cp) {
+                    // Braille / box / blocks under the cursor — same sprite path.
+                    entry = atlas.entrySprite(
+                        codepoint: cp,
+                        cellWidthPx: cellWInt * span,
+                        cellHeightPx: cellHInt,
+                        cellBaselinePx: metrics.cellBaselinePx
+                    )
+                } else {
+                    let font = metrics.font(bold: st.bold, italic: st.italic)
+                    entry = atlas.entry(
+                        text: text,
+                        bold: st.bold,
+                        italic: st.italic,
+                        font: font,
+                        cellWidthPx: cellWInt * span,
+                        cellHeightPx: cellHInt,
+                        cellBaselinePx: metrics.cellBaselinePx,
+                        faceWidthPx: metrics.faceWidthPx * CGFloat(span),
+                        fallbackFonts: nerdFallbackFonts(metrics: metrics)
+                    )
+                }
                 if entry.pixelW < 0.5 { return }
-                // Full-cell text atlas entry (cursor-text): baseline-aligned inside the cell.
+                // Redraw glyph in cursor-text color on top of the block fill.
                 instances.append(.make(
                     originX: cellX,
                     originY: cellY,

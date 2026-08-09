@@ -76,29 +76,37 @@ enum EmbeddedFonts {
     }
 
     /// Symbols Nerd Font Mono — used as per-glyph atlas fallback only.
-    static func primaryNerdMono(size: CGFloat) -> CTFont {
+    /// Returns nil if the face is not embedded (do not silently use Menlo).
+    static func primaryNerdMono(size: CGFloat) -> CTFont? {
         store.lock.lock()
         defer { store.lock.unlock() }
         let key = "nerd-mono-\(size)"
         if let cached = store.fontCache[key] { return cached }
-        if let font = makeFontUnlocked(face: .symbolsNerdMono, size: size) {
-            store.fontCache[key] = font
-            return font
+        guard let font = makeFontUnlocked(face: .symbolsNerdMono, size: size) else {
+            fputs("ghosvt: SymbolsNerdFontMono missing at size \(size)\n", stderr)
+            return nil
         }
-        return CTFontCreateWithName("Menlo" as CFString, size, nil)
+        store.fontCache[key] = font
+        return font
     }
 
     /// Symbols Nerd Font (proportional) — second atlas fallback.
-    static func primaryNerd(size: CGFloat) -> CTFont {
+    static func primaryNerd(size: CGFloat) -> CTFont? {
         store.lock.lock()
         defer { store.lock.unlock() }
         let key = "nerd-\(size)"
         if let cached = store.fontCache[key] { return cached }
-        if let font = makeFontUnlocked(face: .symbolsNerd, size: size) {
-            store.fontCache[key] = font
-            return font
+        guard let font = makeFontUnlocked(face: .symbolsNerd, size: size) else {
+            fputs("ghosvt: SymbolsNerdFont missing at size \(size)\n", stderr)
+            return nil
         }
-        return CTFontCreateWithName("Menlo" as CFString, size, nil)
+        store.fontCache[key] = font
+        return font
+    }
+
+    /// Nerd faces at `size` (mono first). Omits faces that failed to load.
+    static func nerdFaces(size: CGFloat) -> [CTFont] {
+        [primaryNerdMono(size: size), primaryNerd(size: size)].compactMap { $0 }
     }
 
     /// Touch all font files so missing assets fail at startup, not mid-frame.
