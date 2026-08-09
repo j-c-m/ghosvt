@@ -47,6 +47,11 @@ final class TerminalSession {
     private var selReleaseEvent: GhosttySelectionGestureEvent?
     private var hasSelection: Bool = false
 
+    // Mouse encoder for TUI tracking modes.
+    private var mouseEncoder: GhosttyMouseEncoder?
+    private var mouseEvent: GhosttyMouseEvent?
+    private var mouseButtonsDown: Set<Int> = []
+
     init(index: Int, scrollbackLines: Int) {
         self.index = index
         self.scrollbackLines = scrollbackLines
@@ -319,10 +324,193 @@ final class TerminalSession {
     func isMouseTracking() -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        return isMouseTrackingLocked()
+    }
+
+    private func isMouseTrackingLocked() -> Bool {
         guard isLive, let terminal else { return false }
         var tracking = false
         _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
         return tracking
+    }
+
+    /// True when DEC mode 1004 (focus events) is enabled.
+    func isFocusReporting() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return false }
+        var cfg = GhosttyTerminalModeConfig()
+        cfg.mode = ghostty_mode_new(1004, false)
+        cfg.value = false
+        let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &cfg)
+        return r == GHOSTTY_SUCCESS && cfg.value
+    }
+
+    /// Geometry for mouse encode (content surface in pixels, top-left origin).
+    struct MouseSurface {
+        var posX: Float
+        var posY: Float
+        var screenWidth: UInt32
+        var screenHeight: UInt32
+        var cellWidth: UInt32
+        var cellHeight: UInt32
+        var padLeft: UInt32
+        var padTop: UInt32
+    }
+
+    /// Encode a mouse event into the PTY when tracking is on.
+    /// Returns true if bytes were written (or encoder accepted the event).
+    @discardableResult
+    func encodeMouse(
+        action: GhosttyMouseAction,
+        button: GhosttyMouseButton?,
+        surface: MouseSurface,
+        mods: GhosttyMods,
+        buttonNumber: Int? = nil
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal, let encoder = mouseEncoder, let event = mouseEvent else {
+            return false
+        }
+        guard isMouseTrackingLocked() else { return false }
+
+        ghostty_mouse_encoder_setopt_from_terminal(encoder, terminal)
+
+        var size = GhosttyMouseEncoderSize()
+        size.size = MemoryLayout<GhosttyMouseEncoderSize>.size
+        size.screen_width = max(1, surface.screenWidth)
+        size.screen_height = max(1, surface.screenHeight)
+        size.cell_width = max(1, surface.cellWidth)
+        size.cell_height = max(1, surface.cellHeight)
+        size.padding_left = surface.padLeft
+        size.padding_top = surface.padTop
+        size.padding_right = 0
+        size.padding_bottom = 0
+        withUnsafePointer(to: &size) { ptr in
+            ghostty_mouse_encoder_setopt(encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, UnsafeRawPointer(ptr))
+        }
+
+        // Track pressed buttons for drag / any-event motion.
+        if let n = buttonNumber {
+            switch action {
+            case GHOSTTY_MOUSE_ACTION_PRESS:
+                mouseButtonsDown.insert(n)
+            case GHOSTTY_MOUSE_ACTION_RELEASE:
+                mouseButtonsDown.remove(n)
+            default:
+                break
+            }
+        }
+        var anyPressed = !mouseButtonsDown.isEmpty
+        withUnsafePointer(to: &anyPressed) { ptr in
+            ghostty_mouse_encoder_setopt(
+                encoder,
+                GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                UnsafeRawPointer(ptr)
+            )
+        }
+        var trackCell = true
+        withUnsafePointer(to: &trackCell) { ptr in
+            ghostty_mouse_encoder_setopt(
+                encoder,
+                GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL,
+                UnsafeRawPointer(ptr)
+            )
+        }
+
+        ghostty_mouse_event_set_action(event, action)
+        if let button {
+            ghostty_mouse_event_set_button(event, button)
+        } else {
+            ghostty_mouse_event_clear_button(event)
+        }
+        ghostty_mouse_event_set_mods(event, mods)
+        ghostty_mouse_event_set_position(
+            event,
+            GhosttyMousePosition(x: surface.posX, y: surface.posY)
+        )
+
+        var out = [UInt8](repeating: 0, count: 64)
+        var written: Int = 0
+        let res = out.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
+            ghostty_mouse_encoder_encode(
+                encoder,
+                event,
+                buf.baseAddress.map { UnsafeMutableRawPointer($0).assumingMemoryBound(to: CChar.self) },
+                buf.count,
+                &written
+            )
+        }
+        if res == GHOSTTY_SUCCESS, written > 0 {
+            // writeToPty needs lock released — we're holding it. Write FD directly.
+            let fd = masterFD
+            if fd >= 0 {
+                out.withUnsafeBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    _ = ghosvt_pty_write_all(fd, base, written)
+                }
+            }
+            return true
+        }
+        return res == GHOSTTY_SUCCESS
+    }
+
+    /// Wheel: button 4/5 (vertical) or 6/7 (horizontal) press+release pair.
+    func encodeWheel(vertical: Bool, positive: Bool, surface: MouseSurface, mods: GhosttyMods) {
+        let button: GhosttyMouseButton
+        if vertical {
+            // Positive scrollingDeltaY = content down = wheel "up" in traditional terms
+            // → button 4 (scroll up). Negative → button 5.
+            button = positive ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE
+        } else {
+            button = positive ? GHOSTTY_MOUSE_BUTTON_SIX : GHOSTTY_MOUSE_BUTTON_SEVEN
+        }
+        _ = encodeMouse(
+            action: GHOSTTY_MOUSE_ACTION_PRESS,
+            button: button,
+            surface: surface,
+            mods: mods,
+            buttonNumber: nil
+        )
+        _ = encodeMouse(
+            action: GHOSTTY_MOUSE_ACTION_RELEASE,
+            button: button,
+            surface: surface,
+            mods: mods,
+            buttonNumber: nil
+        )
+    }
+
+    /// Focus in/out when mode 1004 is on.
+    func encodeFocus(gained: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive else { return }
+        var cfg = GhosttyTerminalModeConfig()
+        cfg.mode = ghostty_mode_new(1004, false)
+        cfg.value = false
+        guard let terminal,
+              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &cfg) == GHOSTTY_SUCCESS,
+              cfg.value
+        else { return }
+
+        var out = [CChar](repeating: 0, count: 16)
+        var written: Int = 0
+        let ev: GhosttyFocusEvent = gained ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST
+        let res = out.withUnsafeMutableBufferPointer { buf in
+            ghostty_focus_encode(ev, buf.baseAddress, buf.count, &written)
+        }
+        if res == GHOSTTY_SUCCESS, written > 0 {
+            let fd = masterFD
+            if fd >= 0 {
+                let bytes = out.prefix(written).map { UInt8(bitPattern: $0) }
+                bytes.withUnsafeBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    _ = ghosvt_pty_write_all(fd, base, written)
+                }
+            }
+        }
     }
 
     /// Wheel/trackpad impulse. Positive `deltaRows` moves toward older history (lower offset).
@@ -445,6 +633,14 @@ final class TerminalSession {
         if ghostty_key_event_new(nil, &ev) == GHOSTTY_SUCCESS {
             keyEvent = ev
         }
+        var menc: GhosttyMouseEncoder?
+        if ghostty_mouse_encoder_new(nil, &menc) == GHOSTTY_SUCCESS {
+            mouseEncoder = menc
+        }
+        var mev: GhosttyMouseEvent?
+        if ghostty_mouse_event_new(nil, &mev) == GHOSTTY_SUCCESS {
+            mouseEvent = mev
+        }
 
         installEffectsLocked()
         spawnLoginLocked()
@@ -547,18 +743,23 @@ final class TerminalSession {
             childPID = -1
         }
         freeSelectionGestureLocked()
+        if let mouseEvent { ghostty_mouse_event_free(mouseEvent) }
+        if let mouseEncoder { ghostty_mouse_encoder_free(mouseEncoder) }
         if let keyEvent { ghostty_key_event_free(keyEvent) }
         if let keyEncoder { ghostty_key_encoder_free(keyEncoder) }
         if let rowCells { ghostty_render_state_row_cells_free(rowCells) }
         if let rowIterator { ghostty_render_state_row_iterator_free(rowIterator) }
         if let renderState { ghostty_render_state_free(renderState) }
         if let terminal { ghostty_terminal_free(terminal) }
+        self.mouseEvent = nil
+        self.mouseEncoder = nil
         self.keyEvent = nil
         self.keyEncoder = nil
         self.rowCells = nil
         self.rowIterator = nil
         self.renderState = nil
         self.terminal = nil
+        mouseButtonsDown.removeAll()
         isLive = false
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import CGhosttyVT
 import Metal
 import MetalKit
 import QuartzCore
@@ -19,6 +20,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var scrollConfigApplied = false
     private var selecting = false
     private var selectRectangle = false
+    private var trackingArea: NSTrackingArea?
+    private var focusObservers: [NSObjectProtocol] = []
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
@@ -56,9 +59,62 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        removeFocusObservers()
         window?.makeFirstResponder(self)
         refreshMetrics(force: true)
         spawnIfNeeded()
+        updateTrackingAreas()
+        if window != nil {
+            installFocusObservers()
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let opts: NSTrackingArea.Options = [
+            .activeInKeyWindow,
+            .mouseMoved,
+            .inVisibleRect,
+            .enabledDuringMouseDrag,
+        ]
+        let area = NSTrackingArea(rect: bounds, options: opts, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    private func removeFocusObservers() {
+        for o in focusObservers {
+            NotificationCenter.default.removeObserver(o)
+        }
+        focusObservers.removeAll()
+    }
+
+    private func installFocusObservers() {
+        removeFocusObservers()
+        guard let window else { return }
+        let nc = NotificationCenter.default
+        // Capture manager weakly via view; notifications are main-queue.
+        focusObservers.append(nc.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.manager?.active.encodeFocus(gained: true)
+            }
+        })
+        focusObservers.append(nc.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.manager?.active.encodeFocus(gained: false)
+            }
+        })
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -173,8 +229,27 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let session = manager.active
         guard session.isLive else { return }
 
-        // Apps with mouse tracking (e.g. full-screen TUI) own the wheel.
+        // Apps with mouse tracking own the wheel (encode as buttons 4–7).
         if session.isMouseTracking() {
+            if let surface = makeMouseSurface(event) {
+                let mods = KeyBridge.mapMods(event.modifierFlags)
+                if abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX),
+                   abs(event.scrollingDeltaY) > 0.01 {
+                    session.encodeWheel(
+                        vertical: true,
+                        positive: event.scrollingDeltaY > 0,
+                        surface: surface,
+                        mods: mods
+                    )
+                } else if abs(event.scrollingDeltaX) > 0.01 {
+                    session.encodeWheel(
+                        vertical: false,
+                        positive: event.scrollingDeltaX > 0,
+                        surface: surface,
+                        mods: mods
+                    )
+                }
+            }
             return
         }
 
@@ -206,6 +281,27 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         )
     }
 
+    /// Content-relative surface geometry for mouse encoding (pixels, top-left).
+    private func makeMouseSurface(_ event: NSEvent) -> TerminalSession.MouseSurface? {
+        guard let metrics else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        let content = contentRectPoints()
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let yFromTop = bounds.height - viewPoint.y
+        let posX = Float((viewPoint.x - content.minX) * scale)
+        let posY = Float((yFromTop - content.minY) * scale)
+        return TerminalSession.MouseSurface(
+            posX: posX,
+            posY: posY,
+            screenWidth: UInt32(max(1, (content.width * scale).rounded())),
+            screenHeight: UInt32(max(1, (content.height * scale).rounded())),
+            cellWidth: UInt32(max(1, (metrics.cellWidth * scale).rounded())),
+            cellHeight: UInt32(max(1, (metrics.cellHeight * scale).rounded())),
+            padLeft: UInt32(max(0, (pad * scale).rounded())),
+            padTop: UInt32(max(0, (pad * scale).rounded()))
+        )
+    }
+
     /// Host selection when not in mouse-tracking mode, or always with Shift.
     private func shouldHostSelect(_ event: NSEvent) -> Bool {
         guard let manager else { return false }
@@ -214,54 +310,132 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return !manager.active.isMouseTracking()
     }
 
+    private func sendAppMouse(
+        _ event: NSEvent,
+        action: GhosttyMouseAction,
+        button: GhosttyMouseButton?
+    ) {
+        guard let manager, let surface = makeMouseSurface(event) else { return }
+        _ = manager.active.encodeMouse(
+            action: action,
+            button: button,
+            surface: surface,
+            mods: KeyBridge.mapMods(event.modifierFlags),
+            buttonNumber: button == nil ? nil : event.buttonNumber
+        )
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard let manager, event.buttonNumber == 0 else {
             super.mouseDown(with: event)
             return
         }
         window?.makeFirstResponder(self)
-        guard shouldHostSelect(event), let hit = makeSelectionHit(event) else {
-            selecting = false
-            return
-        }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        selectRectangle = flags.contains(.option)
-        selecting = true
-        let timeNs = UInt64(event.timestamp * 1_000_000_000)
-        manager.active.selectionPress(hit: hit, timeNs: timeNs, rectangle: selectRectangle)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard selecting, let manager, let hit = makeSelectionHit(event) else {
-            super.mouseDragged(with: event)
-            return
-        }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        selectRectangle = flags.contains(.option)
-        _ = manager.active.selectionDrag(hit: hit, rectangle: selectRectangle)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard selecting, let manager else {
-            super.mouseUp(with: event)
+        if shouldHostSelect(event), let hit = makeSelectionHit(event) {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            selectRectangle = flags.contains(.option)
+            selecting = true
+            let timeNs = UInt64(event.timestamp * 1_000_000_000)
+            manager.active.selectionPress(hit: hit, timeNs: timeNs, rectangle: selectRectangle)
             return
         }
         selecting = false
-        manager.active.selectionRelease(hit: makeSelectionHit(event))
-        if config.copyOnSelect {
-            _ = manager.active.copySelectionToPasteboard()
+        if manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: GHOSTTY_MOUSE_BUTTON_LEFT)
         }
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        if selecting, let manager, let hit = makeSelectionHit(event) {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            selectRectangle = flags.contains(.option)
+            _ = manager.active.selectionDrag(hit: hit, rectangle: selectRectangle)
+            return
+        }
+        if let manager, manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_LEFT)
+            return
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if selecting, let manager {
+            selecting = false
+            manager.active.selectionRelease(hit: makeSelectionHit(event))
+            if config.copyOnSelect {
+                _ = manager.active.copySelectionToPasteboard()
+            }
+            return
+        }
+        if let manager, manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_LEFT)
+            return
+        }
+        super.mouseUp(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if let manager, manager.active.isMouseTracking(), !selecting {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: nil)
+            return
+        }
+        super.mouseMoved(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        if let manager, manager.active.isMouseTracking(), !shouldHostSelect(event) {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
+            return
+        }
+        super.rightMouseDown(with: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        if let manager, manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
+            return
+        }
+        super.rightMouseUp(with: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        if let manager, manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
+            return
+        }
+        super.rightMouseDragged(with: event)
+    }
+
     override func otherMouseDown(with event: NSEvent) {
-        // Middle-click paste (button 2).
+        // Middle button: app when tracking, else paste.
         guard event.buttonNumber == 2, let manager else {
             super.otherMouseDown(with: event)
+            return
+        }
+        if manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
             return
         }
         if let text = Clipboard.pasteString() {
             manager.active.pasteText(text)
         }
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
+            return
+        }
+        super.otherMouseUp(with: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
+            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
+            return
+        }
+        super.otherMouseDragged(with: event)
     }
 
     override func keyDown(with event: NSEvent) {
