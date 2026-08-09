@@ -263,6 +263,10 @@ final class TerminalSession {
             return Self.runKeyEncoder(encoder, keyEvent: keyEvent)
         }()
 
+        // Shift/Alt+Enter → LF. Prefer this over encoder/Kitty CSI u for Grok Build.
+        if Self.isShiftOrAltEnter(gkey: gkey, mods: mods) {
+            return [0x0A]
+        }
         if !encoded.isEmpty {
             return encoded
         }
@@ -273,6 +277,17 @@ final class TerminalSession {
             return Array(text.utf8)
         }
         return []
+    }
+
+    private static func isShiftOrAltEnter(gkey: GhosttyKey, mods: GhosttyMods) -> Bool {
+        switch gkey {
+        case GHOSTTY_KEY_ENTER, GHOSTTY_KEY_NUMPAD_ENTER:
+            break
+        default:
+            return false
+        }
+        let mask = GhosttyMods(GHOSTTY_MODS_SHIFT | GHOSTTY_MODS_ALT)
+        return (mods & mask) != 0
     }
 
     private static func runKeyEncoder(

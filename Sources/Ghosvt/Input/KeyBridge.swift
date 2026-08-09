@@ -213,7 +213,12 @@ enum KeyBridge {
         case GHOSTTY_KEY_TAB:
             if shift { return [0x1B, 0x5B, 0x5A] } // CSI Z
             return [0x09]
-        case GHOSTTY_KEY_ENTER, GHOSTTY_KEY_NUMPAD_ENTER: return [0x0D]
+        case GHOSTTY_KEY_ENTER, GHOSTTY_KEY_NUMPAD_ENTER:
+            // Plain Enter is CR. Shift/Alt+Enter → LF (Grok Build newline).
+            if shift || alt {
+                return [0x0A]
+            }
+            return [0x0D]
         case GHOSTTY_KEY_BACKSPACE: return [0x7F]
         case GHOSTTY_KEY_SPACE: return [0x20]
         default: return nil
