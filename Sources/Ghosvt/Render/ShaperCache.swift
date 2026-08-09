@@ -39,18 +39,9 @@ final class ShaperCache {
 
     private var cache: [Key: [ShapedCell]] = [:]
     private let maxEntries = 4096
-    // TEMP: cache hit/miss stats
-    private var hits: UInt64 = 0
-    private var misses: UInt64 = 0
 
     func clear() {
         cache.removeAll(keepingCapacity: true)
-        fputs(
-            "ghosvt: shaper clear (hits=\(hits) misses=\(misses))\n",
-            stderr
-        )
-        hits = 0
-        misses = 0
     }
 
     /// Shape `text` from consecutive run cells.
@@ -68,18 +59,8 @@ final class ShaperCache {
 
         let key = Key(text: text, style: style, fontPx: fontPx, ligatures: ligatures)
         if let hit = cache[key] {
-            hits += 1
-            logStatsIfNeeded()
             return hit
         }
-
-        misses += 1
-        let preview = text.count > 24 ? String(text.prefix(24)) + "…" : text
-        fputs(
-            "ghosvt: shaper MISS \(preview.debugDescription) cells=\(cellCount) fontPx=\(fontPx) liga=\(ligatures) size=\(cache.count)\n",
-            stderr
-        )
-        logStatsIfNeeded()
 
         let shaped = shapeUncached(
             text: text,
@@ -89,21 +70,10 @@ final class ShaperCache {
             ligatures: ligatures
         )
         if cache.count >= maxEntries {
-            fputs("ghosvt: shaper cache full — flush\n", stderr)
             cache.removeAll(keepingCapacity: true)
         }
         cache[key] = shaped
         return shaped
-    }
-
-    private func logStatsIfNeeded() {
-        let total = hits + misses
-        if total > 0, total % 100 == 0 {
-            fputs(
-                "ghosvt: shaper stats hits=\(hits) misses=\(misses) size=\(cache.count)\n",
-                stderr
-            )
-        }
     }
 
     // MARK: - CoreText (aligned with Ghostty coretext.zig)

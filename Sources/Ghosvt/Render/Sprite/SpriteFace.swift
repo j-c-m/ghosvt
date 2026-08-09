@@ -2,18 +2,16 @@ import Foundation
 
 /// Ghostty-style built-in sprite face: box drawing, blocks, braille, powerline, etc.
 ///
-/// Draw modules register ranges; unknown codepoints return false from `covers`.
+/// Ordered drawers — first match wins. Legacy computing omitted until needed.
 enum SpriteFace {
     /// True if we procedurally draw this codepoint (do not use a font).
     static func covers(_ cp: UInt32) -> Bool {
-        if BrailleSprite.codepointRange.contains(cp) { return true }
-        if BlockSprites.covers(cp) { return true }
-        if BoxSprites.covers(cp) { return true }
-        if GeometricSprites.covers(cp) { return true }
-        if PowerlineSprites.covers(cp) { return true }
-        if BranchSprites.covers(cp) { return true }
-        if LegacySprites.covers(cp) { return true }
-        return false
+        BrailleSprites.covers(cp)
+            || BlockSprites.covers(cp)
+            || BoxSprites.covers(cp)
+            || GeometricSprites.covers(cp)
+            || PowerlineSprites.covers(cp)
+            || BranchSprites.covers(cp)
     }
 
     static func covers(text: String) -> Bool {
@@ -38,13 +36,9 @@ enum SpriteFace {
         let metrics = SpriteMetrics(cellWidth: w, cellHeight: h, cellBaseline: baseline)
         let canvas = SpriteCanvas(width: w, height: h)
 
-        if BrailleSprite.codepointRange.contains(cp) {
-            var buf = canvas.pixels
-            _ = BrailleSprite.fillCoverage(codepoint: cp, width: w, height: h, into: &buf)
-            coverage = buf
-            return true
-        }
-        if BlockSprites.covers(cp) {
+        if BrailleSprites.covers(cp) {
+            BrailleSprites.draw(cp, canvas: canvas, metrics: metrics)
+        } else if BlockSprites.covers(cp) {
             BlockSprites.draw(cp, canvas: canvas, metrics: metrics)
         } else if BoxSprites.covers(cp) {
             BoxSprites.draw(cp, canvas: canvas, metrics: metrics)
@@ -54,16 +48,15 @@ enum SpriteFace {
             PowerlineSprites.draw(cp, canvas: canvas, metrics: metrics)
         } else if BranchSprites.covers(cp) {
             BranchSprites.draw(cp, canvas: canvas, metrics: metrics)
-        } else if LegacySprites.covers(cp) {
-            LegacySprites.draw(cp, canvas: canvas, metrics: metrics)
         } else {
             return false
         }
 
         coverage = canvas.pixels
         if coverage.count != w * h {
-            coverage = Array(coverage.prefix(w * h))
-            if coverage.count < w * h {
+            if coverage.count > w * h {
+                coverage = Array(coverage.prefix(w * h))
+            } else {
                 coverage.append(contentsOf: repeatElement(0, count: w * h - coverage.count))
             }
         }

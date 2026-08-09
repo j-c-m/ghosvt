@@ -54,11 +54,6 @@ final class GlyphAtlas {
     private var glyphCache: [GlyphKey: Entry] = [:]
     private var spriteCache: [SpriteKey: Entry] = [:]
     private let padding = 1
-    // TEMP: cache hit/miss stats
-    private var textHits: UInt64 = 0
-    private var textMisses: UInt64 = 0
-    private var glyphHits: UInt64 = 0
-    private var glyphMisses: UInt64 = 0
 
     private struct SpriteKey: Hashable {
         let codepoint: UInt32
@@ -92,17 +87,9 @@ final class GlyphAtlas {
     }
 
     func clear() {
-        fputs(
-            "ghosvt: glyph clear text(h=\(textHits) m=\(textMisses) n=\(textCache.count)) glyph(h=\(glyphHits) m=\(glyphMisses) n=\(glyphCache.count)) sprite=\(spriteCache.count)\n",
-            stderr
-        )
         textCache.removeAll(keepingCapacity: true)
         glyphCache.removeAll(keepingCapacity: true)
         spriteCache.removeAll(keepingCapacity: true)
-        textHits = 0
-        textMisses = 0
-        glyphHits = 0
-        glyphMisses = 0
         pixels = [UInt8](repeating: 0, count: atlasWidth * atlasHeight)
         shelfX = 1
         shelfY = 0
@@ -187,17 +174,8 @@ final class GlyphAtlas {
     ) -> Entry {
         let key = TextKey(text: text, bold: bold, italic: italic)
         if let hit = textCache[key] {
-            textHits += 1
-            logTextStatsIfNeeded()
             return hit
         }
-        textMisses += 1
-        let preview = text.count > 16 ? String(text.prefix(16)) + "…" : text
-        fputs(
-            "ghosvt: glyph-text MISS \(preview.debugDescription) b=\(bold) i=\(italic) \(cellWidthPx)x\(cellHeightPx) size=\(textCache.count)\n",
-            stderr
-        )
-        logTextStatsIfNeeded()
         guard !text.isEmpty, cellWidthPx > 0, cellHeightPx > 0 else {
             let e = Entry(uv: emptyUV)
             textCache[key] = e
@@ -296,16 +274,8 @@ final class GlyphAtlas {
             cellW: cellW, faceWMilli: Int((faceWidthPx * 1000).rounded())
         )
         if let hit = glyphCache[key] {
-            glyphHits += 1
-            logGlyphStatsIfNeeded()
             return hit
         }
-        glyphMisses += 1
-        fputs(
-            "ghosvt: glyph MISS id=\(glyph) font=\(fontName) b=\(bold) i=\(italic) fontPx=\(fontPx) cellH=\(cellH) bl=\(baseline) size=\(glyphCache.count)\n",
-            stderr
-        )
-        logGlyphStatsIfNeeded()
 
         var g = glyph
         var bounds = CGRect.zero
@@ -360,26 +330,6 @@ final class GlyphAtlas {
         }
         glyphCache[key] = packed
         return packed
-    }
-
-    private func logTextStatsIfNeeded() {
-        let total = textHits + textMisses
-        if total > 0, total % 100 == 0 {
-            fputs(
-                "ghosvt: glyph-text stats hits=\(textHits) misses=\(textMisses) size=\(textCache.count)\n",
-                stderr
-            )
-        }
-    }
-
-    private func logGlyphStatsIfNeeded() {
-        let total = glyphHits + glyphMisses
-        if total > 0, total % 100 == 0 {
-            fputs(
-                "ghosvt: glyph stats hits=\(glyphHits) misses=\(glyphMisses) size=\(glyphCache.count)\n",
-                stderr
-            )
-        }
     }
 
     func prewarmASCII(
