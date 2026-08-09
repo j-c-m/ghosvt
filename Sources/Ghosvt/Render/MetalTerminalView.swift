@@ -145,15 +145,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     private func gridSize() -> (cols: UInt16, rows: UInt16, cellW: UInt32, cellH: UInt32)? {
         guard let metrics else { return nil }
-        let scale = window?.backingScaleFactor ?? 2
         let content = contentRectPoints()
         let cols = max(1, Int((content.width - 2 * pad) / metrics.cellWidth))
         let rows = max(1, Int((content.height - 2 * pad) / metrics.cellHeight))
         return (
             UInt16(cols),
             UInt16(rows),
-            UInt32(max(1, (metrics.cellWidth * scale).rounded())),
-            UInt32(max(1, (metrics.cellHeight * scale).rounded()))
+            UInt32(metrics.cellWidthPx),
+            UInt32(metrics.cellHeightPx)
         )
     }
 
@@ -202,7 +201,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let indicator = manager.tickIndicator()
         let scale = window?.backingScaleFactor ?? 2
         // Content rect in drawable pixels (same aspect cap as grid sizing).
-        let contentPx = ContentLayout.contentRect(in: drawableSize, maxAspect: config.maxAspect)
+        // Snap in drawable pixels so the cell grid lands on whole framebuffer pixels.
+        let contentPx = ContentLayout.contentRect(
+            in: drawableSize,
+            maxAspect: config.maxAspect,
+            snapPixels: true
+        )
         let visualOffset = manager.active.visualOffsetRows()
 
         renderer.draw(
@@ -215,7 +219,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             scale: scale,
             indicator: indicator,
             clearColor: clearColor,
-            visualOffsetRows: visualOffset
+            visualOffsetRows: visualOffset,
+            fontLigatures: config.fontLigatures
         )
     }
 
@@ -295,8 +300,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             posY: posY,
             screenWidth: UInt32(max(1, (content.width * scale).rounded())),
             screenHeight: UInt32(max(1, (content.height * scale).rounded())),
-            cellWidth: UInt32(max(1, (metrics.cellWidth * scale).rounded())),
-            cellHeight: UInt32(max(1, (metrics.cellHeight * scale).rounded())),
+            cellWidth: UInt32(metrics.cellWidthPx),
+            cellHeight: UInt32(metrics.cellHeightPx),
             padLeft: UInt32(max(0, (pad * scale).rounded())),
             padTop: UInt32(max(0, (pad * scale).rounded()))
         )

@@ -3,7 +3,7 @@ import Foundation
 /// User configuration from `~/.config/ghosvt/config` (Ghostty-style key = value).
 struct Config: Sendable {
     var vtCount: Int = 6
-    var fontSize: CGFloat = 16
+    var fontSize: CGFloat = 20
     var scrollbackLines: Int = 10_000
     /// Max content width/height (e.g. 1.5 for 3:2). Wider screens letterbox.
     var maxAspect: CGFloat = 3.0 / 2.0
@@ -12,6 +12,8 @@ struct Config: Sendable {
     var scrollFriction: Double = 6
     /// When true, mouse-up copies the selection to the pasteboard automatically.
     var copyOnSelect: Bool = false
+    /// Enable OpenType liga/calt on shaped runs (JetBrains Mono programming ligatures).
+    var fontLigatures: Bool = true
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -59,6 +61,8 @@ struct Config: Sendable {
                 if let n = Double(value) { cfg.scrollFriction = n }
             case "copy-on-select":
                 cfg.copyOnSelect = parseBool(value)
+            case "font-ligatures", "ligatures":
+                cfg.fontLigatures = parseBool(value)
             default:
                 break
             }

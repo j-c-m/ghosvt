@@ -697,6 +697,8 @@ final class TerminalSession {
         }
         if let terminal {
             ghostty_terminal_reset(terminal)
+            // Reset clears colors; reinstall host theme (fg/bg/cursor + ANSI).
+            DefaultColors.apply(to: terminal)
         }
         lastSyncedIntegerRow = nil
         scrollMaxOffset = 0

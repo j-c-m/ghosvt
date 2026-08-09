@@ -1,4 +1,5 @@
 import CGhosttyVT
+import CoreText
 import Foundation
 import Metal
 import MetalKit
@@ -11,10 +12,12 @@ final class TerminalRenderer {
     private var pipeline: MTLRenderPipelineState
     private var sampler: MTLSamplerState
     private var atlas: GlyphAtlas
+    private var shaper = ShaperCache()
     private var instanceBuffer: MTLBuffer?
     private var uniformBuffer: MTLBuffer?
     private var instanceCapacity = 0
     private var floatScratch = [Float]()
+    private var fontLigatures = true
 
     private let padPoints: CGFloat
 
@@ -28,6 +31,9 @@ final class TerminalRenderer {
     private var lastIndicator: String?
     private var lastBlinkOn = true
     private var lastVisualY: Float = 0
+    private var lastCursorX: Int = -1
+    private var lastCursorY: Int = -1
+    private var lastCursorVisible: Bool = false
     private var blinkPeriod: CFTimeInterval = 0.53
     private var prewarmedKey: String?
 
@@ -90,6 +96,7 @@ final class TerminalRenderer {
 
     func resetAtlas() {
         atlas.clear()
+        shaper.clear()
         prewarmedKey = nil
         lastLayoutKey = nil
         gridCells.removeAll(keepingCapacity: true)
@@ -107,8 +114,10 @@ final class TerminalRenderer {
         scale: CGFloat,
         indicator: String?,
         clearColor: MTLClearColor,
-        visualOffsetRows: Double = 0
+        visualOffsetRows: Double = 0,
+        fontLigatures: Bool = true
     ) {
+        self.fontLigatures = fontLigatures
         session.updateRenderState()
         guard let renderState = session.renderState,
               let rowIter = session.rowIterator,
@@ -122,15 +131,17 @@ final class TerminalRenderer {
         let ph = Float(drawableSize.height)
         guard pw > 0, ph > 0 else { return }
 
-        let originX = Float(contentRect.minX)
-        let originY = Float(contentRect.minY)
-        let cellW = Float(metrics.cellWidth * scale)
-        let cellH = Float(metrics.cellHeight * scale)
-        let padPx = Float(padPoints * scale)
-        let cellWInt = max(1, Int(cellW.rounded(.toNearestOrAwayFromZero)))
-        let cellHInt = max(1, Int(cellH.rounded(.toNearestOrAwayFromZero)))
-        // Fractional / overscroll shift in drawable pixels (top-left coords).
-        let visualY = Float(visualOffsetRows) * cellH
+        // 1:1 device-pixel grid: integer cell size, origin, and pad.
+        let cellWInt = max(1, metrics.cellWidthPx)
+        let cellHInt = max(1, metrics.cellHeightPx)
+        let cellW = Float(cellWInt)
+        let cellH = Float(cellHInt)
+        let padPx = Float((padPoints * scale).rounded(.toNearestOrAwayFromZero))
+        let originX = Float(contentRect.minX.rounded(.toNearestOrAwayFromZero))
+        let originY = Float(contentRect.minY.rounded(.toNearestOrAwayFromZero))
+        // Snap scroll offset to whole pixels (physics stays continuous).
+        let visualY = (Float(visualOffsetRows) * cellH).rounded(.toNearestOrAwayFromZero)
+        _ = scale
 
         var colsU: UInt16 = 0
         var rowsU: UInt16 = 0
@@ -146,17 +157,19 @@ final class TerminalRenderer {
         let layout = LayoutKey(
             originX: originX, originY: originY,
             cellW: cellW, cellH: cellH, padPx: padPx,
-            cols: cols, rows: rows, fontPx: cellHInt
+            cols: cols, rows: rows, fontPx: metrics.fontPx
         )
 
-        // Prewarm ASCII once per font pixel size.
-        let warmKey = "\(cellWInt)x\(cellHInt)"
+        // Prewarm ASCII once per font / cell metrics.
+        let warmKey = "\(cellWInt)x\(cellHInt)x\(metrics.cellBaselinePx)"
         if prewarmedKey != warmKey {
             atlas.prewarmASCII(
                 font: metrics.font,
                 boldFont: metrics.fontBold,
                 cellWidthPx: cellWInt,
-                cellHeightPx: cellHInt
+                cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                faceWidthPx: metrics.faceWidthPx
             )
             prewarmedKey = warmKey
         }
@@ -187,7 +200,30 @@ final class TerminalRenderer {
         let visualChanged = abs(visualY - lastVisualY) > 0.05
         lastVisualY = visualY
 
-        let needGridRebuild: Bool
+        // Cursor can move without dirtying cells (e.g. ← at the shell prompt).
+        // Track viewport cursor so we recompose and re-shape run breaks.
+        var cursorVisible = false
+        var cursorInViewport = false
+        var curX: UInt16 = 0
+        var curY: UInt16 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewport)
+        if cursorInViewport {
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &curX)
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &curY)
+        }
+        let cursorVis = cursorVisible && cursorInViewport
+        let cursorX = cursorVis ? Int(curX) : -1
+        let cursorY = cursorVis ? Int(curY) : -1
+        let cursorChanged =
+            cursorX != lastCursorX
+            || cursorY != lastCursorY
+            || cursorVis != lastCursorVisible
+        lastCursorX = cursorX
+        lastCursorY = cursorY
+        lastCursorVisible = cursorVis
+
+        var needGridRebuild: Bool
         let partialOnly: Bool
         switch dirty {
         case GHOSTTY_RENDER_STATE_DIRTY_FALSE:
@@ -200,9 +236,13 @@ final class TerminalRenderer {
             needGridRebuild = true
             partialOnly = false
         }
+        // Cursor column affects shaper run breaks; rebuild ink when it moves.
+        if cursorChanged {
+            needGridRebuild = true
+        }
 
         if needGridRebuild {
-            if partialOnly {
+            if partialOnly && !cursorChanged {
                 rebuildDirtyRows(
                     renderState: renderState,
                     rowIter: rowIter,
@@ -230,9 +270,9 @@ final class TerminalRenderer {
             lastLayoutKey = layout
         }
 
-        // Idle: reuse previous GPU buffer (includes last cursor/indicator).
-        // Keep recomposing while fractional / overscroll offset is moving.
-        if !needGridRebuild && !blinkChanged && !indicatorChanged && !visualChanged && lastDrawnCount > 0 {
+        // Idle: reuse previous GPU buffer only when nothing visual moved.
+        if !needGridRebuild && !blinkChanged && !indicatorChanged && !visualChanged
+            && !cursorChanged && lastDrawnCount > 0 {
             present(
                 count: lastDrawnCount,
                 drawable: drawable,
@@ -247,6 +287,8 @@ final class TerminalRenderer {
         // Compose: grid cells + underlines + cursor + VT indicator.
         // Grid positions are base (no scroll offset); apply visualY here.
         var instances = gridCells
+        // Multi-cell ligature ink after cell backgrounds so tails don't cover it.
+        instances.append(contentsOf: glyphExtras)
         instances.append(contentsOf: underlineExtras)
         if abs(visualY) > 0.001 {
             for i in 0..<instances.count {
@@ -257,9 +299,14 @@ final class TerminalRenderer {
         appendCursor(
             to: &instances,
             renderState: renderState,
+            rowIter: rowIter,
+            cells: cells,
             colors: colors,
             defFg: defFg,
+            metrics: metrics,
             layout: layout,
+            cellWInt: cellWInt,
+            cellHInt: cellHInt,
             blinkOn: blinkOn,
             visualY: visualY
         )
@@ -317,6 +364,7 @@ final class TerminalRenderer {
         // Also keep decoration instances separate: underlines appended after grid in compose.
         // Bake underlines into a parallel array rebuilt with grid.
         underlineExtras = []
+        glyphExtras = []
         rebuildRows(
             renderState: renderState,
             rowIter: rowIter,
@@ -332,6 +380,8 @@ final class TerminalRenderer {
     }
 
     private var underlineExtras: [CellInstance] = []
+    /// Multi-cell ligature ink drawn after all cell backgrounds.
+    private var glyphExtras: [CellInstance] = []
 
     private func rebuildDirtyRows(
         renderState: GhosttyRenderState,
@@ -344,8 +394,10 @@ final class TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int
     ) {
-        // Partial path: drop previous underline extras for dirty rows by full underline rebuild.
+        // Ink lives in glyphExtras (global). Always repaint every row so scroll /
+        // partial dirty cannot wipe clean rows' text.
         underlineExtras = []
+        glyphExtras = []
         rebuildRows(
             renderState: renderState,
             rowIter: rowIter,
@@ -356,7 +408,7 @@ final class TerminalRenderer {
             defBg: defBg,
             cellWInt: cellWInt,
             cellHInt: cellHInt,
-            onlyDirty: true
+            onlyDirty: false
         )
     }
 
@@ -380,76 +432,83 @@ final class TerminalRenderer {
             defer { rowIndex += 1 }
             guard rowIndex < layout.rows else { break }
 
-            var isDirty = true
-            if onlyDirty {
-                var d = false
-                _ = ghostty_render_state_row_get(iter, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &d)
-                isDirty = d
-                if !isDirty {
-                    // Still collect underlines for clean rows from existing? Skip — underlines
-                    // only on rebuild of that row. For clean rows underlines already missing
-                    // unless we store them in grid. Re-scan clean rows for underline only once:
-                    // simpler to force full underline pass over all rows each dirty frame.
-                }
-            }
-
             var cellsHandle = cells
             if ghostty_render_state_row_get(iter, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cellsHandle) != GHOSTTY_SUCCESS {
                 continue
             }
 
-            let y = layout.originY + layout.padPx + Float(rowIndex) * layout.cellH
-            var colIndex = 0
-            var skipTail = false
+            let rowCells = collectRowCells(
+                cellsHandle: cellsHandle,
+                layout: layout,
+                defFg: defFg,
+                defBg: defBg
+            )
+            paintRow(
+                rowCells: rowCells,
+                rowIndex: rowIndex,
+                metrics: metrics,
+                layout: layout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt,
+                renderState: renderState,
+                rowIter: iter
+            )
 
-            // Row-local selection range for invert highlight.
-            var selStart: Int?
-            var selEnd: Int?
-            var rowSel = GhosttyRenderStateRowSelection()
-            rowSel.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
-            if ghostty_render_state_row_get(
-                iter,
-                GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION,
-                &rowSel
-            ) == GHOSTTY_SUCCESS {
-                selStart = Int(rowSel.start_x)
-                selEnd = Int(rowSel.end_x)
-            }
+            var clean = false
+            _ = ghostty_render_state_row_set(iter, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
+        }
+        _ = onlyDirty
+    }
 
-            while ghostty_render_state_row_cells_next(cellsHandle) {
-                defer { colIndex += 1 }
-                guard colIndex < layout.cols else { break }
+    // MARK: - Run segmentation + shaped paint
 
-                let selected: Bool = {
-                    guard let s = selStart, let e = selEnd else { return false }
-                    let lo = min(s, e)
-                    let hi = max(s, e)
-                    return colIndex >= lo && colIndex <= hi
-                }()
+    private struct RowCell {
+        var text: String
+        var isWideHead: Bool
+        var isWideTail: Bool
+        var fg: GhosttyColorRgb
+        var bg: GhosttyColorRgb
+        var bold: Bool
+        var italic: Bool
+        var faint: Bool
+        var inverse: Bool
+        var underline: Bool
 
-                if skipTail {
-                    // Wide spacer tail: bg only if dirty
-                    skipTail = false
-                    if onlyDirty && !isDirty { continue }
-                    let x = layout.originX + layout.padPx + Float(colIndex) * layout.cellW
-                    // Copy bg from previous cell if possible
-                    let idx = rowIndex * layout.cols + colIndex
-                    if idx > 0, idx < gridCells.count {
-                        var tail = gridCells[idx - 1]
-                        tail.ox = x
-                        tail.oy = y
-                        tail.u0 = 0; tail.v0 = 0; tail.u1 = 0; tail.v1 = 0
-                        if selected {
-                            swap(&tail.fr, &tail.br)
-                            swap(&tail.fg, &tail.bg)
-                            swap(&tail.fb, &tail.bb)
-                        }
-                        gridCells[idx] = tail
-                    }
-                    continue
-                }
+        var isSpaceOrEmpty: Bool {
+            if isWideHead || isWideTail { return false }
+            if text.isEmpty { return true }
+            return text == " " || text == "\u{00A0}"
+        }
 
-                // Wide check via raw cell
+        var textStyle: TextStyleKey {
+            TextStyleKey(
+                fr: fg.r, fg: fg.g, fb: fg.b,
+                bold: bold, italic: italic, faint: faint,
+                inverse: inverse, underline: underline
+            )
+        }
+    }
+
+    private func collectRowCells(
+        cellsHandle: GhosttyRenderStateRowCells,
+        layout: LayoutKey,
+        defFg: GhosttyColorRgb,
+        defBg: GhosttyColorRgb
+    ) -> [RowCell] {
+        var out: [RowCell] = []
+        out.reserveCapacity(layout.cols)
+        var skipTail = false
+        var col = 0
+        while ghostty_render_state_row_cells_next(cellsHandle) {
+            defer { col += 1 }
+            guard col < layout.cols else { break }
+
+            var isWideHead = false
+            var isWideTail = false
+            if skipTail {
+                isWideTail = true
+                skipTail = false
+            } else {
                 var rawCell: GhosttyCell = 0
                 if ghostty_render_state_row_cells_get(
                     cellsHandle,
@@ -459,79 +518,451 @@ final class TerminalRenderer {
                     var wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW
                     if ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_WIDE, &wide) == GHOSTTY_SUCCESS {
                         if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL {
-                            if onlyDirty && !isDirty { continue }
-                            let x = layout.originX + layout.padPx + Float(colIndex) * layout.cellW
-                            let idx = rowIndex * layout.cols + colIndex
-                            if idx < gridCells.count {
-                                var c = gridCells[idx]
-                                c.ox = x; c.oy = y
-                                c.sx = layout.cellW; c.sy = layout.cellH
-                                c.u0 = 0; c.v0 = 0; c.u1 = 0; c.v1 = 0
-                                if selected {
-                                    swap(&c.fr, &c.br)
-                                    swap(&c.fg, &c.bg)
-                                    swap(&c.fb, &c.bb)
-                                }
-                                gridCells[idx] = c
-                            }
-                            continue
-                        }
-                        if wide == GHOSTTY_CELL_WIDE_WIDE {
+                            isWideTail = true
+                        } else if wide == GHOSTTY_CELL_WIDE_WIDE {
+                            isWideHead = true
                             skipTail = true
                         }
                     }
                 }
+            }
 
-                if onlyDirty && !isDirty {
-                    // Still need underlines for this row on partial frames — scan style
-                    appendUnderlineIfNeeded(
-                        cellsHandle: cellsHandle,
-                        row: rowIndex, col: colIndex,
-                        layout: layout, defFg: defFg, defBg: defBg
-                    )
-                    continue
-                }
+            var fg = defFg
+            _ = ghostty_render_state_row_cells_get(
+                cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg
+            )
+            var bgCell = defBg
+            let hasBg = ghostty_render_state_row_cells_get(
+                cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bgCell
+            ) == GHOSTTY_SUCCESS
 
-                let x = layout.originX + layout.padPx + Float(colIndex) * layout.cellW
-                var inst = makeCellInstance(
-                    cellsHandle: cellsHandle,
-                    x: x, y: y,
-                    layout: layout,
-                    metrics: metrics,
-                    defFg: defFg,
-                    defBg: defBg,
-                    cellWInt: cellWInt,
-                    cellHInt: cellHInt,
-                    wide: skipTail
+            var style = GhosttyStyle()
+            style.size = MemoryLayout<GhosttyStyle>.size
+            ghostty_style_default(&style)
+            _ = ghostty_render_state_row_cells_get(
+                cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style
+            )
+            if style.inverse {
+                swap(&fg, &bgCell)
+            }
+            let bg = (hasBg || style.inverse) ? bgCell : defBg
+            let text = cellTextUTF8(cellsHandle) ?? ""
+
+            out.append(RowCell(
+                text: text,
+                isWideHead: isWideHead,
+                isWideTail: isWideTail,
+                fg: fg,
+                bg: bg,
+                bold: style.bold,
+                italic: style.italic,
+                faint: style.faint,
+                inverse: style.inverse,
+                underline: style.underline != 0
+            ))
+        }
+        while out.count < layout.cols {
+            out.append(RowCell(
+                text: "", isWideHead: false, isWideTail: false,
+                fg: defFg, bg: defBg,
+                bold: false, italic: false, faint: false, inverse: false, underline: false
+            ))
+        }
+        return out
+    }
+
+    private func paintRow(
+        rowCells: [RowCell],
+        rowIndex: Int,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        renderState: GhosttyRenderState,
+        rowIter: GhosttyRenderStateRowIterator
+    ) {
+        let y = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
+            .rounded(.toNearestOrAwayFromZero)
+        var selStart: Int?
+        var selEnd: Int?
+        var rowSel = GhosttyRenderStateRowSelection()
+        rowSel.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
+        if ghostty_render_state_row_get(
+            rowIter,
+            GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION,
+            &rowSel
+        ) == GHOSTTY_SUCCESS {
+            selStart = Int(rowSel.start_x)
+            selEnd = Int(rowSel.end_x)
+        }
+
+        func selected(_ col: Int) -> Bool {
+            guard let s = selStart, let e = selEnd else { return false }
+            return col >= min(s, e) && col <= max(s, e)
+        }
+
+        // 1) Background for every cell (selection invert on bg/fg pair for empty ink).
+        for col in 0..<layout.cols {
+            let c = rowCells[col]
+            let x = (layout.originX + layout.padPx + Float(col) * layout.cellW)
+                .rounded(.toNearestOrAwayFromZero)
+            let yPx = y
+            var fr = Float(c.fg.r) / 255
+            var fgG = Float(c.fg.g) / 255
+            var fb = Float(c.fg.b) / 255
+            if c.faint { fr *= 0.5; fgG *= 0.5; fb *= 0.5 }
+            var br = Float(c.bg.r) / 255
+            var bgG = Float(c.bg.g) / 255
+            var bb = Float(c.bg.b) / 255
+            if selected(col) {
+                swap(&fr, &br); swap(&fgG, &bgG); swap(&fb, &bb)
+            }
+            let idx = rowIndex * layout.cols + col
+            if idx < gridCells.count {
+                gridCells[idx] = CellInstance.make(
+                    originX: x, originY: yPx,
+                    width: layout.cellW, height: layout.cellH,
+                    u0: 0, v0: 0, u1: 0, v1: 0,
+                    fr: fr, fg: fgG, fb: fb, fa: 1,
+                    br: br, bg: bgG, bb: bb, ba: 1
                 )
-                if selected {
-                    swap(&inst.cell.fr, &inst.cell.br)
-                    swap(&inst.cell.fg, &inst.cell.bg)
-                    swap(&inst.cell.fb, &inst.cell.bb)
-                }
-                let idx = rowIndex * layout.cols + colIndex
-                if idx < gridCells.count {
-                    gridCells[idx] = inst.cell
-                }
-                if let ul = inst.underline {
-                    underlineExtras.append(ul)
-                }
-
-                var clean = false
-                _ = ghostty_render_state_row_set(iter, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
+            }
+            if c.underline {
+                let th = max(1, layout.cellH * 0.06)
+                underlineExtras.append(.make(
+                    originX: x, originY: y + layout.cellH - th - 1,
+                    width: layout.cellW, height: th,
+                    u0: 0, v0: 0, u1: 0, v1: 0,
+                    fr: fr, fg: fgG, fb: fb, fa: 1,
+                    br: fr, bg: fgG, bb: fb, ba: 1
+                ))
             }
         }
 
-        // On partial dirty, rebuild ALL underlines from cache by re-walking (cheap vs glyphs).
-        if onlyDirty {
-            underlineExtras = []
-            rebuildAllUnderlines(
-                renderState: renderState,
-                rowIter: rowIter,
-                cells: cells,
-                layout: layout,
-                defFg: defFg,
-                defBg: defBg
+        // Cursor on this row → break runs around that column (Ghostty).
+        var cursorCol: Int?
+        var inViewport = false
+        var cy: UInt16 = 0
+        var cx: UInt16 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
+        if inViewport {
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
+            if Int(cy) == rowIndex {
+                cursorCol = Int(cx)
+            }
+        }
+
+        // 2) Shape text runs and stamp glyphs.
+        let segments = segmentRuns(
+            rowCells,
+            selectionLo: selStart.flatMap { s in selEnd.map { e in min(s, e) } },
+            selectionHi: selStart.flatMap { s in selEnd.map { e in max(s, e) } },
+            cursorCol: cursorCol
+        )
+        for seg in segments {
+            switch seg {
+            case .gap:
+                break
+            case .wide(let col):
+                paintWideOrFallback(
+                    col: col, rowIndex: rowIndex, rowCells: rowCells,
+                    metrics: metrics, layout: layout,
+                    cellWInt: cellWInt, cellHInt: cellHInt, selected: selected(col)
+                )
+            case .run(let start, let end, let style):
+                paintShapedRun(
+                    start: start, end: end, style: style,
+                    rowCells: rowCells, rowIndex: rowIndex,
+                    metrics: metrics, layout: layout,
+                    cellWInt: cellWInt, cellHInt: cellHInt,
+                    selected: selected
+                )
+            }
+        }
+    }
+
+    private enum RunSeg {
+        case run(start: Int, end: Int, style: TextStyleKey) // end exclusive
+        case wide(col: Int)
+        case gap
+    }
+
+    /// Segment a row into shape runs (Ghostty-aligned break rules).
+    ///
+    /// Breaks on: 2+ spaces/empties, text style (not bg), wide cells,
+    /// selection boundaries, cursor column, and bad ligatures (fi/fl/st).
+    /// Single spaces stay inside runs; 2+ spaces are gaps.
+    private func segmentRuns(
+        _ cells: [RowCell],
+        selectionLo: Int?,
+        selectionHi: Int?,
+        cursorCol: Int?
+    ) -> [RunSeg] {
+        var segs: [RunSeg] = []
+        var i = 0
+        var runStart: Int?
+        var runStyle: TextStyleKey?
+
+        func flushRun(upTo end: Int) {
+            guard let s = runStart, let st = runStyle, s < end else {
+                runStart = nil
+                runStyle = nil
+                return
+            }
+            segs.append(.run(start: s, end: end, style: st))
+            runStart = nil
+            runStyle = nil
+        }
+
+        /// True if we must end the current run before absorbing column `i`.
+        func mustBreakBefore(i: Int, runStart: Int) -> Bool {
+            if i <= runStart { return false }
+
+            // Selection: break at enter (lo) and leave (hi+1). Inclusive hi.
+            if let lo = selectionLo, let hi = selectionHi {
+                if i == lo { return true }
+                if i == hi + 1 { return true }
+            }
+
+            // Cursor: run before cursor stops at cursor; cursor cell is its own run.
+            if let cx = cursorCol {
+                // Started before cursor, about to include cursor → stop before it.
+                if runStart < cx, i == cx { return true }
+                // Started at cursor, already took cursor cell → stop after one cell.
+                if runStart == cx, i == runStart + 1 { return true }
+            }
+
+            // Bad ligatures (Ghostty): force split so fi/fl/st do not merge.
+            if Self.isBadLigaturePair(prev: cells[i - 1], next: cells[i]) {
+                return true
+            }
+
+            return false
+        }
+
+        while i < cells.count {
+            let c = cells[i]
+            if c.isWideTail {
+                i += 1
+                continue
+            }
+            if c.isWideHead {
+                flushRun(upTo: i)
+                segs.append(.wide(col: i))
+                i += 1
+                continue
+            }
+
+            // Count consecutive space/empty cells.
+            if c.isSpaceOrEmpty {
+                var j = i
+                while j < cells.count, cells[j].isSpaceOrEmpty, !cells[j].isWideHead, !cells[j].isWideTail {
+                    j += 1
+                }
+                let n = j - i
+                if n >= 2 {
+                    flushRun(upTo: i)
+                    segs.append(.gap)
+                    i = j
+                    continue
+                }
+                // Single space: include in run if style matches (or start run).
+            }
+
+            if let s = runStart, mustBreakBefore(i: i, runStart: s) {
+                flushRun(upTo: i)
+            }
+
+            let st = c.textStyle
+            if runStart == nil {
+                runStart = i
+                runStyle = st
+            } else if st != runStyle {
+                flushRun(upTo: i)
+                runStart = i
+                runStyle = st
+            }
+            i += 1
+        }
+        flushRun(upTo: cells.count)
+        return segs
+    }
+
+    /// Ghostty "bad ligature" pairs: fi, fl, st (common discretionary ligas).
+    private static func isBadLigaturePair(prev: RowCell, next: RowCell) -> Bool {
+        guard let a = prev.text.first, let b = next.text.first else { return false }
+        // Only plain single-scalar cells (skip multi-codepoint graphemes).
+        guard prev.text.count == 1, next.text.count == 1 else { return false }
+        switch (a, b) {
+        case ("f", "i"), ("f", "l"), ("s", "t"),
+             ("F", "i"), ("F", "l"), ("S", "t"),
+             ("f", "I"), ("f", "L"), ("s", "T"),
+             ("F", "I"), ("F", "L"), ("S", "T"):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func paintShapedRun(
+        start: Int,
+        end: Int,
+        style: TextStyleKey,
+        rowCells: [RowCell],
+        rowIndex: Int,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        selected: (Int) -> Bool
+    ) {
+        guard start < end else { return }
+        var text = ""
+        var utf16Starts: [Int] = [0]
+        for col in start..<end {
+            let t = rowCells[col].text.isEmpty ? " " : rowCells[col].text
+            text += t
+            utf16Starts.append(text.utf16.count)
+        }
+        guard !text.isEmpty else { return }
+
+        let font = metrics.font(bold: style.bold, italic: style.italic)
+        let shapedFont = ShaperCache.font(font, ligatures: fontLigatures)
+        let placements = shaper.shape(
+            text: text,
+            cellUTF16Starts: utf16Starts,
+            style: style,
+            font: shapedFont,
+            fontPx: layout.fontPx,
+            ligatures: fontLigatures
+        )
+
+        // Full cell-height glyph strips; row top on the integer pixel grid.
+        let rowTop = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
+            .rounded(.toNearestOrAwayFromZero)
+        var fr = Float(style.fr) / 255
+        var fgG = Float(style.fg) / 255
+        var fb = Float(style.fb) / 255
+        if style.faint { fr *= 0.5; fgG *= 0.5; fb *= 0.5 }
+
+        for p in placements {
+            let col = start + Int(p.x)
+            guard col < end, col < layout.cols else { continue }
+
+            let entry = atlas.entry(
+                glyph: p.glyph,
+                bold: style.bold,
+                italic: style.italic,
+                font: shapedFont,
+                fontPx: layout.fontPx,
+                cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                cellWidthPx: cellWInt,
+                faceWidthPx: metrics.faceWidthPx
+            )
+            // Skip empty ink (spacer glyphs).
+            if entry.pixelW < 0.5 || entry.pixelH < 0.5 { continue }
+
+            let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
+                .rounded(.toNearestOrAwayFromZero)
+            // Bearings + shaper x_offset. Full-cell strips use bearingY=0 (shared baseline).
+            // y_offset is usually 0 for horizontal Latin; apply in cell-bottom space.
+            let ox = (cellX + Float(p.xOffset) + entry.bearingX).rounded(.toNearestOrAwayFromZero)
+            let oy = (rowTop + entry.bearingY - Float(p.yOffset)).rounded(.toNearestOrAwayFromZero)
+            let pwG = entry.pixelW.rounded(.toNearestOrAwayFromZero)
+            let phG = entry.pixelH.rounded(.toNearestOrAwayFromZero)
+
+            var ifr = fr, ifg = fgG, ifb = fb
+            if selected(col) {
+                let idx = rowIndex * layout.cols + col
+                if idx < gridCells.count {
+                    let bgCell = gridCells[idx]
+                    ifr = bgCell.br; ifg = bgCell.bg; ifb = bgCell.bb
+                }
+            }
+
+            // Ink-only, after all cell backgrounds (glyphExtras).
+            glyphExtras.append(.make(
+                originX: ox, originY: oy,
+                width: max(1, pwG), height: max(1, phG),
+                u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+                fr: ifr, fg: ifg, fb: ifb, fa: 1,
+                br: 0, bg: 0, bb: 0, ba: 0
+            ))
+        }
+    }
+
+    private func paintWideOrFallback(
+        col: Int,
+        rowIndex: Int,
+        rowCells: [RowCell],
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        selected: Bool
+    ) {
+        guard col < rowCells.count else { return }
+        let c = rowCells[col]
+        let text = c.text
+        guard !text.isEmpty else { return }
+        let font = metrics.font(bold: c.bold, italic: c.italic)
+        let fallbacks = [
+            EmbeddedFonts.primaryNerdMono(size: CGFloat(cellHInt) * 0.85),
+            EmbeddedFonts.primaryNerd(size: CGFloat(cellHInt) * 0.85),
+        ]
+        let span = c.isWideHead ? 2 : 1
+        let entry = atlas.entry(
+            text: text,
+            bold: c.bold,
+            italic: c.italic,
+            font: font,
+            cellWidthPx: cellWInt * span,
+            cellHeightPx: cellHInt,
+            cellBaselinePx: metrics.cellBaselinePx,
+            faceWidthPx: metrics.faceWidthPx * CGFloat(span),
+            fallbackFonts: fallbacks
+        )
+        let x = layout.originX + layout.padPx + Float(col) * layout.cellW
+        let y = layout.originY + layout.padPx + Float(rowIndex) * layout.cellH
+        var fr = Float(c.fg.r) / 255
+        var fgG = Float(c.fg.g) / 255
+        var fb = Float(c.fg.b) / 255
+        if c.faint { fr *= 0.5; fgG *= 0.5; fb *= 0.5 }
+        var br = Float(c.bg.r) / 255
+        var bgG = Float(c.bg.g) / 255
+        var bb = Float(c.bg.b) / 255
+        if selected {
+            swap(&fr, &br); swap(&fgG, &bgG); swap(&fb, &bb)
+        }
+        let idx = rowIndex * layout.cols + col
+        guard idx < gridCells.count else { return }
+        gridCells[idx] = CellInstance.make(
+            originX: x, originY: y,
+            width: layout.cellW * Float(span),
+            height: layout.cellH,
+            u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+            fr: fr, fg: fgG, fb: fb, fa: 1,
+            br: br, bg: bgG, bb: bb, ba: 1
+        )
+    }
+
+    private func rebuildRowUnderlinesOnly(
+        cellsHandle: GhosttyRenderStateRowCells,
+        rowIndex: Int,
+        layout: LayoutKey,
+        defFg: GhosttyColorRgb,
+        defBg: GhosttyColorRgb
+    ) {
+        var col = 0
+        while ghostty_render_state_row_cells_next(cellsHandle) {
+            defer { col += 1 }
+            guard col < layout.cols else { break }
+            appendUnderlineIfNeeded(
+                cellsHandle: cellsHandle,
+                row: rowIndex, col: col,
+                layout: layout, defFg: defFg, defBg: defBg
             )
         }
     }
@@ -596,13 +1027,16 @@ final class TerminalRenderer {
         var u0: Float = 0, v0: Float = 0, u1: Float = 0, v1: Float = 0
         if graphemeLen > 0, let str = cellTextUTF8(cellsHandle), !str.isEmpty {
             let font = metrics.font(bold: style.bold, italic: style.italic)
+            let span = wide ? 2 : 1
             let entry = atlas.entry(
                 text: str,
                 bold: style.bold,
                 italic: style.italic,
                 font: font,
-                cellWidthPx: wide ? cellWInt * 2 : cellWInt,
+                cellWidthPx: cellWInt * span,
                 cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                faceWidthPx: metrics.faceWidthPx * CGFloat(span),
                 fallbackFonts: [
                     EmbeddedFonts.primaryNerdMono(size: CGFloat(cellHInt) * 0.85),
                     EmbeddedFonts.primaryNerd(size: CGFloat(cellHInt) * 0.85),
@@ -735,9 +1169,14 @@ final class TerminalRenderer {
     private func appendCursor(
         to instances: inout [CellInstance],
         renderState: GhosttyRenderState,
+        rowIter: GhosttyRenderStateRowIterator,
+        cells: GhosttyRenderStateRowCells,
         colors: GhosttyRenderStateColors,
         defFg: GhosttyColorRgb,
+        metrics: CellMetrics,
         layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
         blinkOn: Bool,
         visualY: Float = 0
     ) {
@@ -755,47 +1194,180 @@ final class TerminalRenderer {
         var style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style)
 
-        var cur = defFg
-        if colors.cursor_has_value { cur = colors.cursor }
+        // Host theme: cursor = cell-foreground (#ccc). Prefer explicit terminal
+        // cursor color; otherwise DefaultColors.cursor / defFg.
+        var cur = DefaultColors.cursor
+        if colors.cursor_has_value {
+            cur = colors.cursor
+        } else if defFg.r != 0 || defFg.g != 0 || defFg.b != 0 {
+            cur = defFg
+        }
         let cr = Float(cur.r) / 255
         let cg = Float(cur.g) / 255
         let cb = Float(cur.b) / 255
-        let x = layout.originX + layout.padPx + Float(cx) * layout.cellW
-        let y = layout.originY + layout.padPx + Float(cy) * layout.cellH + visualY
+        // cursor-text = cell-background (glyph under block).
+        let tr = Float(DefaultColors.background.r) / 255
+        let tg = Float(DefaultColors.background.g) / 255
+        let tb = Float(DefaultColors.background.b) / 255
+        let x = (layout.originX + layout.padPx + Float(cx) * layout.cellW)
+            .rounded(.toNearestOrAwayFromZero)
+        let y = (layout.originY + layout.padPx + Float(cy) * layout.cellH + visualY)
+            .rounded(.toNearestOrAwayFromZero)
         let cw = layout.cellW
         let ch = layout.cellH
 
         switch style {
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR:
-            let w = max(2, cw * 0.12)
+            let w = max(2, cw * 0.12).rounded(.toNearestOrAwayFromZero)
             instances.append(.make(
                 originX: x, originY: y, width: w, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 0.9,
-                br: cr, bg: cg, bb: cb, ba: 0.9
+                fr: cr, fg: cg, fb: cb, fa: 1,
+                br: cr, bg: cg, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
-            let h = max(2, ch * 0.12)
+            let h = max(2, ch * 0.12).rounded(.toNearestOrAwayFromZero)
             instances.append(.make(
                 originX: x, originY: y + ch - h, width: cw, height: h,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 0.9,
-                br: cr, bg: cg, bb: cb, ba: 0.9
+                fr: cr, fg: cg, fb: cb, fa: 1,
+                br: cr, bg: cg, bb: cb, ba: 1
             ))
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
-            let t: Float = max(1, min(cw, ch) * 0.08)
-            // top, bottom, left, right edges
-            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 0.9, br: cr, bg: cg, bb: cb, ba: 0.9))
-            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 0.9, br: cr, bg: cg, bb: cb, ba: 0.9))
-            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 0.9, br: cr, bg: cg, bb: cb, ba: 0.9))
-            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 0.9, br: cr, bg: cg, bb: cb, ba: 0.9))
-        default: // block
+            let t: Float = max(1, min(cw, ch) * 0.08).rounded(.toNearestOrAwayFromZero)
+            instances.append(.make(originX: x, originY: y, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y + ch - t, width: cw, height: t, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+            instances.append(.make(originX: x, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+            instances.append(.make(originX: x + cw - t, originY: y, width: t, height: ch, u0: 0, v0: 0, u1: 0, v1: 0, fr: cr, fg: cg, fb: cb, fa: 1, br: cr, bg: cg, bb: cb, ba: 1))
+        default: // block: solid cursor bg, then redraw cell glyph in cursor-text color
             instances.append(.make(
                 originX: x, originY: y, width: cw, height: ch,
                 u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: cr, fg: cg, fb: cb, fa: 0.55,
-                br: cr, bg: cg, bb: cb, ba: 0.55
+                fr: tr, fg: tg, fb: tb, fa: 1,
+                br: cr, bg: cg, bb: cb, ba: 1
             ))
+            appendCursorCellGlyph(
+                to: &instances,
+                renderState: renderState,
+                rowIter: rowIter,
+                cells: cells,
+                col: Int(cx),
+                row: Int(cy),
+                cellX: x,
+                cellY: y,
+                metrics: metrics,
+                layout: layout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt,
+                textR: tr, textG: tg, textB: tb
+            )
+        }
+    }
+
+    /// Redraw the character under a block cursor in cursor-text color (on top of fill).
+    private func appendCursorCellGlyph(
+        to instances: inout [CellInstance],
+        renderState: GhosttyRenderState,
+        rowIter: GhosttyRenderStateRowIterator,
+        cells: GhosttyRenderStateRowCells,
+        col: Int,
+        row: Int,
+        cellX: Float,
+        cellY: Float,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        textR: Float,
+        textG: Float,
+        textB: Float
+    ) {
+        guard col >= 0, row >= 0, col < layout.cols, row < layout.rows else { return }
+
+        var iter = rowIter
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iter)
+        var r = 0
+        while ghostty_render_state_row_iterator_next(iter) {
+            defer { r += 1 }
+            if r != row { continue }
+            var cellsHandle = cells
+            if ghostty_render_state_row_get(iter, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cellsHandle) != GHOSTTY_SUCCESS {
+                return
+            }
+            var c = 0
+            var skipTail = false
+            while ghostty_render_state_row_cells_next(cellsHandle) {
+                defer { c += 1 }
+                if c != col {
+                    // Still need to advance wide-tail state.
+                    if skipTail {
+                        skipTail = false
+                        continue
+                    }
+                    var raw: GhosttyCell = 0
+                    if ghostty_render_state_row_cells_get(
+                        cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw
+                    ) == GHOSTTY_SUCCESS {
+                        var wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW
+                        if ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide) == GHOSTTY_SUCCESS,
+                           wide == GHOSTTY_CELL_WIDE_WIDE {
+                            skipTail = true
+                        }
+                    }
+                    continue
+                }
+                if skipTail { return }
+
+                var wideHead = false
+                var raw: GhosttyCell = 0
+                if ghostty_render_state_row_cells_get(
+                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw
+                ) == GHOSTTY_SUCCESS {
+                    var wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW
+                    if ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide) == GHOSTTY_SUCCESS {
+                        if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { return }
+                        if wide == GHOSTTY_CELL_WIDE_WIDE { wideHead = true }
+                    }
+                }
+
+                guard let text = cellTextUTF8(cellsHandle), !text.isEmpty else { return }
+
+                var st = GhosttyStyle()
+                st.size = MemoryLayout<GhosttyStyle>.size
+                ghostty_style_default(&st)
+                _ = ghostty_render_state_row_cells_get(
+                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &st
+                )
+                let font = metrics.font(bold: st.bold, italic: st.italic)
+                let span = wideHead ? 2 : 1
+                let entry = atlas.entry(
+                    text: text,
+                    bold: st.bold,
+                    italic: st.italic,
+                    font: font,
+                    cellWidthPx: cellWInt * span,
+                    cellHeightPx: cellHInt,
+                    cellBaselinePx: metrics.cellBaselinePx,
+                    faceWidthPx: metrics.faceWidthPx * CGFloat(span),
+                    fallbackFonts: [
+                        EmbeddedFonts.primaryNerdMono(size: CGFloat(cellHInt) * 0.85),
+                        EmbeddedFonts.primaryNerd(size: CGFloat(cellHInt) * 0.85),
+                    ]
+                )
+                if entry.pixelW < 0.5 { return }
+                // Full-cell text atlas entry (cursor-text): baseline-aligned inside the cell.
+                instances.append(.make(
+                    originX: cellX,
+                    originY: cellY,
+                    width: layout.cellW * Float(span),
+                    height: layout.cellH,
+                    u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+                    fr: textR, fg: textG, fb: textB, fa: 1,
+                    br: 0, bg: 0, bb: 0, ba: 0
+                ))
+                return
+            }
+            return
         }
     }
 
@@ -818,7 +1390,9 @@ final class TerminalRenderer {
                 italic: false,
                 font: font,
                 cellWidthPx: cellWInt,
-                cellHeightPx: cellHInt
+                cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                faceWidthPx: metrics.faceWidthPx
             )
             instances.append(.make(
                 originX: ix, originY: iy, width: layout.cellW, height: layout.cellH,
@@ -1014,12 +1588,19 @@ final class TerminalRenderer {
                                   texture2d<float> atlas [[texture(0)]],
                                   sampler samp [[sampler(0)]]) {
         float4 bg = in.bg;
-        if (bg.a < 0.99 && in.hasGlyph < 0.5) {
-            return float4(bg.rgb * bg.a, bg.a);
-        }
         float a = 0.0;
         if (in.hasGlyph > 0.5) {
             a = atlas.sample(samp, in.uv).r;
+        }
+        // Ink-only quads (multi-cell ligatures): transparent bg, blend glyph over prior cells.
+        if (bg.a < 0.01) {
+            if (a < 0.001) {
+                return float4(0.0, 0.0, 0.0, 0.0);
+            }
+            return float4(in.fg.rgb, saturate(a));
+        }
+        if (bg.a < 0.99 && in.hasGlyph < 0.5) {
+            return float4(bg.rgb * bg.a, bg.a);
         }
         float3 rgb = mix(bg.rgb, in.fg.rgb, saturate(a));
         return float4(rgb, 1.0);
