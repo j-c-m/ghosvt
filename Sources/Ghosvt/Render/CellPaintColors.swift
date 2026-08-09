@@ -58,7 +58,7 @@ enum CellPaintColors {
         if fill.r == 0, fill.g == 0, fill.b == 0 {
             fill = RGB(defFg)
         }
-        var text = cellFill
+        let text = cellFill
         if let osc = oscCursor {
             fill = RGB(osc)
         }
