@@ -65,6 +65,23 @@ enum KeyBridge {
         }
     }
 
+    /// Ghostty macOS defaults: super+page_up / super+page_down → scroll one page.
+    /// Returns +1 for page up (older history), -1 for page down, else nil.
+    static func scrollPageDirection(from event: NSEvent) -> Double? {
+        guard event.type == .keyDown else { return nil }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option)
+        else { return nil }
+        // Allow Shift (some keyboards); ignore for direction.
+        switch event.keyCode {
+        case 116: return 1   // Page Up → older
+        case 121: return -1  // Page Down → newer / toward bottom
+        default: return nil
+        }
+    }
+
     static func handleKeyDown(_ event: NSEvent, session: TerminalSession) {
         // Encode under the session lock, then write *outside* the lock.
         // Nested writeToPty while holding the lock deadlocked NSLock on first key.

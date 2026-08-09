@@ -611,6 +611,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if handleVtSwitch(event, manager: manager) {
             return
         }
+        if handleScrollPage(event, manager: manager) {
+            return
+        }
         // Do not feed Command chords into the PTY (except we already handled VT switch).
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
@@ -642,6 +645,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return false
     }
 
+    /// Ghostty: ⌘PageUp / ⌘PageDown scroll one viewport of history.
+    @discardableResult
+    func handleScrollPage(_ event: NSEvent, manager: VtManager) -> Bool {
+        guard let dir = KeyBridge.scrollPageDirection(from: event) else { return false }
+        manager.active.scrollByViewportPages(dir)
+        return true
+    }
+
     override func flagsChanged(with event: NSEvent) {
         // Keep first responder; do not let the event bubble into beeps.
     }
@@ -658,6 +669,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 return true
             }
             if let manager, handleVtSwitch(event, manager: manager) {
+                return true
+            }
+            if let manager, handleScrollPage(event, manager: manager) {
                 return true
             }
             // Copy / paste (ignore other modifiers like Shift for basic chords).

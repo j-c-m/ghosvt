@@ -58,6 +58,27 @@ final class ScrollPhysics {
         velocity -= deltaRows * impulseScale
     }
 
+    /// Instant jump by row count (page keys). Positive = older history (toward top).
+    func jumpByRows(_ rows: Double, maxOffset: Double) {
+        if abs(rows) < 1e-9 { return }
+        let maxO = max(0, maxOffset)
+        pinnedToBottom = false
+        velocity = 0
+        position = min(max(position - rows, 0), maxO)
+        if abs(position - maxO) < settlePos {
+            pinnedToBottom = true
+            position = maxO
+        }
+    }
+
+    /// Jump to top of scrollback.
+    func pinTop(maxOffset: Double) {
+        _ = maxOffset
+        position = 0
+        velocity = 0
+        pinnedToBottom = false
+    }
+
     /// Jump to bottom and pin.
     func pinBottom(maxOffset: Double) {
         let maxO = max(0, maxOffset)

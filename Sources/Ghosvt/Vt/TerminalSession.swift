@@ -87,6 +87,18 @@ final class TerminalSession {
         syncIntegerViewport()
     }
 
+    /// Ghostty `scroll_page_up` / `scroll_page_down` (one viewport of history).
+    /// `pages > 0` → older history (Page Up); negative → toward bottom (Page Down).
+    func scrollByViewportPages(_ pages: Double) {
+        let snap = queryScrollbar()
+        let maxO = snap?.maxOffset ?? scrollMaxOffset
+        let vp = max(1, Double(snap?.len ?? UInt64(rows)))
+        scrollMaxOffset = maxO
+        scrollViewportRows = vp
+        scrollPhysics.jumpByRows(pages * vp, maxOffset: maxO)
+        syncIntegerViewport()
+    }
+
     deinit {
         tearDown()
     }

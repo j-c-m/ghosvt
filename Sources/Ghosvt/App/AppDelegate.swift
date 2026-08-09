@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch (consume so menus don't steal them).
+            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll (consume).
             if flags.contains(.command) {
                 // No main menu — handle quit ourselves.
                 if event.charactersIgnoringModifiers?.lowercased() == "q" {
@@ -77,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return nil
                 }
                 if view.handleVtSwitch(event, manager: manager) {
+                    return nil
+                }
+                if view.handleScrollPage(event, manager: manager) {
                     return nil
                 }
                 // Other ⌘ chords: leave to the system/menu.
