@@ -1,5 +1,13 @@
 import Foundation
 
+/// How each VT is spawned (`console-mode`).
+enum ConsoleMode: String, Sendable {
+    /// Banner + `/usr/bin/login -p` (getty-style).
+    case login
+    /// Banner + `$SHELL -l` (no login(1)). Default for now.
+    case shell
+}
+
 /// User configuration from `~/.config/ghosvt/config` (Ghostty-style key = value).
 struct Config: Sendable {
     var vtCount: Int = 6
@@ -20,6 +28,8 @@ struct Config: Sendable {
     /// Default: keystroke on, output off (`keystroke, no-output`).
     var scrollToBottomKeystroke: Bool = true
     var scrollToBottomOutput: Bool = false
+    /// Per-VT spawn: `login` or `shell` (default for now).
+    var consoleMode: ConsoleMode = .shell
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -76,6 +86,15 @@ struct Config: Sendable {
                 cfg.fontLigatures = parseBool(value)
             case "scroll-to-bottom":
                 applyScrollToBottom(value, to: &cfg)
+            case "console-mode":
+                switch value.lowercased() {
+                case "login", "getty":
+                    cfg.consoleMode = .login
+                case "shell":
+                    cfg.consoleMode = .shell
+                default:
+                    break
+                }
             default:
                 break
             }

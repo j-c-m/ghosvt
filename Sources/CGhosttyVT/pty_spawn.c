@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,13 +75,7 @@ static void scrub_environ(void) {
     }
 }
 
-/**
- * Minimal environment for login -p: only terminal identity + terminfo.
- * login still adds HOME/SHELL/USER/PATH/etc. after authentication.
- */
-static void setup_term_env(const char *terminfo_dir) {
-    scrub_environ();
-
+static void set_term_identity(const char *terminfo_dir) {
     setenv("COLORTERM", "truecolor", 1);
     setenv("TERM_PROGRAM", "ghosvt", 1);
     setenv("TERM_PROGRAM_VERSION", "0.1.0", 1);
@@ -95,10 +90,38 @@ static void setup_term_env(const char *terminfo_dir) {
     }
 }
 
-int ghosvt_pty_spawn_login(int tty_index, uint16_t cols, uint16_t rows,
-                           uint32_t cell_width_px, uint32_t cell_height_px,
-                           const char *terminfo_dir,
-                           pid_t *child_out) {
+/**
+ * Minimal environment for login -p: only terminal identity + terminfo.
+ * login still adds HOME/SHELL/USER/PATH/etc. after authentication.
+ */
+static void setup_login_env(const char *terminfo_dir) {
+    scrub_environ();
+    set_term_identity(terminfo_dir);
+}
+
+/**
+ * Keep the host user environment; only force terminal identity.
+ * Used for console-mode = shell (no login(1)).
+ */
+static void setup_shell_env(const char *terminfo_dir) {
+    set_term_identity(terminfo_dir);
+}
+
+static const char *resolve_shell(void) {
+    const char *shell = getenv("SHELL");
+    if (shell && shell[0])
+        return shell;
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_shell && pw->pw_shell[0])
+        return pw->pw_shell;
+    return "/bin/zsh";
+}
+
+int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
+                     uint32_t cell_width_px, uint32_t cell_height_px,
+                     const char *terminfo_dir,
+                     GhosvtConsoleMode console_mode,
+                     pid_t *child_out) {
     if (!child_out) {
         return -1;
     }
@@ -126,8 +149,18 @@ int ghosvt_pty_spawn_login(int tty_index, uint16_t cols, uint16_t rows,
             ti = terminfo_buf;
         }
 
-        setup_term_env(ti);
         write_banner(tty_index);
+
+        if (console_mode == GHOSVT_CONSOLE_SHELL) {
+            setup_shell_env(ti);
+            const char *shell = resolve_shell();
+            /* Login shell so profile/rc load (typical terminal emulator). */
+            execl(shell, shell, "-l", (char *)NULL);
+            dprintf(STDERR_FILENO, "ghosvt: exec shell %s failed: %s\n", shell, strerror(errno));
+            _exit(127);
+        }
+
+        setup_login_env(ti);
         /*
          * login -p: keep only the scrubbed env we just built (TERM/TERMINFO/…).
          * Without -p, macOS login drops TERMINFO even if it special-cases TERM.

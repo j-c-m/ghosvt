@@ -34,6 +34,7 @@ final class TerminalSession {
 
     private let lock = NSLock()
     private let scrollbackLimitBytes: Int
+    private let consoleMode: ConsoleMode
 
     /// Last integer row pushed to `ghostty_terminal_scroll_viewport`.
     private var lastSyncedIntegerRow: UInt64?
@@ -62,9 +63,10 @@ final class TerminalSession {
     private var mouseEvent: GhosttyMouseEvent?
     private var mouseButtonsDown: Set<Int> = []
 
-    init(index: Int, scrollbackLimitBytes: Int) {
+    init(index: Int, scrollbackLimitBytes: Int, consoleMode: ConsoleMode = .shell) {
         self.index = index
         self.scrollbackLimitBytes = scrollbackLimitBytes
+        self.consoleMode = consoleMode
     }
 
     /// Apply config spring/friction constants to this session's physics.
@@ -709,33 +711,38 @@ final class TerminalSession {
 
     private func spawnLoginLocked() {
         var pid: pid_t = -1
+        let mode: GhosvtConsoleMode = consoleMode == .shell
+            ? GHOSVT_CONSOLE_SHELL
+            : GHOSVT_CONSOLE_LOGIN
         let fd: Int32
         if let path = Terminfo.databasePath {
             fd = path.withCString { cPath in
-                ghosvt_pty_spawn_login(
+                ghosvt_pty_spawn(
                     Int32(index),
                     cols,
                     rows,
                     cellWidthPx,
                     cellHeightPx,
                     cPath,
+                    mode,
                     &pid
                 )
             }
         } else {
-            fd = ghosvt_pty_spawn_login(
+            fd = ghosvt_pty_spawn(
                 Int32(index),
                 cols,
                 rows,
                 cellWidthPx,
                 cellHeightPx,
                 nil,
+                mode,
                 &pid
             )
         }
         if fd < 0 {
             let err = String(cString: strerror(errno))
-            fputs("ghosvt: forkpty/login failed for ttyv\(index): \(err)\n", stderr)
+            fputs("ghosvt: forkpty/spawn failed for ttyv\(index): \(err)\n", stderr)
             masterFD = -1
             childPID = -1
             return

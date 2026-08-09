@@ -10,10 +10,18 @@
 extern "C" {
 #endif
 
+/** How each VT is started (config `console-mode`). */
+typedef enum {
+    /** Banner + `/usr/bin/login -p` (getty-style). */
+    GHOSVT_CONSOLE_LOGIN = 0,
+    /** Banner + user shell as a login shell (`$SHELL -l`). Config default for now. */
+    GHOSVT_CONSOLE_SHELL = 1,
+} GhosvtConsoleMode;
+
 /**
- * Spawn a getty-style login on a new PTY.
+ * Spawn a console process on a new PTY.
  *
- * Child: banner + exec /usr/bin/login -p (preserves TERM/TERMINFO).
+ * Child: banner, then login or shell per `console_mode`.
  * Parent: non-blocking master fd; child pid in *child_out.
  *
  * @param terminfo_dir Absolute path to a terminfo database dir containing
@@ -21,10 +29,11 @@ extern "C" {
  *        back to xterm-256color without TERMINFO override.
  * @return master fd (>=0) or -1 on error
  */
-int ghosvt_pty_spawn_login(int tty_index, uint16_t cols, uint16_t rows,
-                           uint32_t cell_width_px, uint32_t cell_height_px,
-                           const char *terminfo_dir,
-                           pid_t *child_out);
+int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
+                     uint32_t cell_width_px, uint32_t cell_height_px,
+                     const char *terminfo_dir,
+                     GhosvtConsoleMode console_mode,
+                     pid_t *child_out);
 
 int ghosvt_pty_set_winsize(int master_fd, uint16_t cols, uint16_t rows,
                            uint32_t cell_width_px, uint32_t cell_height_px);

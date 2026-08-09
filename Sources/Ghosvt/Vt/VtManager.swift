@@ -13,7 +13,11 @@ final class VtManager {
     init(config: Config) {
         self.config = config
         self.sessions = (0..<config.vtCount).map {
-            TerminalSession(index: $0, scrollbackLimitBytes: config.scrollbackLimitBytes)
+            TerminalSession(
+                index: $0,
+                scrollbackLimitBytes: config.scrollbackLimitBytes,
+                consoleMode: config.consoleMode
+            )
         }
         for s in sessions {
             s.applyScrollConfig(config)
