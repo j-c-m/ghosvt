@@ -2,7 +2,7 @@
 
 Fullscreen macOS multi-VT terminal on **libghostty-vt** + **Metal**.
 
-Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Each VT shows a short banner, then either your shell or `login`, and respawns when that process exits.
+Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-mode = shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**). **`login`** mode uses a getty banner and a full password prompt.
 
 ## Requirements
 
@@ -53,8 +53,8 @@ Refresh from Ghostty.app:
 
 | `console-mode` | Behavior |
 |----------------|----------|
-| **`shell`** (default) | Banner + `$SHELL -l` (or `pw_shell` / `/bin/zsh`); host environment kept |
-| **`login`** | Banner + scrubbed env + `/usr/bin/login -p` (getty-style) |
+| **`shell`** (default) | Ghostty-style `login -flp $USER` → login shell; shows `Last login: …`; no getty banner |
+| **`login`** | Getty banner + scrubbed env + `/usr/bin/login -p` (password prompt) |
 
 Alias: `getty` → `login`.
 

@@ -4,7 +4,7 @@ import Foundation
 enum ConsoleMode: String, Sendable {
     /// Banner + `/usr/bin/login -p` (getty-style).
     case login
-    /// Banner + `$SHELL -l` (no login(1)). Default for now.
+    /// Ghostty-style: `login -flp` → login shell ("Last login: …"); no getty banner.
     case shell
 }
 

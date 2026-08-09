@@ -101,20 +101,67 @@ static void setup_login_env(const char *terminfo_dir) {
 
 /**
  * Keep the host user environment; only force terminal identity.
- * Used for console-mode = shell (no login(1)).
+ * Used for console-mode = shell before `login -flp` (Ghostty-style).
  */
 static void setup_shell_env(const char *terminfo_dir) {
     set_term_identity(terminfo_dir);
 }
 
-static const char *resolve_shell(void) {
+static const char *resolve_shell(const struct passwd *pw) {
     const char *shell = getenv("SHELL");
     if (shell && shell[0])
         return shell;
-    struct passwd *pw = getpwuid(getuid());
     if (pw && pw->pw_shell && pw->pw_shell[0])
         return pw->pw_shell;
     return "/bin/zsh";
+}
+
+/**
+ * Ghostty macOS shell path: login -flp $USER then bash exec -l $SHELL.
+ * Prints "Last login: … on ttys…" (unless ~/.hushlogin or -q), skips password,
+ * preserves env (-p), does not force home chdir for multi-session (-l).
+ * No getty banner.
+ */
+static void exec_shell_mode(const char *terminfo_dir) {
+    setup_shell_env(terminfo_dir);
+
+    struct passwd *pw = getpwuid(getuid());
+    if (!pw || !pw->pw_name || !pw->pw_name[0]) {
+        const char *shell = resolve_shell(NULL);
+        execl(shell, shell, "-l", (char *)NULL);
+        dprintf(STDERR_FILENO, "ghosvt: exec shell %s failed: %s\n", shell, strerror(errno));
+        _exit(127);
+    }
+
+    int hush = 0;
+    if (pw->pw_dir && pw->pw_dir[0]) {
+        char hush_path[4096];
+        int n = snprintf(hush_path, sizeof(hush_path), "%s/.hushlogin", pw->pw_dir);
+        if (n > 0 && (size_t)n < sizeof(hush_path) && access(hush_path, F_OK) == 0)
+            hush = 1;
+    }
+
+    const char *shell = resolve_shell(pw);
+    char exec_cmd[4096];
+    int cn = snprintf(exec_cmd, sizeof(exec_cmd), "exec -l %s", shell);
+    if (cn <= 0 || (size_t)cn >= sizeof(exec_cmd)) {
+        dprintf(STDERR_FILENO, "ghosvt: shell path too long\n");
+        _exit(127);
+    }
+
+    /*
+     * Match Ghostty Exec.zig: login [-q] -flp user /bin/bash --noprofile --norc -c
+     * 'exec -l $SHELL'. Fast bash bootstrap; real shell is a proper login shell.
+     */
+    if (hush) {
+        execl("/usr/bin/login", "login", "-q", "-flp", pw->pw_name,
+              "/bin/bash", "--noprofile", "--norc", "-c", exec_cmd, (char *)NULL);
+    } else {
+        execl("/usr/bin/login", "login", "-flp", pw->pw_name,
+              "/bin/bash", "--noprofile", "--norc", "-c", exec_cmd, (char *)NULL);
+    }
+    dprintf(STDERR_FILENO, "ghosvt: exec login -flp failed: %s\n", strerror(errno));
+    _exit(127);
 }
 
 int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
@@ -149,17 +196,12 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
             ti = terminfo_buf;
         }
 
-        write_banner(tty_index);
-
         if (console_mode == GHOSVT_CONSOLE_SHELL) {
-            setup_shell_env(ti);
-            const char *shell = resolve_shell();
-            /* Login shell so profile/rc load (typical terminal emulator). */
-            execl(shell, shell, "-l", (char *)NULL);
-            dprintf(STDERR_FILENO, "ghosvt: exec shell %s failed: %s\n", shell, strerror(errno));
-            _exit(127);
+            exec_shell_mode(ti);
+            /* not reached */
         }
 
+        write_banner(tty_index);
         setup_login_env(ti);
         /*
          * login -p: keep only the scrubbed env we just built (TERM/TERMINFO/…).

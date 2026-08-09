@@ -14,14 +14,17 @@ extern "C" {
 typedef enum {
     /** Banner + `/usr/bin/login -p` (getty-style). */
     GHOSVT_CONSOLE_LOGIN = 0,
-    /** Banner + user shell as a login shell (`$SHELL -l`). Config default for now. */
+    /**
+     * Ghostty-style shell session: `login -flp $USER` → login shell.
+     * Shows "Last login: …"; no getty banner, no password. Default for now.
+     */
     GHOSVT_CONSOLE_SHELL = 1,
 } GhosvtConsoleMode;
 
 /**
  * Spawn a console process on a new PTY.
  *
- * Child: banner, then login or shell per `console_mode`.
+ * Child: login (with banner) or shell (no banner) per `console_mode`.
  * Parent: non-blocking master fd; child pid in *child_out.
  *
  * @param terminfo_dir Absolute path to a terminfo database dir containing
