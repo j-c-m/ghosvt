@@ -15,6 +15,8 @@ final class MetalTerminalView: MTKView {
     private var lastRows: UInt16 = 0
     private var lastScale: CGFloat = 0
     private var lastFontSize: CGFloat = 0
+    private var lastFrameTime: CFTimeInterval = 0
+    private var scrollConfigApplied = false
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
@@ -115,11 +117,29 @@ final class MetalTerminalView: MTKView {
               let metrics
         else { return }
 
+        if !scrollConfigApplied {
+            for s in manager.sessions {
+                s.applyScrollConfig(config)
+            }
+            scrollConfigApplied = true
+        }
+
         manager.pollAllIO()
+
+        let now = CACurrentMediaTime()
+        let dt = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
+        lastFrameTime = now
+
+        // Step scroll physics for every live VT so inactive ones settle too.
+        for s in manager.sessions where s.isLive {
+            s.stepScroll(dt: dt)
+        }
+
         let indicator = manager.tickIndicator()
         let scale = window?.backingScaleFactor ?? 2
         // Content rect in drawable pixels (same aspect cap as grid sizing).
         let contentPx = ContentLayout.contentRect(in: drawableSize, maxAspect: config.maxAspect)
+        let visualOffset = manager.active.visualOffsetRows()
 
         renderer.draw(
             session: manager.active,
@@ -130,11 +150,37 @@ final class MetalTerminalView: MTKView {
             contentRect: contentPx,
             scale: scale,
             indicator: indicator,
-            clearColor: clearColor
+            clearColor: clearColor,
+            visualOffsetRows: visualOffset
         )
     }
 
     // MARK: - Input
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let manager, let metrics else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let session = manager.active
+        guard session.isLive else { return }
+
+        // Apps with mouse tracking (e.g. full-screen TUI) own the wheel.
+        if session.isMouseTracking() {
+            return
+        }
+
+        let dy: CGFloat
+        if event.hasPreciseScrollingDeltas {
+            dy = event.scrollingDeltaY
+        } else {
+            // Classic wheel: each notch ≈ 3 lines.
+            dy = event.scrollingDeltaY * metrics.cellHeight * 3
+        }
+        // Positive scrollingDeltaY = content moves down = older history.
+        let deltaRows = Double(dy) / Double(max(metrics.cellHeight, 1))
+        session.applyScrollImpulse(deltaRows: deltaRows)
+    }
 
     override func keyDown(with event: NSEvent) {
         guard let manager else {

@@ -17,6 +17,9 @@ final class TerminalSession {
     private(set) var childPID: pid_t = -1
     private(set) var isLive: Bool = false
 
+    /// Per-VT continuous scroll + spring overscroll (main-thread only).
+    let scrollPhysics = ScrollPhysics()
+
     private var cols: UInt16 = 80
     private var rows: UInt16 = 24
     private var cellWidthPx: UInt32 = 8
@@ -24,6 +27,12 @@ final class TerminalSession {
 
     private let lock = NSLock()
     private let scrollbackLines: Int
+
+    /// Last integer row pushed to `ghostty_terminal_scroll_viewport`.
+    private var lastSyncedIntegerRow: UInt64?
+    /// Cached scrollbar max offset (rows from top).
+    private(set) var scrollMaxOffset: Double = 0
+    private(set) var scrollViewportRows: Double = 24
 
     /// Persistent bytes for GHOSTTY_TERMINAL_OPT_TERMINFO_NAME.
     private let terminfoNameBytes: [UInt8] = Array("xterm-ghostty".utf8)
@@ -34,6 +43,13 @@ final class TerminalSession {
     init(index: Int, scrollbackLines: Int) {
         self.index = index
         self.scrollbackLines = scrollbackLines
+    }
+
+    /// Apply config spring/friction constants to this session's physics.
+    func applyScrollConfig(_ config: Config) {
+        scrollPhysics.springK = config.scrollSpringK
+        scrollPhysics.springC = config.scrollSpringC
+        scrollPhysics.friction = config.scrollFriction
     }
 
     deinit {
@@ -264,6 +280,103 @@ final class TerminalSession {
         _ = ghostty_render_state_end_update(renderState)
     }
 
+    // MARK: - Scroll
+
+    struct ScrollbarSnapshot {
+        var total: UInt64
+        var offset: UInt64
+        var len: UInt64
+
+        /// Max continuous scroll position (top of history = 0, bottom = this).
+        var maxOffset: Double {
+            total > len ? Double(total - len) : 0
+        }
+    }
+
+    /// Poll scrollbar geometry from libghostty-vt (amortized O(1)).
+    func queryScrollbar() -> ScrollbarSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return nil }
+        var sb = GhosttyTerminalScrollbar(total: 0, offset: 0, len: 0)
+        let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &sb)
+        guard r == GHOSTTY_SUCCESS else { return nil }
+        return ScrollbarSnapshot(total: sb.total, offset: sb.offset, len: sb.len)
+    }
+
+    /// True when an app has mouse tracking enabled (wheel should go to the PTY).
+    func isMouseTracking() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return false }
+        var tracking = false
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+        return tracking
+    }
+
+    /// Wheel/trackpad impulse. Positive `deltaRows` moves toward older history (lower offset).
+    func applyScrollImpulse(deltaRows: Double) {
+        scrollPhysics.applyImpulse(deltaRows: deltaRows)
+    }
+
+    /// Fractional pixel shift in row units for the renderer.
+    func visualOffsetRows() -> Double {
+        scrollPhysics.visualOffsetRows(maxOffset: scrollMaxOffset)
+    }
+
+    /// Integrate physics, pin-follow, and push integer viewport to ghostty.
+    /// Returns true while the spring/coast still needs frames.
+    @discardableResult
+    func stepScroll(dt: Double) -> Bool {
+        guard isLive else { return false }
+
+        let snap = queryScrollbar()
+        let maxO = snap?.maxOffset ?? 0
+        let vpRows = Double(snap?.len ?? UInt64(rows))
+        scrollMaxOffset = maxO
+        scrollViewportRows = max(1, vpRows)
+
+        // New output grows history: stay glued when pinned.
+        scrollPhysics.followBottomIfPinned(maxOffset: maxO)
+
+        // Clamp if scrollback was trimmed under us.
+        if !scrollPhysics.pinnedToBottom, scrollPhysics.position > maxO {
+            scrollPhysics.syncFromScrollbar(offset: maxO, maxOffset: maxO, forcePinIfActive: false)
+        }
+
+        let animating = scrollPhysics.step(dt: dt, maxOffset: maxO, viewportRows: scrollViewportRows)
+        syncIntegerViewport()
+        return animating
+            || abs(scrollPhysics.velocity) > 0.01
+            || scrollPhysics.position < -0.01
+            || scrollPhysics.position > maxO + 0.01
+    }
+
+    /// Push floor(position) into ghostty when it changes.
+    private func syncIntegerViewport() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return }
+
+        if scrollPhysics.pinnedToBottom {
+            if lastSyncedIntegerRow != UInt64.max {
+                var sv = GhosttyTerminalScrollViewport()
+                sv.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+                ghostty_terminal_scroll_viewport(terminal, sv)
+                lastSyncedIntegerRow = UInt64.max
+            }
+            return
+        }
+
+        let row = scrollPhysics.integerRow(maxOffset: scrollMaxOffset)
+        if lastSyncedIntegerRow == row { return }
+        var sv = GhosttyTerminalScrollViewport()
+        sv.tag = GHOSTTY_SCROLL_VIEWPORT_ROW
+        sv.value.row = Int(row)
+        ghostty_terminal_scroll_viewport(terminal, sv)
+        lastSyncedIntegerRow = row
+    }
+
     // MARK: - Private
 
     private func startLocked() {
@@ -385,6 +498,9 @@ final class TerminalSession {
         if let terminal {
             ghostty_terminal_reset(terminal)
         }
+        lastSyncedIntegerRow = nil
+        scrollMaxOffset = 0
+        scrollPhysics.pinBottom(maxOffset: 0)
         spawnLoginLocked()
     }
 

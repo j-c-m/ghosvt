@@ -27,6 +27,7 @@ final class TerminalRenderer {
     private var lastDefBg = (r: UInt8(12), g: UInt8(12), b: UInt8(16))
     private var lastIndicator: String?
     private var lastBlinkOn = true
+    private var lastVisualY: Float = 0
     private var blinkPeriod: CFTimeInterval = 0.53
     private var prewarmedKey: String?
 
@@ -105,7 +106,8 @@ final class TerminalRenderer {
         contentRect: CGRect,
         scale: CGFloat,
         indicator: String?,
-        clearColor: MTLClearColor
+        clearColor: MTLClearColor,
+        visualOffsetRows: Double = 0
     ) {
         session.updateRenderState()
         guard let renderState = session.renderState,
@@ -127,6 +129,8 @@ final class TerminalRenderer {
         let padPx = Float(padPoints * scale)
         let cellWInt = max(1, Int(cellW.rounded(.toNearestOrAwayFromZero)))
         let cellHInt = max(1, Int(cellH.rounded(.toNearestOrAwayFromZero)))
+        // Fractional / overscroll shift in drawable pixels (top-left coords).
+        let visualY = Float(visualOffsetRows) * cellH
 
         var colsU: UInt16 = 0
         var rowsU: UInt16 = 0
@@ -179,6 +183,8 @@ final class TerminalRenderer {
         let indicatorChanged = indicator != lastIndicator
         lastIndicator = indicator
         let layoutChanged = lastLayoutKey != layout
+        let visualChanged = abs(visualY - lastVisualY) > 0.05
+        lastVisualY = visualY
 
         let needGridRebuild: Bool
         let partialOnly: Bool
@@ -224,7 +230,8 @@ final class TerminalRenderer {
         }
 
         // Idle: reuse previous GPU buffer (includes last cursor/indicator).
-        if !needGridRebuild && !blinkChanged && !indicatorChanged && lastDrawnCount > 0 {
+        // Keep recomposing while fractional / overscroll offset is moving.
+        if !needGridRebuild && !blinkChanged && !indicatorChanged && !visualChanged && lastDrawnCount > 0 {
             present(
                 count: lastDrawnCount,
                 drawable: drawable,
@@ -237,8 +244,14 @@ final class TerminalRenderer {
         }
 
         // Compose: grid cells + underlines + cursor + VT indicator.
+        // Grid positions are base (no scroll offset); apply visualY here.
         var instances = gridCells
         instances.append(contentsOf: underlineExtras)
+        if abs(visualY) > 0.001 {
+            for i in 0..<instances.count {
+                instances[i].oy += visualY
+            }
+        }
 
         appendCursor(
             to: &instances,
@@ -246,7 +259,8 @@ final class TerminalRenderer {
             colors: colors,
             defFg: defFg,
             layout: layout,
-            blinkOn: blinkOn
+            blinkOn: blinkOn,
+            visualY: visualY
         )
 
         if let indicator, !indicator.isEmpty {
@@ -687,7 +701,8 @@ final class TerminalRenderer {
         colors: GhosttyRenderStateColors,
         defFg: GhosttyColorRgb,
         layout: LayoutKey,
-        blinkOn: Bool
+        blinkOn: Bool,
+        visualY: Float = 0
     ) {
         var cursorVisible = false
         var inViewport = false
@@ -709,7 +724,7 @@ final class TerminalRenderer {
         let cg = Float(cur.g) / 255
         let cb = Float(cur.b) / 255
         let x = layout.originX + layout.padPx + Float(cx) * layout.cellW
-        let y = layout.originY + layout.padPx + Float(cy) * layout.cellH
+        let y = layout.originY + layout.padPx + Float(cy) * layout.cellH + visualY
         let cw = layout.cellW
         let ch = layout.cellH
 
@@ -756,6 +771,7 @@ final class TerminalRenderer {
         cellHInt: Int
     ) {
         var ix = layout.originX + layout.padPx + 4
+        // Fixed in content rect (does not follow scroll).
         let iy = layout.originY + layout.padPx + 4
         let font = metrics.fontBold
         for ch in text {
