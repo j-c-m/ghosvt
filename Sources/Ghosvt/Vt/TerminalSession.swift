@@ -40,6 +40,9 @@ final class TerminalSession {
     /// Context for C effects callbacks (heap-stable).
     private var effectsBox: EffectsBox?
 
+    /// Gather + parse PTY pipeline (off main). Stop before taking `lock` for teardown.
+    private var pipeline: PtyPipeline?
+
     // Selection gesture (main-thread; serialized with terminal lock on API calls).
     private var selectionGesture: GhosttySelectionGesture?
     private var selPressEvent: GhosttySelectionGestureEvent?
@@ -99,53 +102,66 @@ final class TerminalSession {
         }
     }
 
-    /// Drain PTY → vt_write. Respawns login if the child dies.
-    /// Budgeted so one flood cannot stall the main thread indefinitely.
-    func pollIO(maxBytes: Int = 256 * 1024, maxReads: Int = 32) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isLive, let terminal, masterFD >= 0 else { return }
-
-        var buf = [UInt8](repeating: 0, count: 8192)
-        var childDead = false
-        var total = 0
-        var reads = 0
-        while reads < maxReads, total < maxBytes {
-            reads += 1
-            let n = read(masterFD, &buf, buf.count)
-            if n > 0 {
-                ghostty_terminal_vt_write(terminal, buf, Int(n))
-                total += Int(n)
-                continue
-            }
-            if n == 0 {
-                childDead = true
-                break
-            }
-            if errno == EAGAIN || errno == EWOULDBLOCK {
-                break
-            }
-            if errno == EINTR {
-                continue
-            }
-            if errno == EIO {
-                childDead = true
-                break
-            }
-            break
-        }
-
-        if childDead {
-            respawnLocked()
+    /// Lightweight health check: pipeline does drain+vt_write off main.
+    /// Respawns only after gather has drained to EOF/EIO (`takeChildDead`).
+    func pollIO() {
+        guard isLive else { return }
+        if pipeline?.takeChildDead() == true {
+            recoverChild()
             return
         }
+        // Reap zombies only — do not stop the pipeline here. Closing the master
+        // before gather finishes drops the child's final output (review bug 1).
+        lock.lock()
         if childPID > 0 {
             var status: Int32 = 0
-            let r = waitpid(childPID, &status, WNOHANG)
-            if r == childPID {
-                respawnLocked()
+            if waitpid(childPID, &status, WNOHANG) == childPID {
+                childPID = -1
             }
         }
+        lock.unlock()
+    }
+
+    /// Parse-thread entry: feed one gather batch into libghostty-vt.
+    fileprivate func parsePipelineBatch(_ ptr: UnsafePointer<UInt8>, _ len: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let terminal, len > 0 else { return }
+        // Drop only after teardown cleared the terminal.
+        ghostty_terminal_vt_write(terminal, ptr, len)
+    }
+
+    /// Stop gather/parse, respawn login, start a new pipeline.
+    /// Never call while holding `lock` (parse may need that lock to exit).
+    private func recoverChild() {
+        stopPipeline()
+        lock.lock()
+        respawnLocked()
+        lock.unlock()
+    }
+
+    private func stopPipeline() {
+        pipeline?.stop()
+        pipeline = nil
+    }
+
+    /// Caller must stop any previous pipeline *outside* `lock` before this.
+    private func startPipelineLocked() {
+        guard masterFD >= 0, pipeline == nil else { return }
+        let p = PtyPipeline(
+            masterFD: masterFD,
+            onParse: { [weak self] ptr, len in
+                self?.parsePipelineBatch(ptr, len)
+            },
+            onDeath: {
+                // `recoverReady` is set on the pipeline; main `pollIO` recovers.
+            }
+        )
+        guard p.start() else {
+            fputs("ghosvt: PtyPipeline start failed for ttyv\(index)\n", stderr)
+            return
+        }
+        pipeline = p
     }
 
     func writeToPty(_ bytes: [UInt8]) {
@@ -644,7 +660,9 @@ final class TerminalSession {
 
         installEffectsLocked()
         spawnLoginLocked()
+        // Live before pipeline starts so early banner bytes are not dropped.
         isLive = true
+        startPipelineLocked()
     }
 
     private func spawnLoginLocked() {
@@ -685,6 +703,7 @@ final class TerminalSession {
         effectsBox?.ptyFD = fd
     }
 
+    /// Assumes pipeline is already stopped (no concurrent parse on this terminal).
     private func respawnLocked() {
         if masterFD >= 0 {
             close(masterFD)
@@ -704,6 +723,7 @@ final class TerminalSession {
         scrollMaxOffset = 0
         scrollPhysics.pinBottom(maxOffset: 0)
         spawnLoginLocked()
+        startPipelineLocked()
     }
 
     private func installEffectsLocked() {
@@ -732,8 +752,11 @@ final class TerminalSession {
     }
 
     private func tearDown() {
+        // Join IO threads first — parse may need `lock` to finish a batch.
+        stopPipeline()
         lock.lock()
         defer { lock.unlock() }
+        isLive = false
         if masterFD >= 0 {
             close(masterFD)
             masterFD = -1
@@ -762,7 +785,6 @@ final class TerminalSession {
         self.renderState = nil
         self.terminal = nil
         mouseButtonsDown.removeAll()
-        isLive = false
     }
 
     // MARK: - Selection / clipboard
