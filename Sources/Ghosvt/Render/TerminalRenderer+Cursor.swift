@@ -175,7 +175,10 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int
     ) {
-        var ix = layout.originX + layout.padPx + 4
+        // Upper-right of the content grid (pad inset).
+        let textW = Float(text.count) * layout.cellW
+        let right = layout.originX + layout.padPx + Float(layout.cols) * layout.cellW - 4
+        var ix = right - textW
         let iy = layout.originY + layout.padPx + 4
         let font = metrics.fontBold
         for ch in text {
