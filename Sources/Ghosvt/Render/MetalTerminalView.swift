@@ -39,7 +39,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         framebufferOnly = true
         isPaused = false
         enableSetNeedsDisplay = false
-        preferredFramesPerSecond = 60
+        // Match the display max rate (0 is not valid — it stops the draw timer).
+        applyDisplayRefreshRate()
         autoResizeDrawable = true
         let bg = DefaultColors.background
         clearColor = MTLClearColor(
@@ -55,12 +56,32 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
     }
 
+    /// Match the screen’s highest refresh rate (e.g. 144 Hz fixed, 120 Hz ProMotion).
+    /// MTKView rejects 0 (stops drawing); it then picks the closest supported rate.
+    private func applyDisplayRefreshRate() {
+        let screen = window?.screen ?? NSScreen.main
+        var fps = 60
+        if let screen {
+            // Prefer the higher of the two APIs — external 144 Hz panels and
+            // ProMotion sometimes disagree on which field is authoritative.
+            let fromMax = screen.maximumFramesPerSecond
+            if fromMax > 0 { fps = max(fps, fromMax) }
+            let minInterval = screen.minimumRefreshInterval
+            if minInterval > 0, minInterval.isFinite {
+                let fromInterval = Int((1.0 / minInterval).rounded())
+                if fromInterval > 0 { fps = max(fps, fromInterval) }
+            }
+        }
+        preferredFramesPerSecond = max(1, fps)
+    }
+
     override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeFocusObservers()
         window?.makeFirstResponder(self)
+        applyDisplayRefreshRate()
         refreshMetrics(force: true)
         spawnIfNeeded()
         updateTrackingAreas()
@@ -113,6 +134,15 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.manager?.active.encodeFocus(gained: false)
+            }
+        })
+        focusObservers.append(nc.addObserver(
+            forName: NSWindow.didChangeScreenNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applyDisplayRefreshRate()
             }
         })
     }
