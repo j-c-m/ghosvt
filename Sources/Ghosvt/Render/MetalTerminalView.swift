@@ -3,7 +3,7 @@ import Metal
 import MetalKit
 import QuartzCore
 
-final class MetalTerminalView: MTKView {
+final class MetalTerminalView: MTKView, NSMenuItemValidation {
     var manager: VtManager?
     var config: Config = Config()
 
@@ -17,6 +17,8 @@ final class MetalTerminalView: MTKView {
     private var lastFontSize: CGFloat = 0
     private var lastFrameTime: CFTimeInterval = 0
     private var scrollConfigApplied = false
+    private var selecting = false
+    private var selectRectangle = false
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
@@ -188,6 +190,80 @@ final class MetalTerminalView: MTKView {
         session.applyScrollImpulse(deltaRows: deltaRows)
     }
 
+    // MARK: - Selection / mouse
+
+    private func makeSelectionHit(_ event: NSEvent) -> TerminalSession.SelectionHit? {
+        guard let manager, let metrics else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        return manager.active.selectionHit(
+            viewPoint: convert(event.locationInWindow, from: nil),
+            viewSize: bounds.size,
+            contentRectPoints: contentRectPoints(),
+            cellWidthPoints: metrics.cellWidth,
+            cellHeightPoints: metrics.cellHeight,
+            padPoints: pad,
+            scale: scale
+        )
+    }
+
+    /// Host selection when not in mouse-tracking mode, or always with Shift.
+    private func shouldHostSelect(_ event: NSEvent) -> Bool {
+        guard let manager else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.shift) { return true }
+        return !manager.active.isMouseTracking()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let manager, event.buttonNumber == 0 else {
+            super.mouseDown(with: event)
+            return
+        }
+        window?.makeFirstResponder(self)
+        guard shouldHostSelect(event), let hit = makeSelectionHit(event) else {
+            selecting = false
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        selectRectangle = flags.contains(.option)
+        selecting = true
+        let timeNs = UInt64(event.timestamp * 1_000_000_000)
+        manager.active.selectionPress(hit: hit, timeNs: timeNs, rectangle: selectRectangle)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard selecting, let manager, let hit = makeSelectionHit(event) else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        selectRectangle = flags.contains(.option)
+        _ = manager.active.selectionDrag(hit: hit, rectangle: selectRectangle)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard selecting, let manager else {
+            super.mouseUp(with: event)
+            return
+        }
+        selecting = false
+        manager.active.selectionRelease(hit: makeSelectionHit(event))
+        if config.copyOnSelect {
+            _ = manager.active.copySelectionToPasteboard()
+        }
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        // Middle-click paste (button 2).
+        guard event.buttonNumber == 2, let manager else {
+            super.otherMouseDown(with: event)
+            return
+        }
+        if let text = Clipboard.pasteString() {
+            manager.active.pasteText(text)
+        }
+    }
+
     override func keyDown(with event: NSEvent) {
         guard let manager else {
             super.keyDown(with: event)
@@ -200,6 +276,10 @@ final class MetalTerminalView: MTKView {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
             return
+        }
+        // Typing clears the active selection (macOS terminal convention).
+        if manager.active.selectionActive {
+            manager.active.clearSelection()
         }
         KeyBridge.handleKeyDown(event, session: manager.active)
     }
@@ -227,7 +307,7 @@ final class MetalTerminalView: MTKView {
         // Keep first responder; do not let the event bubble into beeps.
     }
 
-    /// Claim ⌘1… / ⌘F1… before the menu; leave ⌘Q to the system.
+    /// Claim ⌘1… / ⌘F1… / ⌘C / ⌘V before the menu; leave ⌘Q to the system.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown else {
             return super.performKeyEquivalent(with: event)
@@ -241,11 +321,48 @@ final class MetalTerminalView: MTKView {
             if let manager, handleVtSwitch(event, manager: manager) {
                 return true
             }
+            // Copy / paste (ignore other modifiers like Shift for basic chords).
+            if !flags.contains(.control), !flags.contains(.option) {
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "c":
+                    if let manager, manager.active.copySelectionToPasteboard() {
+                        return true
+                    }
+                    // No selection: do not swallow (allow system beep / no-op).
+                    return true
+                case "v":
+                    if let manager, let text = Clipboard.pasteString() {
+                        manager.active.pasteText(text)
+                    }
+                    return true
+                default:
+                    break
+                }
+            }
         }
         if !flags.contains(.command) {
             keyDown(with: event)
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    @objc func copy(_ sender: Any?) {
+        _ = manager?.active.copySelectionToPasteboard()
+    }
+
+    @objc func paste(_ sender: Any?) {
+        guard let manager, let text = Clipboard.pasteString() else { return }
+        manager.active.pasteText(text)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(copy(_:)) {
+            return manager?.active.selectionActive == true
+        }
+        if menuItem.action == #selector(paste(_:)) {
+            return Clipboard.pasteString() != nil
+        }
+        return true
     }
 }

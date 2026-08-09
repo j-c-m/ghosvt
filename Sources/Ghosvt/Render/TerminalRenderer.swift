@@ -402,9 +402,30 @@ final class TerminalRenderer {
             var colIndex = 0
             var skipTail = false
 
+            // Row-local selection range for invert highlight.
+            var selStart: Int?
+            var selEnd: Int?
+            var rowSel = GhosttyRenderStateRowSelection()
+            rowSel.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
+            if ghostty_render_state_row_get(
+                iter,
+                GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION,
+                &rowSel
+            ) == GHOSTTY_SUCCESS {
+                selStart = Int(rowSel.start_x)
+                selEnd = Int(rowSel.end_x)
+            }
+
             while ghostty_render_state_row_cells_next(cellsHandle) {
                 defer { colIndex += 1 }
                 guard colIndex < layout.cols else { break }
+
+                let selected: Bool = {
+                    guard let s = selStart, let e = selEnd else { return false }
+                    let lo = min(s, e)
+                    let hi = max(s, e)
+                    return colIndex >= lo && colIndex <= hi
+                }()
 
                 if skipTail {
                     // Wide spacer tail: bg only if dirty
@@ -418,6 +439,11 @@ final class TerminalRenderer {
                         tail.ox = x
                         tail.oy = y
                         tail.u0 = 0; tail.v0 = 0; tail.u1 = 0; tail.v1 = 0
+                        if selected {
+                            swap(&tail.fr, &tail.br)
+                            swap(&tail.fg, &tail.bg)
+                            swap(&tail.fb, &tail.bb)
+                        }
                         gridCells[idx] = tail
                     }
                     continue
@@ -441,6 +467,11 @@ final class TerminalRenderer {
                                 c.ox = x; c.oy = y
                                 c.sx = layout.cellW; c.sy = layout.cellH
                                 c.u0 = 0; c.v0 = 0; c.u1 = 0; c.v1 = 0
+                                if selected {
+                                    swap(&c.fr, &c.br)
+                                    swap(&c.fg, &c.bg)
+                                    swap(&c.fb, &c.bb)
+                                }
                                 gridCells[idx] = c
                             }
                             continue
@@ -462,7 +493,7 @@ final class TerminalRenderer {
                 }
 
                 let x = layout.originX + layout.padPx + Float(colIndex) * layout.cellW
-                let inst = makeCellInstance(
+                var inst = makeCellInstance(
                     cellsHandle: cellsHandle,
                     x: x, y: y,
                     layout: layout,
@@ -473,6 +504,11 @@ final class TerminalRenderer {
                     cellHInt: cellHInt,
                     wide: skipTail
                 )
+                if selected {
+                    swap(&inst.cell.fr, &inst.cell.br)
+                    swap(&inst.cell.fg, &inst.cell.bg)
+                    swap(&inst.cell.fb, &inst.cell.bb)
+                }
                 let idx = rowIndex * layout.cols + colIndex
                 if idx < gridCells.count {
                     gridCells[idx] = inst.cell

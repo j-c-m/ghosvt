@@ -10,6 +10,8 @@ struct Config: Sendable {
     var scrollSpringK: Double = 120
     var scrollSpringC: Double = 14
     var scrollFriction: Double = 6
+    /// When true, mouse-up copies the selection to the pasteboard automatically.
+    var copyOnSelect: Bool = false
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -55,11 +57,20 @@ struct Config: Sendable {
                 if let n = Double(value) { cfg.scrollSpringC = n }
             case "scroll-friction":
                 if let n = Double(value) { cfg.scrollFriction = n }
+            case "copy-on-select":
+                cfg.copyOnSelect = parseBool(value)
             default:
                 break
             }
         }
         return cfg
+    }
+
+    private static func parseBool(_ value: String) -> Bool {
+        switch value.lowercased() {
+        case "1", "true", "yes", "on": return true
+        default: return false
+        }
     }
 
     /// Parse `3:2`, `3/2`, or a plain float `1.5`. Clamped to a sane range.

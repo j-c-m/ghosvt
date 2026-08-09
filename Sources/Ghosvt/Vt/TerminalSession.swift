@@ -40,6 +40,13 @@ final class TerminalSession {
     /// Context for C effects callbacks (heap-stable).
     private var effectsBox: EffectsBox?
 
+    // Selection gesture (main-thread; serialized with terminal lock on API calls).
+    private var selectionGesture: GhosttySelectionGesture?
+    private var selPressEvent: GhosttySelectionGestureEvent?
+    private var selDragEvent: GhosttySelectionGestureEvent?
+    private var selReleaseEvent: GhosttySelectionGestureEvent?
+    private var hasSelection: Bool = false
+
     init(index: Int, scrollbackLines: Int) {
         self.index = index
         self.scrollbackLines = scrollbackLines
@@ -518,6 +525,7 @@ final class TerminalSession {
         setFn(terminal, GHOSTTY_TERMINAL_OPT_SIZE, effectSize as GhosttyTerminalSizeFn)
         setFn(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, effectDeviceAttributes as GhosttyTerminalDeviceAttributesFn)
         setFn(terminal, GHOSTTY_TERMINAL_OPT_XTVERSION, effectXtversion as GhosttyTerminalXtversionFn)
+        setFn(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, effectClipboardWrite as GhosttyTerminalClipboardWriteFn)
     }
 
     private func setFn<T>(_ terminal: GhosttyTerminal, _ opt: GhosttyTerminalOption, _ fn: T) {
@@ -538,6 +546,7 @@ final class TerminalSession {
             _ = waitpid(childPID, &status, 0)
             childPID = -1
         }
+        freeSelectionGestureLocked()
         if let keyEvent { ghostty_key_event_free(keyEvent) }
         if let keyEncoder { ghostty_key_encoder_free(keyEncoder) }
         if let rowCells { ghostty_render_state_row_cells_free(rowCells) }
@@ -551,6 +560,287 @@ final class TerminalSession {
         self.renderState = nil
         self.terminal = nil
         isLive = false
+    }
+
+    // MARK: - Selection / clipboard
+
+    private func ensureSelectionGestureLocked() {
+        guard selectionGesture == nil else { return }
+        var g: GhosttySelectionGesture?
+        if ghostty_selection_gesture_new(nil, &g) == GHOSTTY_SUCCESS {
+            selectionGesture = g
+        }
+        var press: GhosttySelectionGestureEvent?
+        if ghostty_selection_gesture_event_new(nil, &press, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS) == GHOSTTY_SUCCESS {
+            selPressEvent = press
+        }
+        var drag: GhosttySelectionGestureEvent?
+        if ghostty_selection_gesture_event_new(nil, &drag, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG) == GHOSTTY_SUCCESS {
+            selDragEvent = drag
+        }
+        var release: GhosttySelectionGestureEvent?
+        if ghostty_selection_gesture_event_new(nil, &release, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE) == GHOSTTY_SUCCESS {
+            selReleaseEvent = release
+        }
+    }
+
+    private func freeSelectionGestureLocked() {
+        if let g = selectionGesture {
+            ghostty_selection_gesture_free(g, terminal)
+        }
+        if let e = selPressEvent { ghostty_selection_gesture_event_free(e) }
+        if let e = selDragEvent { ghostty_selection_gesture_event_free(e) }
+        if let e = selReleaseEvent { ghostty_selection_gesture_event_free(e) }
+        selectionGesture = nil
+        selPressEvent = nil
+        selDragEvent = nil
+        selReleaseEvent = nil
+        hasSelection = false
+    }
+
+    /// Geometry + pointer mapping for selection (surface pixels, top-left of content).
+    struct SelectionHit {
+        var col: UInt16
+        var row: UInt16
+        var surfaceX: Double
+        var surfaceY: Double
+        var geometry: GhosttySelectionGestureGeometry
+    }
+
+    /// Map a view point (AppKit bottom-left points) into a viewport cell hit.
+    func selectionHit(
+        viewPoint: CGPoint,
+        viewSize: CGSize,
+        contentRectPoints: CGRect,
+        cellWidthPoints: CGFloat,
+        cellHeightPoints: CGFloat,
+        padPoints: CGFloat,
+        scale: CGFloat
+    ) -> SelectionHit? {
+        guard cellWidthPoints > 0, cellHeightPoints > 0, scale > 0 else { return nil }
+        // ContentLayout y is top-origin; convert AppKit y → top-origin.
+        let yFromTop = viewSize.height - viewPoint.y
+        let localX = viewPoint.x - contentRectPoints.minX - padPoints
+        let localY = yFromTop - contentRectPoints.minY - padPoints
+        guard localX >= 0, localY >= 0 else { return nil }
+
+        let col = Int(localX / cellWidthPoints)
+        let row = Int(localY / cellHeightPoints)
+        let c = Int(cols)
+        let r = Int(rows)
+        guard col >= 0, row >= 0, col < c, row < r else { return nil }
+
+        let surfX = Double((viewPoint.x - contentRectPoints.minX) * scale)
+        let surfY = Double((yFromTop - contentRectPoints.minY) * scale)
+        var geo = GhosttySelectionGestureGeometry()
+        geo.columns = UInt32(cols)
+        geo.cell_width = UInt32(max(1, (cellWidthPoints * scale).rounded()))
+        geo.padding_left = UInt32(max(0, (padPoints * scale).rounded()))
+        geo.screen_height = UInt32(max(1, (contentRectPoints.height * scale).rounded()))
+        return SelectionHit(
+            col: UInt16(col),
+            row: UInt16(row),
+            surfaceX: surfX,
+            surfaceY: surfY,
+            geometry: geo
+        )
+    }
+
+    private func viewportRefLocked(col: UInt16, row: UInt16) -> GhosttyGridRef? {
+        guard let terminal else { return nil }
+        var ref = GhosttyGridRef()
+        ref.size = MemoryLayout<GhosttyGridRef>.size
+        var point = GhosttyPoint()
+        point.tag = GHOSTTY_POINT_TAG_VIEWPORT
+        point.value.coordinate.x = col
+        point.value.coordinate.y = UInt32(row)
+        let r = ghostty_terminal_grid_ref(terminal, point, &ref)
+        guard r == GHOSTTY_SUCCESS else { return nil }
+        return ref
+    }
+
+    private func installSelectionLocked(_ selection: UnsafePointer<GhosttySelection>?) {
+        guard let terminal else { return }
+        if let selection {
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, UnsafeRawPointer(selection))
+            hasSelection = true
+        } else {
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+            hasSelection = false
+        }
+        // Force a full grid rebuild so invert highlight updates while dragging.
+        if let renderState {
+            var dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL
+            _ = ghostty_render_state_set(renderState, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty)
+        }
+    }
+
+    /// Begin selection press (single/double/triple via time_ns). Returns true if handled.
+    @discardableResult
+    func selectionPress(hit: SelectionHit, timeNs: UInt64, rectangle: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return false }
+        ensureSelectionGestureLocked()
+        guard let gesture = selectionGesture, let press = selPressEvent else { return false }
+        guard var ref = viewportRefLocked(col: hit.col, row: hit.row) else { return false }
+
+        _ = ghostty_selection_gesture_event_set(press, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &ref)
+        var pos = GhosttySurfacePosition(x: hit.surfaceX, y: hit.surfaceY)
+        _ = ghostty_selection_gesture_event_set(press, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &pos)
+        var t = timeNs
+        _ = ghostty_selection_gesture_event_set(press, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS, &t)
+        var dist: Double = 4
+        _ = ghostty_selection_gesture_event_set(press, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_DISTANCE, &dist)
+        var interval: UInt64 = 500_000_000
+        _ = ghostty_selection_gesture_event_set(press, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_INTERVAL_NS, &interval)
+        // rectangle flag is applied on drag; clear selection on new press if single-click path
+        _ = rectangle
+
+        var out = GhosttySelection()
+        out.size = MemoryLayout<GhosttySelection>.size
+        let res = ghostty_selection_gesture_event(gesture, terminal, press, &out)
+        if res == GHOSTTY_SUCCESS {
+            installSelectionLocked(&out)
+        } else {
+            // Single press often returns NO_VALUE (anchor only) — clear old selection.
+            installSelectionLocked(nil)
+        }
+        return true
+    }
+
+    /// Drag update. `rectangle` true for Option+drag block select.
+    @discardableResult
+    func selectionDrag(hit: SelectionHit, rectangle: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return false }
+        ensureSelectionGestureLocked()
+        guard let gesture = selectionGesture, let drag = selDragEvent else { return false }
+        guard var ref = viewportRefLocked(col: hit.col, row: hit.row) else { return false }
+
+        _ = ghostty_selection_gesture_event_set(drag, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &ref)
+        var pos = GhosttySurfacePosition(x: hit.surfaceX, y: hit.surfaceY)
+        _ = ghostty_selection_gesture_event_set(drag, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &pos)
+        var geo = hit.geometry
+        _ = ghostty_selection_gesture_event_set(drag, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &geo)
+        var rect = rectangle
+        _ = ghostty_selection_gesture_event_set(drag, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_RECTANGLE, &rect)
+
+        var out = GhosttySelection()
+        out.size = MemoryLayout<GhosttySelection>.size
+        let res = ghostty_selection_gesture_event(gesture, terminal, drag, &out)
+        if res == GHOSTTY_SUCCESS {
+            installSelectionLocked(&out)
+            return true
+        }
+        return false
+    }
+
+    func selectionRelease(hit: SelectionHit?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return }
+        ensureSelectionGestureLocked()
+        guard let gesture = selectionGesture, let release = selReleaseEvent else { return }
+        if let hit, var ref = viewportRefLocked(col: hit.col, row: hit.row) {
+            _ = ghostty_selection_gesture_event_set(release, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &ref)
+        } else {
+            _ = ghostty_selection_gesture_event_set(release, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, nil)
+        }
+        _ = ghostty_selection_gesture_event(gesture, terminal, release, nil)
+    }
+
+    func clearSelection() {
+        lock.lock()
+        defer { lock.unlock() }
+        installSelectionLocked(nil)
+        if let gesture = selectionGesture, let terminal {
+            ghostty_selection_gesture_reset(gesture, terminal)
+        }
+    }
+
+    var selectionActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasSelection
+    }
+
+    /// Plain-text of the active selection (unwrap + trim, Ghostty copy semantics).
+    func selectionPlainText() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal, hasSelection else { return nil }
+        var opts = GhosttyTerminalSelectionFormatOptions()
+        opts.size = MemoryLayout<GhosttyTerminalSelectionFormatOptions>.size
+        opts.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+        opts.unwrap = true
+        opts.trim = true
+        opts.selection = nil
+        var ptr: UnsafeMutablePointer<UInt8>?
+        var len: Int = 0
+        let r = ghostty_terminal_selection_format_alloc(terminal, nil, opts, &ptr, &len)
+        guard r == GHOSTTY_SUCCESS, let ptr, len > 0 else { return nil }
+        defer { ghostty_free(nil, ptr, len) }
+        return String(bytes: UnsafeBufferPointer(start: ptr, count: len), encoding: .utf8)
+    }
+
+    @discardableResult
+    func copySelectionToPasteboard() -> Bool {
+        guard let text = selectionPlainText(), !text.isEmpty else { return false }
+        Clipboard.copyString(text)
+        return true
+    }
+
+    /// Paste UTF-8 text into the PTY (bracketed when mode 2004 is on).
+    func pasteText(_ text: String) {
+        guard !text.isEmpty else { return }
+        lock.lock()
+        let bracketed: Bool = {
+            guard let terminal else { return false }
+            var cfg = GhosttyTerminalModeConfig()
+            cfg.mode = ghostty_mode_new(2004, false) // bracketed paste
+            cfg.value = false
+            let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &cfg)
+            return r == GHOSTTY_SUCCESS && cfg.value
+        }()
+        lock.unlock()
+
+        var chars = Array(text.utf8).map { CChar(bitPattern: $0) }
+        guard !chars.isEmpty else { return }
+        // ghostty_paste_encode mutates input and may expand for bracketed wrap.
+        var outCap = chars.count + 64
+        var out = [CChar](repeating: 0, count: outCap)
+        var written: Int = 0
+        while true {
+            let res = chars.withUnsafeMutableBufferPointer { inBuf -> GhosttyResult in
+                out.withUnsafeMutableBufferPointer { outBuf in
+                    ghostty_paste_encode(
+                        inBuf.baseAddress,
+                        inBuf.count,
+                        bracketed,
+                        outBuf.baseAddress,
+                        outBuf.count,
+                        &written
+                    )
+                }
+            }
+            if res == GHOSTTY_SUCCESS, written > 0 {
+                let bytes = out.prefix(written).map { UInt8(bitPattern: $0) }
+                writeToPty(Array(bytes))
+                return
+            }
+            if res == GHOSTTY_OUT_OF_SPACE, written > outCap {
+                outCap = written
+                out = [CChar](repeating: 0, count: outCap)
+                chars = Array(text.utf8).map { CChar(bitPattern: $0) }
+                continue
+            }
+            // Fallback: raw CR-normalized paste.
+            let raw = text.replacingOccurrences(of: "\n", with: "\r")
+            writeToPty(Array(raw.utf8))
+            return
+        }
     }
 }
 
@@ -629,4 +919,15 @@ private func effectXtversion(
         ptr: UnsafeRawPointer(s.utf8Start).assumingMemoryBound(to: UInt8.self),
         len: s.utf8CodeUnitCount
     )
+}
+
+private func effectClipboardWrite(
+    _ terminal: GhosttyTerminal?,
+    _ userdata: UnsafeMutableRawPointer?,
+    _ write: UnsafePointer<GhosttyClipboardWrite>?
+) -> GhosttyClipboardWriteResult {
+    _ = terminal
+    _ = userdata
+    guard let write else { return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA }
+    return Clipboard.applyClipboardWrite(write.pointee)
 }
