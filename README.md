@@ -67,6 +67,8 @@ max-aspect = 3:2
 
 `scrollback-limit` is bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`; default **50 MB**). Use `unlimited` for no byte cap. Zero disables scrollback.
 
+`scroll-to-bottom` matches Ghostty (default **`keystroke, no-output`**). Comma list of `keystroke` / `no-keystroke` / `output` / `no-output`.
+
 `max-aspect` caps content width/height (default **3:2**). Accepts `3:2`, `3/2`, or a float like `1.5`. Wider screens letterbox with background bars.
 
 Missing file → defaults. No Application Support path.

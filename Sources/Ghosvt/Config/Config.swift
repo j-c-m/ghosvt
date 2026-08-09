@@ -16,6 +16,10 @@ struct Config: Sendable {
     var copyOnSelect: Bool = true
     /// Enable OpenType liga/calt on shaped runs (JetBrains Mono programming ligatures).
     var fontLigatures: Bool = true
+    /// When to jump the viewport to the bottom (Ghostty `scroll-to-bottom`).
+    /// Default: keystroke on, output off (`keystroke, no-output`).
+    var scrollToBottomKeystroke: Bool = true
+    var scrollToBottomOutput: Bool = false
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -70,6 +74,8 @@ struct Config: Sendable {
                 cfg.copyOnSelect = parseBool(value)
             case "font-ligatures", "ligatures":
                 cfg.fontLigatures = parseBool(value)
+            case "scroll-to-bottom":
+                applyScrollToBottom(value, to: &cfg)
             default:
                 break
             }
@@ -81,6 +87,20 @@ struct Config: Sendable {
         switch value.lowercased() {
         case "1", "true", "yes", "on": return true
         default: return false
+        }
+    }
+
+    /// Ghostty list form: `keystroke, no-output` (omit keeps default for that flag).
+    private static func applyScrollToBottom(_ value: String, to cfg: inout Config) {
+        for raw in value.split(separator: ",") {
+            let t = raw.trimmingCharacters(in: .whitespaces).lowercased()
+            switch t {
+            case "keystroke": cfg.scrollToBottomKeystroke = true
+            case "no-keystroke": cfg.scrollToBottomKeystroke = false
+            case "output": cfg.scrollToBottomOutput = true
+            case "no-output": cfg.scrollToBottomOutput = false
+            default: break
+            }
         }
     }
 

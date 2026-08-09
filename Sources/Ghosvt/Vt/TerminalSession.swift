@@ -20,6 +20,13 @@ final class TerminalSession {
     /// Per-VT continuous scroll + spring overscroll (main-thread only).
     let scrollPhysics = ScrollPhysics()
 
+    /// Ghostty `scroll-to-bottom` flags (defaults: keystroke, no-output).
+    private(set) var scrollToBottomKeystroke = true
+    private(set) var scrollToBottomOutput = false
+    /// Set from the parse thread when `scrollToBottomOutput`; consumed on main in `stepScroll`.
+    private var pendingScrollToBottom = false
+    private let scrollToBottomLock = NSLock()
+
     private var cols: UInt16 = 80
     private var rows: UInt16 = 24
     private var cellWidthPx: UInt32 = 8
@@ -65,6 +72,17 @@ final class TerminalSession {
         scrollPhysics.springK = config.scrollSpringK
         scrollPhysics.springC = config.scrollSpringC
         scrollPhysics.friction = config.scrollFriction
+        scrollToBottomKeystroke = config.scrollToBottomKeystroke
+        scrollToBottomOutput = config.scrollToBottomOutput
+    }
+
+    /// Jump to the live bottom (Ghostty scroll-to-bottom on keystroke / output).
+    func scrollViewportToBottom() {
+        let snap = queryScrollbar()
+        let maxO = snap?.maxOffset ?? scrollMaxOffset
+        scrollPhysics.pinBottom(maxOffset: maxO)
+        scrollMaxOffset = maxO
+        syncIntegerViewport()
     }
 
     deinit {
@@ -129,6 +147,11 @@ final class TerminalSession {
         guard let terminal, len > 0 else { return }
         // Drop only after teardown cleared the terminal.
         ghostty_terminal_vt_write(terminal, ptr, len)
+        if scrollToBottomOutput {
+            scrollToBottomLock.lock()
+            pendingScrollToBottom = true
+            scrollToBottomLock.unlock()
+        }
     }
 
     /// Stop gather/parse, respawn login, start a new pipeline.
@@ -550,6 +573,15 @@ final class TerminalSession {
         let vpRows = Double(snap?.len ?? UInt64(rows))
         scrollMaxOffset = maxO
         scrollViewportRows = max(1, vpRows)
+
+        // Ghostty `scroll-to-bottom = output`: force bottom when new PTY data arrived.
+        scrollToBottomLock.lock()
+        let forceBottom = pendingScrollToBottom
+        if forceBottom { pendingScrollToBottom = false }
+        scrollToBottomLock.unlock()
+        if forceBottom {
+            scrollPhysics.pinBottom(maxOffset: maxO)
+        }
 
         // New output grows history: stay glued when pinned.
         scrollPhysics.followBottomIfPinned(maxOffset: maxO)

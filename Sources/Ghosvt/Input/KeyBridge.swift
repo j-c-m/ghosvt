@@ -71,6 +71,10 @@ enum KeyBridge {
         let payload: [UInt8]? = session.encodeKeyDown(event)
         if let payload, !payload.isEmpty {
             session.writeToPty(payload)
+            // Ghostty `scroll-to-bottom = keystroke` (default on).
+            if session.scrollToBottomKeystroke {
+                session.scrollViewportToBottom()
+            }
         }
     }
 
