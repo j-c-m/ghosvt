@@ -2,6 +2,7 @@ import AppKit
 import CGhosttyVT
 import Darwin
 import Foundation
+import Metal
 
 /// One virtual terminal: libghostty-vt state + PTY + login child.
 final class TerminalSession {
@@ -19,6 +20,9 @@ final class TerminalSession {
 
     /// Per-VT continuous scroll + spring overscroll (main-thread only).
     let scrollPhysics = ScrollPhysics()
+
+    /// Kitty graphics textures + placement snapshot (main-thread; cache all VTs).
+    let kittyCache = KittyGraphicsCache()
 
     /// Ghostty `scroll-to-bottom` flags (defaults: keystroke, no-output).
     private(set) var scrollToBottomKeystroke = true
@@ -1226,6 +1230,25 @@ final class TerminalSession {
         scrollPhysics.smoothTo(offset: target, maxOffset: maxO)
         // Integer viewport updates each frame via stepScroll while seeking.
         syncIntegerViewport()
+    }
+
+    /// Refresh Kitty placement geometry and textures (call on main after parse settles).
+    func syncKittyGraphics(
+        device: MTLDevice,
+        layout: TerminalRenderer.LayoutKey,
+        shellShiftY: Float,
+        visualY: Float
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return }
+        kittyCache.sync(
+            terminal: terminal,
+            device: device,
+            layout: layout,
+            shellShiftY: shellShiftY,
+            visualY: visualY
+        )
     }
 }
 

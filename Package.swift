@@ -54,6 +54,7 @@ let package = Package(
                 .linkedFramework("CoreText"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("QuartzCore"),
+                .linkedFramework("ImageIO"),
             ]
         ),
     ]

@@ -10,13 +10,20 @@ final class TerminalRenderer {
     let device: MTLDevice
     let queue: MTLCommandQueue
     var pipeline: MTLRenderPipelineState
+    /// Textured quads for Kitty graphics (RGBA).
+    var imagePipeline: MTLRenderPipelineState?
     var sampler: MTLSamplerState
+    /// Linear sampler for image content.
+    var imageSampler: MTLSamplerState?
     var atlas: GlyphAtlas
     var shaper = ShaperCache()
     var instanceBuffer: MTLBuffer?
+    var imageInstanceBuffer: MTLBuffer?
     var uniformBuffer: MTLBuffer?
     var instanceCapacity = 0
+    var imageInstanceCapacity = 0
     var floatScratch = [Float]()
+    var imageFloatScratch = [Float]()
     var fontLigatures = true
 
     let padPoints: CGFloat
@@ -30,7 +37,12 @@ final class TerminalRenderer {
     var glyphExtras: [CellInstance] = []
     var gridCols = 0
     var gridRows = 0
+    /// Packed instance count last uploaded (`bg + fg`).
     var lastDrawnCount = 0
+    /// Cell-background instance count in the packed GPU buffer.
+    var lastBgCount = 0
+    /// Glyph / overlay instance count packed after backgrounds.
+    var lastFgCount = 0
     var lastLayoutKey: LayoutKey?
     var lastDefBg = (r: DefaultColors.background.r, g: DefaultColors.background.g, b: DefaultColors.background.b)
     /// Color used to clear the full drawable (letterbox bars match terminal / FS TUI).
@@ -119,6 +131,26 @@ final class TerminalRenderer {
             return nil
         }
 
+        if let iv = library.makeFunction(name: "image_vertex"),
+           let ifn = library.makeFunction(name: "image_fragment")
+        {
+            let idesc = MTLRenderPipelineDescriptor()
+            idesc.vertexFunction = iv
+            idesc.fragmentFunction = ifn
+            idesc.colorAttachments[0].pixelFormat = pixelFormat
+            idesc.colorAttachments[0].isBlendingEnabled = true
+            // Premultiplied: fragment emits rgb*a; source factor is one (Ghostty Metal image path).
+            idesc.colorAttachments[0].sourceRGBBlendFactor = .one
+            idesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            idesc.colorAttachments[0].sourceAlphaBlendFactor = .one
+            idesc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            do {
+                self.imagePipeline = try device.makeRenderPipelineState(descriptor: idesc)
+            } catch {
+                fputs("ghosvt: image pipeline failed: \(error)\n", stderr)
+            }
+        }
+
         let samp = MTLSamplerDescriptor()
         samp.minFilter = .nearest
         samp.magFilter = .nearest
@@ -126,6 +158,14 @@ final class TerminalRenderer {
         samp.tAddressMode = .clampToEdge
         guard let sampler = device.makeSamplerState(descriptor: samp) else { return nil }
         self.sampler = sampler
+
+        let isamp = MTLSamplerDescriptor()
+        isamp.minFilter = .linear
+        isamp.magFilter = .linear
+        isamp.sAddressMode = .clampToEdge
+        isamp.tAddressMode = .clampToEdge
+        self.imageSampler = device.makeSamplerState(descriptor: isamp)
+
         self.uniformBuffer = device.makeBuffer(length: FrameUniforms.stride, options: .storageModeShared)
     }
 
@@ -338,13 +378,31 @@ final class TerminalRenderer {
         let letterboxBg = letterboxBackground(defBg: defBg)
         lastLetterboxBg = letterboxBg
 
-        // Idle: reuse previous GPU buffer only when nothing visual moved.
-        // Still full-clear with the current letterbox sample (updates when the
-        // sample source changes — edge cache / defBg after a dirty rebuild).
-        if !needGridRebuild && !blinkChanged && !indicatorChanged && !visualChanged
-            && !cursorChanged && !searchHUDChanged && lastDrawnCount > 0 {
+        let shellShiftY: Float = (searchHUD != nil && searchHUDAtTop) ? layout.cellH : 0
+        let shellY = visualY + shellShiftY
+
+        // Kitty graphics: sync under session lock; textures retained per VT.
+        // Geometry always recomputed (scroll / resize); cheap when empty.
+        session.syncKittyGraphics(
+            device: device,
+            layout: layout,
+            shellShiftY: shellShiftY,
+            visualY: visualY
+        )
+        let kitty = session.kittyCache
+        let hasKitty = !kitty.isEmpty
+
+        // Cells stable: shellY is already baked into the last GPU upload.
+        // visualY / search-shift change must re-pack instances (shellY in oy).
+        // Kitty may still redraw without re-uploading cells.
+        let cellsStable = !needGridRebuild && !blinkChanged && !indicatorChanged
+            && !cursorChanged && !searchHUDChanged && !visualChanged
+            && lastBgCount + lastFgCount > 0
+        if cellsStable {
             present(
-                count: lastDrawnCount,
+                bgCount: lastBgCount,
+                fgCount: lastFgCount,
+                kitty: hasKitty ? kitty : nil,
                 drawable: drawable,
                 rpd: renderPassDescriptor,
                 pw: pw, ph: ph,
@@ -354,23 +412,18 @@ final class TerminalRenderer {
             return
         }
 
-        // Compose: grid cells + underlines + cursor + VT indicator + search HUD.
-        // Grid positions are base (no scroll offset); apply visualY here.
-        // When search sits at top, shift the whole shell down by one cell.
-        let shellShiftY: Float = (searchHUD != nil && searchHUDAtTop) ? layout.cellH : 0
-        var instances = gridCells
-        // Multi-cell ligature ink after cell backgrounds so tails don't cover it.
-        instances.append(contentsOf: glyphExtras)
-        instances.append(contentsOf: underlineExtras)
-        let shellY = visualY + shellShiftY
+        // Compose cell layers separately so Kitty z-layers can interleave:
+        // below_bg → cell bg → below_text → glyphs → above_text → overlays.
+        var bgInstances = gridCells
+        var fgInstances = glyphExtras
+        fgInstances.append(contentsOf: underlineExtras)
         if abs(shellY) > 0.001 {
-            for i in 0..<instances.count {
-                instances[i].oy += shellY
-            }
+            for i in 0..<bgInstances.count { bgInstances[i].oy += shellY }
+            for i in 0..<fgInstances.count { fgInstances[i].oy += shellY }
         }
 
         appendCursor(
-            to: &instances,
+            to: &fgInstances,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -386,20 +439,19 @@ final class TerminalRenderer {
 
         if let indicator, !indicator.isEmpty {
             appendIndicator(
-                to: &instances,
+                to: &fgInstances,
                 text: indicator,
                 metrics: metrics,
                 layout: layout,
                 cellWInt: cellWInt,
                 cellHInt: cellHInt,
-                // Sit on the shell row, not over a top search HUD.
                 yOffset: shellShiftY
             )
         }
 
         if let searchHUD {
             appendSearchHUD(
-                to: &instances,
+                to: &fgInstances,
                 line: searchHUD,
                 caretCol: searchCaretCol,
                 showCaret: blinkOn,
@@ -416,10 +468,17 @@ final class TerminalRenderer {
         var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         _ = ghostty_render_state_set(renderState, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
 
-        uploadInstances(instances)
-        lastDrawnCount = instances.count
+        // Pack [bg | fg] into one buffer; present draws ranges around Kitty layers.
+        var packed = bgInstances
+        packed.append(contentsOf: fgInstances)
+        uploadInstances(packed)
+        lastBgCount = bgInstances.count
+        lastFgCount = fgInstances.count
+        lastDrawnCount = packed.count
         present(
-            count: instances.count,
+            bgCount: lastBgCount,
+            fgCount: lastFgCount,
+            kitty: hasKitty ? kitty : nil,
             drawable: drawable,
             rpd: renderPassDescriptor,
             pw: pw, ph: ph,

@@ -125,6 +125,7 @@ extension TerminalRenderer {
                 rowIndex: rowIndex,
                 metrics: metrics,
                 layout: layout,
+                defBg: defBg,
                 cellWInt: cellWInt,
                 cellHInt: cellHInt,
                 renderState: renderState,
@@ -196,7 +197,11 @@ extension TerminalRenderer {
                 swap(&fg, &bgCell)
             }
             let bg = (hasBg || style.inverse) ? bgCell : defBg
-            let text = cellTextUTF8(cellsHandle) ?? ""
+            // Kitty virtual placeholder: never draw the U+10EEEE glyph (Ghostty blanks it).
+            var text = cellTextUTF8(cellsHandle) ?? ""
+            if text.unicodeScalars.first?.value == KittyVirtualUnicode.placeholder {
+                text = ""
+            }
 
             out.append(TerminalRowCell(
                 text: text,
@@ -226,6 +231,7 @@ extension TerminalRenderer {
         rowIndex: Int,
         metrics: CellMetrics,
         layout: LayoutKey,
+        defBg: GhosttyColorRgb,
         cellWInt: Int,
         cellHInt: Int,
         renderState: GhosttyRenderState,
@@ -270,16 +276,27 @@ extension TerminalRenderer {
         }
 
         // 1) Background for every cell (selection invert / search gold / current peach).
+        // Default terminal bg is transparent (ba=0) so Kitty below_bg shows through the
+        // letterbox/clear color; only non-default or highlighted cells cover images.
+        let defBr = Float(defBg.r) / 255
+        let defBgG = Float(defBg.g) / 255
+        let defBb = Float(defBg.b) / 255
         for col in 0..<layout.cols {
             let c = rowCells[col]
             let x = (layout.originX + layout.padPx + Float(col) * layout.cellW)
                 .rounded(.toNearestOrAwayFromZero)
             let yPx = y
+            let hl = highlight(for: col)
             let colors = CellPaintColors.pair(
-                fg: c.fg, bg: c.bg, faint: c.faint, highlight: highlight(for: col)
+                fg: c.fg, bg: c.bg, faint: c.faint, highlight: hl
             )
             let fr = colors.ink.r, fgG = colors.ink.g, fb = colors.ink.b
             let br = colors.fill.r, bgG = colors.fill.g, bb = colors.fill.b
+            let isDefaultBg = hl == .none
+                && abs(br - defBr) < 1e-4
+                && abs(bgG - defBgG) < 1e-4
+                && abs(bb - defBb) < 1e-4
+            let ba: Float = isDefaultBg ? 0 : 1
             let idx = rowIndex * layout.cols + col
             if idx < gridCells.count {
                 gridCells[idx] = CellInstance.make(
@@ -287,7 +304,7 @@ extension TerminalRenderer {
                     width: layout.cellW, height: layout.cellH,
                     u0: 0, v0: 0, u1: 0, v1: 0,
                     fr: fr, fg: fgG, fb: fb, fa: 1,
-                    br: br, bg: bgG, bb: bb, ba: 1
+                    br: br, bg: bgG, bb: bb, ba: ba
                 )
             }
             if c.underline {
@@ -758,21 +775,33 @@ extension TerminalRenderer {
             faceWidthPx: metrics.faceWidthPx * CGFloat(span),
             fallbackFonts: nerdFallbackFonts(metrics: metrics)
         )
-        let x = layout.originX + layout.padPx + Float(col) * layout.cellW
-        let y = layout.originY + layout.padPx + Float(rowIndex) * layout.cellH
+        // Cell bg stays in gridCells (step 1). Ink goes to glyphExtras so below_text
+        // Kitty images sit under wide glyphs (same order as shaped runs).
+        let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
+            .rounded(.towardZero)
+        let rowTop = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
+            .rounded(.toNearestOrAwayFromZero)
+        var ifr = Float(c.fg.r) / 255
+        var ifg = Float(c.fg.g) / 255
+        var ifb = Float(c.fg.b) / 255
         let colors = CellPaintColors.pair(fg: c.fg, bg: c.bg, faint: c.faint, highlight: highlight)
-        let fr = colors.ink.r, fgG = colors.ink.g, fb = colors.ink.b
-        let br = colors.fill.r, bgG = colors.fill.g, bb = colors.fill.b
+        ifr = colors.ink.r
+        ifg = colors.ink.g
+        ifb = colors.ink.b
         let idx = rowIndex * layout.cols + col
-        guard idx < gridCells.count else { return }
-        gridCells[idx] = CellInstance.make(
-            originX: x, originY: y,
-            width: layout.cellW * Float(span),
-            height: layout.cellH,
+        if idx < gridCells.count {
+            let cell = gridCells[idx]
+            ifr = cell.fr; ifg = cell.fg; ifb = cell.fb
+        }
+        glyphExtras.append(.make(
+            originX: cellX + entry.bearingX,
+            originY: rowTop + entry.bearingY,
+            width: max(1, entry.pixelW),
+            height: max(1, entry.pixelH),
             u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
-            fr: fr, fg: fgG, fb: fb, fa: 1,
-            br: br, bg: bgG, bb: bb, ba: 1
-        )
+            fr: ifr, fg: ifg, fb: ifb, fa: 1,
+            br: 0, bg: 0, bb: 0, ba: 0
+        ))
     }
 
 

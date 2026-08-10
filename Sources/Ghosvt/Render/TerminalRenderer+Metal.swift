@@ -12,6 +12,8 @@ extension TerminalRenderer {
         ensureInstanceCapacity(max(count, 1))
         guard count > 0, let buf = instanceBuffer else {
             lastDrawnCount = 0
+            lastBgCount = 0
+            lastFgCount = 0
             return
         }
         let floatsNeeded = count * CellInstance.floatCount
@@ -42,8 +44,19 @@ extension TerminalRenderer {
         return displayMaxInterval
     }
 
+    /// Multi-pass present: Kitty z-layers interleaved with cell bg / ink.
+    ///
+    /// Instance buffer layout: `[0 .. bgCount) backgrounds | [bgCount ..) glyphs+overlays`.
+    /// Draw order:
+    ///   1. below_bg images
+    ///   2. cell backgrounds
+    ///   3. below_text images
+    ///   4. glyphs + cursor + search HUD
+    ///   5. above_text images
     func present(
-        count: Int,
+        bgCount: Int,
+        fgCount: Int,
+        kitty: KittyGraphicsCache?,
         drawable: CAMetalDrawable,
         rpd: MTLRenderPassDescriptor,
         pw: Float,
@@ -72,19 +85,111 @@ extension TerminalRenderer {
               let enc = cmd.makeRenderCommandEncoder(descriptor: rpd)
         else { return }
 
+        enc.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+
+        if let kitty {
+            drawImageQuads(enc, kitty.quads(for: .belowBg))
+        }
+
         enc.setRenderPipelineState(pipeline)
         enc.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
-        enc.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
         enc.setFragmentTexture(atlas.texture, index: 0)
         enc.setFragmentSamplerState(sampler, index: 0)
+        if bgCount > 0 {
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: bgCount)
+        }
 
-        if count > 0 {
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: count)
+        if let kitty {
+            drawImageQuads(enc, kitty.quads(for: .belowText))
+        }
+
+        // Glyph/overlay instances are packed after backgrounds.
+        if fgCount > 0 {
+            enc.setRenderPipelineState(pipeline)
+            let byteOffset = bgCount * CellInstance.stride
+            enc.setVertexBuffer(instanceBuffer, offset: byteOffset, index: 0)
+            enc.setFragmentTexture(atlas.texture, index: 0)
+            enc.setFragmentSamplerState(sampler, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: fgCount)
+        }
+
+        if let kitty {
+            drawImageQuads(enc, kitty.quads(for: .aboveText))
         }
 
         enc.endEncoding()
         presentPaced(cmd, drawable: drawable, contentActive: contentActive)
         cmd.commit()
+    }
+
+    /// Draw Kitty image quads in list order, batching only consecutive same-texture runs.
+    /// Preserves sort order (z, y, x) across texture changes.
+    private func drawImageQuads(
+        _ enc: MTLRenderCommandEncoder,
+        _ quads: [KittyGraphicsCache.DrawQuad]
+    ) {
+        guard !quads.isEmpty,
+              let imagePipeline,
+              let imageSampler
+        else { return }
+
+        enc.setRenderPipelineState(imagePipeline)
+        enc.setFragmentSamplerState(imageSampler, index: 0)
+
+        var start = 0
+        while start < quads.count {
+            let tex = quads[start].texture
+            var end = start + 1
+            while end < quads.count, quads[end].texture === tex {
+                end += 1
+            }
+            let batchCount = end - start
+            ensureImageInstanceCapacity(batchCount)
+            guard let buf = imageInstanceBuffer else { return }
+
+            let floatsNeeded = batchCount * 8 // ox,oy,sx,sy,u0,v0,u1,v1
+            if imageFloatScratch.count < floatsNeeded {
+                imageFloatScratch = [Float](repeating: 0, count: floatsNeeded)
+            }
+            imageFloatScratch.withUnsafeMutableBufferPointer { dest in
+                guard let base = dest.baseAddress else { return }
+                for i in 0..<batchCount {
+                    let q = quads[start + i]
+                    let o = i * 8
+                    base[o + 0] = q.originX
+                    base[o + 1] = q.originY
+                    base[o + 2] = q.width
+                    base[o + 3] = q.height
+                    base[o + 4] = q.u0
+                    base[o + 5] = q.v0
+                    base[o + 6] = q.u1
+                    base[o + 7] = q.v1
+                }
+                buf.contents().copyMemory(
+                    from: base,
+                    byteCount: floatsNeeded * MemoryLayout<Float>.size
+                )
+            }
+            enc.setVertexBuffer(buf, offset: 0, index: 0)
+            enc.setFragmentTexture(tex, index: 0)
+            enc.drawPrimitives(
+                type: .triangle,
+                vertexStart: 0,
+                vertexCount: 6,
+                instanceCount: batchCount
+            )
+            start = end
+        }
+    }
+
+    private func ensureImageInstanceCapacity(_ count: Int) {
+        let need = max(count, 1) * 8 * MemoryLayout<Float>.size
+        if imageInstanceCapacity >= need, imageInstanceBuffer != nil { return }
+        imageInstanceCapacity = need * 2
+        imageInstanceBuffer = device.makeBuffer(
+            length: imageInstanceCapacity,
+            options: .storageModeShared
+        )
     }
 
     /// `present(_:afterMinimumDuration:)` so Adaptive-Sync can hold frames in-range.
@@ -177,6 +282,12 @@ extension TerminalRenderer {
         float4 bg;
     };
 
+    struct ImageInstance {
+        float2 origin;
+        float2 size;
+        float4 uv; // u0,v0,u1,v1
+    };
+
     struct FrameUniforms {
         float2 viewport;
         float2 _pad;
@@ -188,6 +299,11 @@ extension TerminalRenderer {
         float4 fg;
         float4 bg;
         float hasGlyph;
+    };
+
+    struct ImageVertexOut {
+        float4 position [[position]];
+        float2 uv;
     };
 
     constant float2 corners[6] = {
@@ -234,6 +350,29 @@ extension TerminalRenderer {
         }
         float3 rgb = mix(bg.rgb, in.fg.rgb, saturate(a));
         return float4(rgb, 1.0);
+    }
+
+    vertex ImageVertexOut image_vertex(uint vid [[vertex_id]],
+                                       uint iid [[instance_id]],
+                                       const device ImageInstance *imgs [[buffer(0)]],
+                                       constant FrameUniforms &uni [[buffer(1)]]) {
+        ImageInstance c = imgs[iid];
+        float2 corner = corners[vid];
+        float2 px = c.origin + corner * c.size;
+        float2 ndc;
+        ndc.x = (px.x / uni.viewport.x) * 2.0 - 1.0;
+        ndc.y = 1.0 - (px.y / uni.viewport.y) * 2.0;
+        ImageVertexOut o;
+        o.position = float4(ndc, 0.0, 1.0);
+        o.uv = float2(mix(c.uv.x, c.uv.z, corner.x), mix(c.uv.y, c.uv.w, corner.y));
+        return o;
+    }
+
+    fragment float4 image_fragment(ImageVertexOut in [[stage_in]],
+                                   texture2d<float> tex [[texture(0)]],
+                                   sampler samp [[sampler(0)]]) {
+        float4 c = tex.sample(samp, in.uv);
+        return float4(c.rgb * c.a, c.a); // premultiplied; pipeline source factor = one
     }
     """
 }

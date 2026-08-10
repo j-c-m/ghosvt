@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = Config.load()
         EmbeddedFonts.preload()
+        // Process-global: must run before any GhosttyTerminal is created.
+        KittyPngDecode.install()
         if let ti = Terminfo.databasePath {
             fputs("ghosvt: TERMINFO=\(ti) TERM=\(Terminfo.termName)\n", stderr)
         } else {
