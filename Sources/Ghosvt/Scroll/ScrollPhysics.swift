@@ -58,17 +58,19 @@ final class ScrollPhysics {
         velocity -= deltaRows * impulseScale
     }
 
-    /// Instant jump by row count (page keys). Positive = older history (toward top).
-    func jumpByRows(_ rows: Double, maxOffset: Double) {
-        if abs(rows) < 1e-9 { return }
-        let maxO = max(0, maxOffset)
+    /// Smooth page-key fling. `direction` +1 = older (Page Up), −1 = toward bottom.
+    /// `holdCount` starts at 1 on first press and grows with key-repeat for acceleration.
+    func applyPageImpulse(direction: Double, holdCount: Int, viewportRows: Double) {
+        if abs(direction) < 1e-9 { return }
+        let vp = max(1, viewportRows)
         pinnedToBottom = false
-        velocity = 0
-        position = min(max(position - rows, 0), maxO)
-        if abs(position - maxO) < settlePos {
-            pinnedToBottom = true
-            position = maxO
-        }
+        // Initial kick ~ coasts about a page; repeats multiply (capped).
+        let base = vp * 5.5
+        let mult = min(1.0 + Double(max(0, holdCount - 1)) * 0.45, 7.0)
+        let kick = base * mult
+        velocity -= direction * kick
+        let cap = vp * 36
+        velocity = min(max(velocity, -cap), cap)
     }
 
     /// Jump to top of scrollback.

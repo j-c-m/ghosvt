@@ -645,11 +645,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return false
     }
 
-    /// Ghostty: ⌘PageUp / ⌘PageDown scroll one viewport of history.
+    /// Ghostty: ⌘PageUp / ⌘PageDown smooth-scroll; accelerate on key-repeat.
     @discardableResult
     func handleScrollPage(_ event: NSEvent, manager: VtManager) -> Bool {
         guard let dir = KeyBridge.scrollPageDirection(from: event) else { return false }
-        manager.active.scrollByViewportPages(dir)
+        manager.active.scrollPageSmooth(direction: dir, isRepeat: event.isARepeat)
         return true
     }
 

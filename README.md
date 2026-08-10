@@ -102,8 +102,8 @@ Bools: `true` / `yes` / `on` / `1`.
 | **⌘0** | VT 10 (if `vt-count` ≥ 10) |
 | **⌘F1…⌘F*n*** | Same |
 | **⌘← / ⌘→** | Previous / next VT |
-| **⌘Page Up** | Scroll one page up (older history; Ghostty) |
-| **⌘Page Down** | Scroll one page down (toward bottom) |
+| **⌘Page Up** | Smooth scroll up (older history); accelerates while held |
+| **⌘Page Down** | Smooth scroll down (toward bottom); accelerates while held |
 | **⌘C** | Copy selection |
 | **⌘V** | Paste |
 | **⌘Q** | Quit |

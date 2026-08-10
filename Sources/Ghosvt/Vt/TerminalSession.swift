@@ -26,6 +26,9 @@ final class TerminalSession {
     /// Set from the parse thread when `scrollToBottomOutput`; consumed on main in `stepScroll`.
     private var pendingScrollToBottom = false
     private let scrollToBottomLock = NSLock()
+    /// Consecutive ⌘PageUp/Down presses (resets on first non-repeat).
+    private var pageScrollHoldCount = 0
+    private var pageScrollLastDir: Double = 0
 
     private var cols: UInt16 = 80
     private var rows: UInt16 = 24
@@ -87,16 +90,26 @@ final class TerminalSession {
         syncIntegerViewport()
     }
 
-    /// Ghostty `scroll_page_up` / `scroll_page_down` (one viewport of history).
-    /// `pages > 0` → older history (Page Up); negative → toward bottom (Page Down).
-    func scrollByViewportPages(_ pages: Double) {
+    /// Ghostty ⌘PageUp / ⌘PageDown: smooth fling one page; accelerate while held.
+    /// `direction` +1 = older (Page Up); −1 = toward bottom (Page Down).
+    func scrollPageSmooth(direction: Double, isRepeat: Bool) {
+        if !isRepeat || direction != pageScrollLastDir {
+            pageScrollHoldCount = 1
+        } else {
+            pageScrollHoldCount += 1
+        }
+        pageScrollLastDir = direction
+
         let snap = queryScrollbar()
         let maxO = snap?.maxOffset ?? scrollMaxOffset
         let vp = max(1, Double(snap?.len ?? UInt64(rows)))
         scrollMaxOffset = maxO
         scrollViewportRows = vp
-        scrollPhysics.jumpByRows(pages * vp, maxOffset: maxO)
-        syncIntegerViewport()
+        scrollPhysics.applyPageImpulse(
+            direction: direction,
+            holdCount: pageScrollHoldCount,
+            viewportRows: vp
+        )
     }
 
     deinit {

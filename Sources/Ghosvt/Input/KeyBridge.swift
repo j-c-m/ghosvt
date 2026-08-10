@@ -65,7 +65,7 @@ enum KeyBridge {
         }
     }
 
-    /// Ghostty macOS defaults: super+page_up / super+page_down → scroll one page.
+    /// Ghostty macOS defaults: super+page_up / super+page_down → scroll history.
     /// Returns +1 for page up (older history), -1 for page down, else nil.
     static func scrollPageDirection(from event: NSEvent) -> Double? {
         guard event.type == .keyDown else { return nil }
