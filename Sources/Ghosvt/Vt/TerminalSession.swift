@@ -1250,6 +1250,72 @@ final class TerminalSession {
             visualY: visualY
         )
     }
+
+    /// Embeddable http(s) URL under a shell viewport cell (OSC 8, then bare text).
+    func embeddableURLAtViewport(col: UInt16, row: UInt16) -> URL? {
+        linkHitAtViewport(col: col, row: row)?.url
+    }
+
+    /// Full hit with column span for hover underline / open.
+    /// OSC 8 path avoids a full-row text scan; bare http(s) scans one row only.
+    func linkHitAtViewport(col: UInt16, row: UInt16) -> LinkResolve.Hit? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return nil }
+        let cCount = Int(cols)
+        guard cCount > 0, Int(row) < Int(rows), Int(col) < cCount else { return nil }
+
+        // Prefer OSC 8: only URI probes along the row for span expand.
+        if let osc = LinkResolve.osc8URI(terminal: terminal, col: col, row: row),
+           let url = LinkResolve.embeddableURL(from: osc) {
+            let span = LinkResolve.osc8Span(
+                terminal: terminal,
+                col: Int(col),
+                row: row,
+                cols: cCount,
+                uri: osc
+            )
+            return LinkResolve.Hit(url: url, startCol: span.start, endCol: span.end)
+        }
+
+        // Bare URL: one-row grapheme walk only when OSC misses.
+        var cells = [String](repeating: "", count: cCount)
+        var graphemeBuf = [UInt32](repeating: 0, count: 16)
+        for c in 0..<cCount {
+            var ref = GhosttyGridRef()
+            ref.size = MemoryLayout<GhosttyGridRef>.size
+            var point = GhosttyPoint()
+            point.tag = GHOSTTY_POINT_TAG_VIEWPORT
+            point.value.coordinate.x = UInt16(c)
+            point.value.coordinate.y = UInt32(row)
+            guard ghostty_terminal_grid_ref(terminal, point, &ref) == GHOSTTY_SUCCESS else {
+                continue
+            }
+            var cell: GhosttyCell = 0
+            guard ghostty_grid_ref_cell(&ref, &cell) == GHOSTTY_SUCCESS else { continue }
+            var hasText = false
+            _ = ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText)
+            guard hasText else { continue }
+            var glen: Int = 0
+            var gr = graphemeBuf.withUnsafeMutableBufferPointer { buf in
+                ghostty_grid_ref_graphemes(&ref, buf.baseAddress, buf.count, &glen)
+            }
+            if gr == GHOSTTY_OUT_OF_SPACE, glen > graphemeBuf.count {
+                graphemeBuf = [UInt32](repeating: 0, count: glen)
+                gr = graphemeBuf.withUnsafeMutableBufferPointer { buf in
+                    ghostty_grid_ref_graphemes(&ref, buf.baseAddress, buf.count, &glen)
+                }
+            }
+            guard gr == GHOSTTY_SUCCESS, glen > 0 else { continue }
+            let scalars = graphemeBuf.prefix(glen).compactMap { UnicodeScalar($0) }
+            cells[c] = String(String.UnicodeScalarView(scalars))
+        }
+        if let bare = LinkResolve.bareHTTPHit(in: cells, atCol: Int(col)),
+           let url = LinkResolve.embeddableURL(from: bare.raw) {
+            return LinkResolve.Hit(url: url, startCol: bare.start, endCol: bare.end)
+        }
+        return nil
+    }
 }
 
 // MARK: - Effects

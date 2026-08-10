@@ -203,8 +203,17 @@ extension TerminalRenderer {
         }
     }
 
-    /// Stolen VT row: full-width cell strip for `/needle` + count.
+    /// Caret style for stolen-row HUDs.
+    enum HUDCaretStyle {
+        /// Search: peach block + black ink.
+        case searchHighlight
+        /// Theme block cursor: fill = fg, ink = bg (solid terminal colors).
+        case themeBlock
+    }
+
+    /// Stolen VT row: full-width cell strip for `/needle` + count or browser address bar.
     /// Not scrolled with visualY (HUD stays fixed). `atTop` places it above the shell.
+    /// `selStartCol`/`selEndCol` (exclusive) paint an inverted selection range when set.
     func appendSearchHUD(
         to instances: inout [CellInstance],
         line: String,
@@ -216,7 +225,10 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int,
         defFg: GhosttyColorRgb,
-        defBg: GhosttyColorRgb
+        defBg: GhosttyColorRgb,
+        caretStyle: HUDCaretStyle = .searchHighlight,
+        selStartCol: Int = -1,
+        selEndCol: Int = -1
     ) {
         let rowY: Float
         if atTop {
@@ -232,8 +244,20 @@ extension TerminalRenderer {
             g: min(1, Float(defBg.g) / 255 + 0.08),
             b: min(1, Float(defBg.b) / 255 + 0.08)
         )
-        let caretFill = CellPaintColors.searchSelectedFill
-        let caretInk = CellPaintColors.searchSelectedInk
+        let caretFill: CellPaintColors.RGB
+        let caretInk: CellPaintColors.RGB
+        switch caretStyle {
+        case .searchHighlight:
+            caretFill = CellPaintColors.searchSelectedFill
+            caretInk = CellPaintColors.searchSelectedInk
+        case .themeBlock:
+            // Solid block cursor in theme colors (fg cell, bg text).
+            caretFill = ink
+            caretInk = CellPaintColors.RGB(defBg)
+        }
+        // Address-bar text selection: theme invert (fg fill, bg ink).
+        let selFill = ink
+        let selInk = CellPaintColors.RGB(defBg)
 
         // `line` is cell-aligned: one Character (or space) per column. Empty
         // Character is not used; spacers after wide glyphs are spaces.
@@ -245,16 +269,29 @@ extension TerminalRenderer {
         }
         while cells.count < layout.cols { cells.append(" ") }
 
+        let hasSel = selStartCol >= 0 && selEndCol > selStartCol
+
         for col in 0..<layout.cols {
             let x = layout.originX + layout.padPx + Float(col) * layout.cellW
             let s = cells[col]
-            let isCaret = showCaret && col == caretCol
-            let fr = isCaret ? caretInk.r : ink.r
-            let fg = isCaret ? caretInk.g : ink.g
-            let fb = isCaret ? caretInk.b : ink.b
-            let br = isCaret ? caretFill.r : fill.r
-            let bg = isCaret ? caretFill.g : fill.g
-            let bb = isCaret ? caretFill.b : fill.b
+            let inSel = hasSel && col >= selStartCol && col < selEndCol
+            let isCaret = showCaret && !inSel && col == caretCol
+            let fr: Float
+            let fg: Float
+            let fb: Float
+            let br: Float
+            let bg: Float
+            let bb: Float
+            if inSel {
+                fr = selInk.r; fg = selInk.g; fb = selInk.b
+                br = selFill.r; bg = selFill.g; bb = selFill.b
+            } else if isCaret {
+                fr = caretInk.r; fg = caretInk.g; fb = caretInk.b
+                br = caretFill.r; bg = caretFill.g; bb = caretFill.b
+            } else {
+                fr = ink.r; fg = ink.g; fb = ink.b
+                br = fill.r; bg = fill.g; bb = fill.b
+            }
 
             // Background cell (full row strip).
             instances.append(.make(

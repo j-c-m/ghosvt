@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         EmbeddedFonts.preload()
         // Process-global: must run before any GhosttyTerminal is created.
         KittyPngDecode.install()
+        // Minimal main menu so AppKit can dispatch standard Edit actions (paste/select-all)
+        // to WKWebView via the responder chain. Without this, ⌘V/⌘A do nothing in WebKit.
+        installMainMenu()
         if let ti = Terminfo.databasePath {
             fputs("ghosvt: TERMINFO=\(ti) TERM=\(Terminfo.termName)\n", stderr)
         } else {
@@ -71,11 +74,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll; ⌘F search.
+            // Embedded browser owns the active VT: no PTY keys.
+            if view.isBrowserActive {
+                if flags.contains(.command) {
+                    if event.charactersIgnoringModifiers?.lowercased() == "q" {
+                        NSApp.terminate(nil)
+                        return nil
+                    }
+                    // Address bar (when editing) or app chords (Esc path is non-cmd).
+                    if view.handleBrowserKeys(event) {
+                        return nil
+                    }
+                    // Allow VT switch while browsing (browser stays on its VT).
+                    if view.handleVtSwitch(event, manager: manager) {
+                        return nil
+                    }
+                    // Page focus: drive WebKit Edit actions ourselves (monitor runs before
+                    // the menu/responder path; without this ⌘V/⌘A never reach WKWebView).
+                    if !view.isBrowserAddressEditing, view.handleBrowserPageEditKeys(event) {
+                        return nil
+                    }
+                    // ⌘PgUp/PgDn → scroll page (not terminal history).
+                    if !view.isBrowserAddressEditing, view.handleBrowserPageScrollKeys(event) {
+                        return nil
+                    }
+                    return event
+                }
+                if view.handleBrowserKeys(event) {
+                    return nil
+                }
+                // Address-bar edit is handled above; otherwise let WebView receive keys.
+                if view.isBrowserAddressEditing {
+                    return nil
+                }
+                // Bare PgUp/PgDn scroll the page.
+                if view.handleBrowserPageScrollKeys(event) {
+                    return nil
+                }
+                return event
+            }
+
+            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll; ⌘F search; ⌘W browser.
             if flags.contains(.command) {
                 // No main menu — handle quit ourselves.
                 if event.charactersIgnoringModifiers?.lowercased() == "q" {
                     NSApp.terminate(nil)
+                    return nil
+                }
+                if view.handleBrowserKeys(event) {
                     return nil
                 }
                 if view.handleSearchKeys(event) {
@@ -91,7 +137,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return event
             }
 
-            // Esc / search typing before PTY (stolen VT row owns keys while open).
+            // Esc closes browser or search before PTY.
+            if view.handleBrowserKeys(event) {
+                return nil
+            }
             if view.handleSearchKeys(event) {
                 return nil
             }
@@ -103,5 +152,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// App + Edit menus so standard key equivalents exist. Terminal still claims ⌘C/V via
+    /// `performKeyEquivalent` when the metal view is first responder.
+    @MainActor
+    private func installMainMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit ghosvt", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        editItem.submenu = edit
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(NSMenuItem.separator())
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        NSApp.mainMenu = main
     }
 }

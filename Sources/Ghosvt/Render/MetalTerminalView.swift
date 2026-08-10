@@ -24,6 +24,43 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var selectRectangle = false
     /// Any mouse button currently held (for letterbox freeze during app selection).
     private var mouseButtonsHeld: Set<Int> = []
+    /// Per-VT embedded browser (nil when that VT has no open browser).
+    private var browserByVT: [EmbeddedBrowserView?] = []
+    /// Per-VT address bar / nav chrome (mirrors `searchByVT`).
+    private struct VTBrowserChrome {
+        var address = ""
+        var editing = false
+        /// Insertion point (0...address.count).
+        var caret = 0
+        /// Selection anchor; when `selEnd != caret` (or we use range), selected range is min/max.
+        var selAnchor = 0
+        var canGoBack = false
+        var canGoForward = false
+        /// When address is longer than the bar, visible window starts at this char index.
+        var visibleStart = 0
+
+        var hasSelection: Bool { selAnchor != caret }
+        var selLo: Int { min(selAnchor, caret) }
+        var selHi: Int { max(selAnchor, caret) }
+
+        mutating func clearSelection() {
+            selAnchor = caret
+        }
+
+        mutating func selectAll() {
+            selAnchor = 0
+            caret = address.count
+        }
+    }
+    private var browserChromeByVT: [VTBrowserChrome] = []
+    /// Dragging to select text in the address bar.
+    private var browserAddressDragging = false
+    /// Local monitor: end address edit only on real page clicks (not hover).
+    private var browserPageClickMonitor: Any?
+    /// ⌘-hover link underline (shell viewport coords).
+    private var linkHover: TerminalRenderer.LinkHoverRange?
+    /// Last cell used for link-hover resolve (skip full scan while stationary).
+    private var lastLinkHoverCell: (col: Int, row: Int)?
     private var trackingArea: NSTrackingArea?
     private var focusObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -88,6 +125,41 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if searchByVT.count < n {
             searchByVT.append(contentsOf: repeatElement(VTSearchState(), count: n - searchByVT.count))
         }
+        while browserByVT.count < n {
+            browserByVT.append(nil)
+        }
+        while browserChromeByVT.count < n {
+            browserChromeByVT.append(VTBrowserChrome())
+        }
+    }
+
+    /// Whether the active VT is showing an embedded browser.
+    private var activeBrowser: EmbeddedBrowserView? {
+        ensureSearchSlots()
+        guard let i = manager?.activeIndex, i < browserByVT.count else { return nil }
+        return browserByVT[i]
+    }
+
+    /// True while the active VT has an embedded browser (PTY input suspended).
+    var isBrowserActive: Bool { activeBrowser != nil }
+
+    /// True while the stolen address bar is focused for typing.
+    var isBrowserAddressEditing: Bool {
+        ensureSearchSlots()
+        guard let i = manager?.activeIndex, i < browserChromeByVT.count else { return false }
+        return browserChromeByVT[i].editing
+    }
+
+    private var activeBrowserChrome: VTBrowserChrome? {
+        ensureSearchSlots()
+        guard let i = manager?.activeIndex, i < browserChromeByVT.count else { return nil }
+        return browserChromeByVT[i]
+    }
+
+    private func updateActiveBrowserChrome(_ body: (inout VTBrowserChrome) -> Void) {
+        ensureSearchSlots()
+        guard let i = manager?.activeIndex, i < browserChromeByVT.count else { return }
+        body(&browserChromeByVT[i])
     }
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
@@ -184,7 +256,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         super.viewDidMoveToWindow()
         removeFocusObservers()
         removeWorkspaceObservers()
-        window?.makeFirstResponder(self)
+        restorePreferredFirstResponder()
         rebindDisplay()
         spawnIfNeeded()
         updateTrackingAreas()
@@ -192,6 +264,33 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             installFocusObservers()
             installWorkspaceObservers()
         }
+    }
+
+    /// Browser open + address idle → WebView; address editing → metal; else metal (PTY).
+    private func restorePreferredFirstResponder() {
+        if isBrowserActive {
+            if isBrowserAddressEditing {
+                window?.makeFirstResponder(self)
+            } else {
+                activeBrowser?.focusWebContent()
+            }
+        } else {
+            window?.makeFirstResponder(self)
+        }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        // Something focused metal while the page should own keys — bounce to WebView.
+        // Skip when address bar is editing (metal is intentional first responder).
+        if ok, isBrowserActive, !isBrowserAddressEditing {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isBrowserActive, !self.isBrowserAddressEditing else { return }
+                guard self.window?.firstResponder === self else { return }
+                self.activeBrowser?.focusWebContent()
+            }
+        }
+        return ok
     }
 
     override func updateTrackingAreas() {
@@ -405,18 +504,22 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             scrollConfigApplied = true
         }
 
+        // Drain PTY for all VTs so buffers don't block; skip scroll/indicator
+        // work on the VT that is covered by the browser (sleep that surface).
         manager.pollAllIO()
 
         let now = CACurrentMediaTime()
         let dt = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
         lastFrameTime = now
 
-        // Step scroll physics for every live VT so inactive ones settle too.
-        for s in manager.sessions where s.isLive {
+        let browserVT = manager.activeIndex
+        let browserSleepsActive = activeBrowser != nil
+        for (i, s) in manager.sessions.enumerated() where s.isLive {
+            if browserSleepsActive, i == browserVT { continue }
             s.stepScroll(dt: dt)
         }
 
-        let indicator = manager.tickIndicator()
+        let indicator = browserSleepsActive ? nil : manager.tickIndicator()
         let scale = window?.backingScaleFactor ?? 2
         // Content rect in drawable pixels (same aspect cap as grid sizing).
         // Snap in drawable pixels so the cell grid lands on whole framebuffer pixels.
@@ -429,25 +532,61 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         let searchHL = viewportSearchHighlights(session: manager.active)
         let hudLayout = isSearchOpen ? searchHUDLayout(cols: Int(lastCols)) : nil
-        renderer.draw(
-            session: manager.active,
-            metrics: metrics,
-            drawable: drawable,
-            renderPassDescriptor: rpd,
-            drawableSize: drawableSize,
-            contentRect: contentPx,
-            scale: scale,
-            indicator: indicator,
-            clearColor: clearColor,
-            visualOffsetRows: visualOffset,
-            fontLigatures: config.fontLigatures,
-            searchHighlights: searchHL,
-            searchHUD: hudLayout?.line,
-            searchCaretCol: hudLayout?.caretCol ?? 0,
-            searchHUDAtTop: config.searchPosition == .top,
-            freezeLetterbox: !mouseButtonsHeld.isEmpty || selecting
-        )
-        syncLetterboxChrome(from: renderer)
+        if activeBrowser != nil {
+            // Stolen top row: terminal address bar; WebView fills the rest.
+            // Use last terminal theme colors (not hardcoded defaults).
+            let cols = max(1, Int(lastCols))
+            let bar = browserHUDLayout(cols: cols)
+            let defBg = renderer.lastDefBgRgb
+            let defFg = renderer.lastDefFg
+            // Match terminal cursor blink policy (off when VT cursor is non-blinking).
+            let editing = isBrowserAddressEditing
+            let caretOn: Bool
+            if editing, let rs = manager.active.renderState {
+                caretOn = renderer.cursorBlinkOn(renderState: rs)
+            } else {
+                caretOn = editing
+            }
+            renderer.presentBrowserChrome(
+                drawable: drawable,
+                renderPassDescriptor: rpd,
+                drawableSize: drawableSize,
+                contentRect: contentPx,
+                scale: scale,
+                metrics: metrics,
+                cols: cols,
+                line: bar.line,
+                caretCol: bar.caretCol,
+                showCaret: caretOn && !bar.hasSelection,
+                letterboxBg: renderer.lastLetterboxBg,
+                defFg: defFg,
+                defBg: defBg,
+                selStartCol: bar.selStartCol,
+                selEndCol: bar.selEndCol
+            )
+        } else {
+            renderer.draw(
+                session: manager.active,
+                metrics: metrics,
+                drawable: drawable,
+                renderPassDescriptor: rpd,
+                drawableSize: drawableSize,
+                contentRect: contentPx,
+                scale: scale,
+                indicator: indicator,
+                clearColor: clearColor,
+                visualOffsetRows: visualOffset,
+                fontLigatures: config.fontLigatures,
+                searchHighlights: searchHL,
+                searchHUD: hudLayout?.line,
+                searchCaretCol: hudLayout?.caretCol ?? 0,
+                searchHUDAtTop: config.searchPosition == .top,
+                freezeLetterbox: !mouseButtonsHeld.isEmpty || selecting,
+                linkHover: linkHover
+            )
+            syncLetterboxChrome(from: renderer)
+        }
+        layoutActiveBrowser()
     }
 
     /// Stolen-row layout: `/needle` left; count + ↑ ↓ right (Ghostty chevron order).
@@ -640,6 +779,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     // MARK: - Input
 
     override func scrollWheel(with event: NSEvent) {
+        // Browser owns scroll (WebView) while open.
+        if activeBrowser != nil {
+            super.scrollWheel(with: event)
+            return
+        }
         guard let manager, let metrics else {
             super.scrollWheel(with: event)
             return
@@ -758,7 +902,19 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func mouseDown(with event: NSEvent) {
         noteMouseDown(event)
+        // Browser mode: only address-bar HUD; WebView receives the rest via hit-test.
+        if activeBrowser != nil {
+            if event.buttonNumber == 0, handleBrowserHUDClick(event) {
+                return
+            }
+            // Not on HUD → let the event fall through to the WebView (don't send to PTY).
+            return
+        }
         if event.buttonNumber == 0, handleSearchRowClick(event) {
+            return
+        }
+        // ⌘-click: open URL in embedded browser (does not steal from app mouse tracking).
+        if event.buttonNumber == 0, handleLinkCmdClick(event) {
             return
         }
         guard let manager, event.buttonNumber == 0 else {
@@ -781,6 +937,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if activeBrowser != nil {
+            if browserAddressDragging {
+                handleBrowserAddressDrag(event)
+            }
+            return
+        }
         if selecting, let manager, let hit = makeSelectionHit(event) {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             selectRectangle = flags.contains(.option)
@@ -796,6 +958,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func mouseUp(with event: NSEvent) {
         noteMouseUp(event)
+        if activeBrowser != nil {
+            if browserAddressDragging {
+                handleBrowserAddressDrag(event)
+                browserAddressDragging = false
+            }
+            return
+        }
         if selecting, let manager {
             selecting = false
             manager.active.selectionRelease(hit: makeSelectionHit(event))
@@ -812,8 +981,18 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        if activeBrowser != nil {
+            // No link hover / PTY mouse while browser owns the VT.
+            return
+        }
+        updateLinkHover(with: event)
         if let manager, manager.active.isMouseTracking(), !selecting {
-            sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: nil)
+            // Still track links under ⌘; app also gets motion when not selecting.
+            if !event.modifierFlags.contains(.command) {
+                sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: nil)
+                return
+            }
+            // ⌘ held: don't feed motion to app (hover UI for open-link).
             return
         }
         super.mouseMoved(with: event)
@@ -821,6 +1000,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func rightMouseDown(with event: NSEvent) {
         noteMouseDown(event)
+        if activeBrowser != nil { return }
         if let manager, manager.active.isMouseTracking(), !shouldHostSelect(event) {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
             return
@@ -830,6 +1010,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func rightMouseUp(with event: NSEvent) {
         noteMouseUp(event)
+        if activeBrowser != nil { return }
         if let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
             return
@@ -838,6 +1019,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func rightMouseDragged(with event: NSEvent) {
+        if activeBrowser != nil { return }
         if let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
             return
@@ -855,6 +1037,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func otherMouseDown(with event: NSEvent) {
         noteMouseDown(event)
+        if activeBrowser != nil { return }
         // Middle button: app when tracking, else paste.
         guard event.buttonNumber == 2, let manager else {
             super.otherMouseDown(with: event)
@@ -871,6 +1054,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     override func otherMouseUp(with event: NSEvent) {
         noteMouseUp(event)
+        if activeBrowser != nil { return }
         if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
             return
@@ -879,6 +1063,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func otherMouseDragged(with event: NSEvent) {
+        if activeBrowser != nil { return }
         if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
             return
@@ -889,6 +1074,18 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     override func keyDown(with event: NSEvent) {
         guard let manager else {
             super.keyDown(with: event)
+            return
+        }
+        // Browser owns this VT: never PTY. Address bar when editing; else WebView.
+        if activeBrowser != nil {
+            if handleBrowserKeys(event) { return }
+            if isBrowserAddressEditing {
+                // Unhandled while editing (rare): keep metal focus, do not feed PTY.
+                return
+            }
+            if handleBrowserPageScrollKeys(event) { return }
+            // Page owns input — refocus WebView and deliver this key (do not swallow).
+            activeBrowser?.forwardKeyDown(event)
             return
         }
         if handleSearchKeys(event) {
@@ -930,7 +1127,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return false
     }
 
-    /// Activate the new VT; restore that VT’s search HUD if it was open.
+    /// Activate the new VT; restore that VT’s search HUD / browser if open.
     private func afterVtSwitch(manager: VtManager) {
         searchDebounce?.cancel()
         searchDebounce = nil
@@ -947,7 +1144,652 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if isSearchOpen, !searchNeedle.isEmpty {
             runSearch(needle: searchNeedle, selectFirst: false)
         }
+        showBrowserForActiveVT()
+        if let browser = activeBrowser {
+            browser.focusWebContent()
+        } else {
+            window?.makeFirstResponder(self)
+        }
+    }
+
+    // MARK: - Embedded browser (⌘-click links)
+
+    /// ⌘-click a cell → OSC 8 or bare http(s) → take over this VT with WKWebView.
+    @discardableResult
+    private func handleLinkCmdClick(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.control)
+        else { return false }
+        guard let manager, let cell = fullGridCell(at: event) else { return false }
+        guard let shellRow = shellViewportRow(fromFullRow: cell.row) else { return false }
+        guard let url = manager.active.embeddableURLAtViewport(
+            col: UInt16(cell.col),
+            row: UInt16(shellRow)
+        ) else { return false }
+        openBrowser(url: url, onVT: manager.activeIndex)
+        return true
+    }
+
+    private func shellViewportRow(fromFullRow fullRow: Int) -> Int? {
+        guard let full = fullGridSize() else { return nil }
+        if !isSearchOpen {
+            guard fullRow >= 0, fullRow < Int(full.rows) else { return nil }
+            return fullRow
+        }
+        if config.searchPosition == .top {
+            if fullRow == 0 { return nil }
+            return fullRow - 1
+        }
+        // Bottom HUD.
+        if fullRow == Int(full.rows) - 1 { return nil }
+        return fullRow
+    }
+
+    private struct BrowserHUDLayout {
+        var line: String
+        var caretCol: Int
+        var backCol: Int
+        var forwardCol: Int
+        var closeCol: Int
+        var urlStart: Int
+        var urlEnd: Int // exclusive
+        /// Char index of the first visible address character (matches paint).
+        var visibleStart: Int = 0
+        /// Selection in bar columns (absolute); invalid when `selEndCol <= selStartCol`.
+        var selStartCol: Int = -1
+        var selEndCol: Int = -1
+        var hasSelection: Bool { selStartCol >= 0 && selEndCol > selStartCol }
+    }
+
+    /// `← →  <url…>                    ×` — stolen top terminal row.
+    private func browserHUDLayout(cols: Int) -> BrowserHUDLayout {
+        let chrome = activeBrowserChrome ?? VTBrowserChrome()
+        guard cols > 0 else {
+            return BrowserHUDLayout(
+                line: "×", caretCol: 0, backCol: -1, forwardCol: -1,
+                closeCol: 0, urlStart: 0, urlEnd: 0
+            )
+        }
+        let backCol = 0
+        let forwardCol = 2
+        let closeCol = cols - 1
+        let urlStart = 4
+        let urlEnd = max(urlStart, closeCol)
+        var cells = Array(repeating: " ", count: cols)
+        if cols > 0 { cells[backCol] = chrome.canGoBack ? "←" : "·" }
+        if cols > 2 { cells[forwardCol] = chrome.canGoForward ? "→" : "·" }
+        if cols > 0 { cells[closeCol] = "×" }
+        let urlBudget = max(0, urlEnd - urlStart)
+        var addr = chrome.address
+        if addr.isEmpty { addr = "https://" }
+        let chars = Array(addr)
+        let maxStart = max(0, chars.count - urlBudget)
+        // Editing: keep caret (and selection edge) in the visible window.
+        // Idle: prefer trailing segment (host/path user usually needs).
+        let visibleStart: Int
+        if urlBudget <= 0 || chars.count <= urlBudget {
+            visibleStart = 0
+        } else if chrome.editing {
+            var vs = min(max(0, chrome.visibleStart), maxStart)
+            let focus = chrome.caret
+            if focus < vs { vs = focus }
+            if focus > vs + urlBudget { vs = focus - urlBudget }
+            // Prefer keeping the selection start visible when possible.
+            if chrome.hasSelection {
+                let lo = chrome.selLo
+                if lo < vs { vs = lo }
+                if chrome.selHi > vs + urlBudget {
+                    vs = min(maxStart, chrome.selHi - urlBudget)
+                }
+            }
+            visibleStart = min(max(0, vs), maxStart)
+        } else {
+            visibleStart = maxStart
+        }
+        let slice = chars.dropFirst(visibleStart).prefix(urlBudget)
+        let urlCells = slice.map { String($0) }
+        // Persist visible window for caret/click mapping.
+        updateActiveBrowserChrome { $0.visibleStart = visibleStart }
+        for (i, ch) in urlCells.enumerated() where urlStart + i < urlEnd {
+            cells[urlStart + i] = ch
+        }
+        let caret: Int
+        var selStartCol = -1
+        var selEndCol = -1
+        if chrome.editing {
+            let visCaret = chrome.caret - visibleStart
+            caret = min(urlStart + max(0, min(visCaret, max(0, urlBudget))), max(urlStart, urlEnd))
+            // Clamp caret paint into the URL band (caret may sit past last char cell).
+            let caretPaint = min(max(urlStart, caret), max(urlStart, urlEnd - 1))
+            if chrome.hasSelection, urlBudget > 0 {
+                let lo = max(0, chrome.selLo - visibleStart)
+                let hi = max(0, chrome.selHi - visibleStart)
+                let a = min(lo, hi)
+                let b = max(lo, hi)
+                if b > 0, a < urlBudget {
+                    selStartCol = urlStart + max(0, a)
+                    selEndCol = urlStart + min(urlBudget, b)
+                }
+            }
+            return BrowserHUDLayout(
+                line: cells.joined(),
+                caretCol: caretPaint,
+                backCol: backCol,
+                forwardCol: forwardCol,
+                closeCol: closeCol,
+                urlStart: urlStart,
+                urlEnd: urlEnd,
+                visibleStart: visibleStart,
+                selStartCol: selStartCol,
+                selEndCol: selEndCol
+            )
+        } else {
+            caret = -1
+        }
+        return BrowserHUDLayout(
+            line: cells.joined(),
+            caretCol: caret,
+            backCol: backCol,
+            forwardCol: forwardCol,
+            closeCol: closeCol,
+            urlStart: urlStart,
+            urlEnd: urlEnd,
+            visibleStart: visibleStart
+        )
+    }
+
+    private func openBrowser(url: URL, onVT index: Int) {
+        ensureSearchSlots()
+        guard index >= 0, index < browserByVT.count else { return }
+        clearLinkHover()
+        // Ensure grid metrics for the stolen address row.
+        if let full = fullGridSize() {
+            lastCols = full.cols
+            lastRows = full.rows
+            lastCellW = full.cellW
+            lastCellH = full.cellH
+        }
+        let n = url.absoluteString.count
+        if index < browserChromeByVT.count {
+            browserChromeByVT[index] = VTBrowserChrome(
+                address: url.absoluteString,
+                editing: false,
+                caret: n,
+                selAnchor: n,
+                canGoBack: false,
+                canGoForward: false,
+                visibleStart: 0
+            )
+        }
+        installBrowserPageClickMonitor()
+        if let existing = browserByVT[index] {
+            existing.isHidden = false
+            existing.load(url: url)
+            existing.focusWebContent()
+            layoutActiveBrowser()
+            return
+        }
+        let browser = EmbeddedBrowserView(frame: .zero)
+        browser.onClose = { [weak self] in
+            self?.dismissBrowser(onVT: index)
+        }
+        browser.onWebContentInteraction = { [weak self] in
+            self?.endBrowserAddressEdit(focusWeb: false)
+        }
+        browser.onURLChange = { [weak self] s, back, forward in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.ensureSearchSlots()
+                guard index < self.browserChromeByVT.count else { return }
+                if !self.browserChromeByVT[index].editing {
+                    self.browserChromeByVT[index].address = s
+                    self.browserChromeByVT[index].caret = s.count
+                    self.browserChromeByVT[index].selAnchor = s.count
+                    self.browserChromeByVT[index].visibleStart = 0
+                }
+                self.browserChromeByVT[index].canGoBack = back
+                self.browserChromeByVT[index].canGoForward = forward
+            }
+        }
+        addSubview(browser)
+        browserByVT[index] = browser
+        browser.load(url: url)
+        showBrowserForActiveVT()
+        browser.focusWebContent()
+        layoutActiveBrowser()
+    }
+
+    /// ⌘X/C/V/A for the page when the address bar is not editing.
+    @discardableResult
+    func handleBrowserPageEditKeys(_ event: NSEvent) -> Bool {
+        guard !isBrowserAddressEditing, let browser = activeBrowser else { return false }
+        return browser.performStandardEditKey(event)
+    }
+
+    /// Page Up / Page Down (bare or ⌘) scroll the WebView, not terminal history.
+    @discardableResult
+    func handleBrowserPageScrollKeys(_ event: NSEvent) -> Bool {
+        guard !isBrowserAddressEditing, let browser = activeBrowser else { return false }
+        return browser.performPageScrollKey(event)
+    }
+
+    /// End address edit only on real left-clicks inside the WebView (not mouse-over).
+    private func installBrowserPageClickMonitor() {
+        guard browserPageClickMonitor == nil else { return }
+        browserPageClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) {
+            [weak self] event in
+            guard let self, self.isBrowserAddressEditing, let browser = self.activeBrowser else {
+                return event
+            }
+            // Convert click to metal-view coords; if inside browser frame → leave address edit.
+            let p = self.convert(event.locationInWindow, from: nil)
+            if browser.frame.contains(p) {
+                // Not on the stolen address row (row 0 is above the webview).
+                self.endBrowserAddressEdit(focusWeb: false)
+                browser.notePageClick()
+            }
+            return event
+        }
+    }
+
+    private func removeBrowserPageClickMonitor() {
+        if let m = browserPageClickMonitor {
+            NSEvent.removeMonitor(m)
+            browserPageClickMonitor = nil
+        }
+    }
+
+    private func dismissBrowser(onVT index: Int) {
+        ensureSearchSlots()
+        guard index >= 0, index < browserByVT.count else { return }
+        browserByVT[index]?.removeFromSuperview()
+        browserByVT[index] = nil
+        if index < browserChromeByVT.count {
+            browserChromeByVT[index] = VTBrowserChrome()
+        }
+        browserAddressDragging = false
+        if browserByVT.allSatisfy({ $0 == nil }) {
+            removeBrowserPageClickMonitor()
+        }
+        clearLinkHover()
+        if manager?.activeIndex == index {
+            window?.makeFirstResponder(self)
+        }
+    }
+
+    private func showBrowserForActiveVT() {
+        ensureSearchSlots()
+        let active = manager?.activeIndex ?? 0
+        for (i, b) in browserByVT.enumerated() {
+            b?.isHidden = (i != active)
+        }
+        // Sync chrome from the newly active browser (per-VT); end address edit on switch.
+        if active < browserChromeByVT.count {
+            browserChromeByVT[active].editing = false
+            if let b = browserByVT[active] {
+                if browserChromeByVT[active].address.isEmpty {
+                    browserChromeByVT[active].address = b.currentURLString
+                }
+                browserChromeByVT[active].canGoBack = b.canGoBack
+                browserChromeByVT[active].canGoForward = b.canGoForward
+            }
+        }
+        layoutActiveBrowser()
+    }
+
+    private func endBrowserAddressEdit(focusWeb: Bool) {
+        let wasEditing = isBrowserAddressEditing
+        updateActiveBrowserChrome { $0.editing = false }
+        browserAddressDragging = false
+        // Leave metal first-responder so page keys go to WebKit.
+        // Page click already targets the web view; Esc also refocuses it.
+        if wasEditing || focusWeb {
+            activeBrowser?.focusWebContent()
+        }
+    }
+
+    /// WebView sits under the stolen top terminal row inside the content rect.
+    ///
+    /// AppKit frames use bottom-left origin: keep `origin.y` (content bottom) and
+    /// shrink `height` so the top of the rect drops by one pad + cell row.
+    /// (Raising origin would steal from the bottom and cover the address bar.)
+    private func layoutActiveBrowser() {
+        guard let browser = activeBrowser, let metrics else { return }
+        var r = contentRectPoints()
+        let steal = pad + metrics.cellHeight
+        r.size.height = max(0, r.size.height - steal)
+        // Optional: also inset left/right pad so web aligns with cell grid width.
+        r.origin.x += pad
+        r.size.width = max(0, r.size.width - 2 * pad)
+        browser.frame = r
+        browser.autoresizingMask = [.width, .height]
+    }
+
+    private func beginBrowserAddressEdit(selectAll: Bool = false) {
+        guard activeBrowser != nil else { return }
+        updateActiveBrowserChrome { chrome in
+            let wasEditing = chrome.editing
+            chrome.editing = true
+            if chrome.address.isEmpty { chrome.address = "https://" }
+            if selectAll {
+                chrome.selectAll()
+                chrome.visibleStart = 0
+            } else if !wasEditing {
+                // First focus (e.g. click): caret at end; caller may reposition.
+                // Keep visibleStart so click maps to the painted window.
+                chrome.caret = chrome.address.count
+                chrome.selAnchor = chrome.caret
+            }
+            // Already editing + not selectAll: leave caret/selection alone.
+        }
+        browserAddressDragging = false
         window?.makeFirstResponder(self)
+        installBrowserPageClickMonitor()
+    }
+
+    /// Absolute address index under a full-grid column in the URL segment.
+    private func addressIndex(atUrlCol col: Int, bar: BrowserHUDLayout, chrome: VTBrowserChrome) -> Int {
+        let vis = max(0, col - bar.urlStart)
+        // Use the layout's painted window, not chrome.visibleStart (may change mid-click).
+        return min(chrome.address.count, max(0, bar.visibleStart + vis))
+    }
+
+    /// Drag-extend selection while mouse is down in the address bar.
+    private func handleBrowserAddressDrag(_ event: NSEvent) {
+        guard browserAddressDragging, isBrowserAddressEditing else { return }
+        guard let cell = fullGridCell(at: event) else { return }
+        let bar = browserHUDLayout(cols: Int(lastCols))
+        // Allow drag past the URL band: clamp to ends.
+        let col: Int
+        if cell.row != 0 {
+            // Drag below bar: keep last caret (don't end edit — only page click does).
+            return
+        }
+        if cell.col < bar.urlStart {
+            col = bar.urlStart
+        } else if cell.col >= bar.urlEnd {
+            col = max(bar.urlStart, bar.urlEnd - 1)
+        } else {
+            col = cell.col
+        }
+        updateActiveBrowserChrome { c in
+            c.caret = self.addressIndex(atUrlCol: col, bar: bar, chrome: c)
+            // Drag past last visible cell → end of address.
+            if cell.col >= bar.urlEnd {
+                c.caret = c.address.count
+            }
+        }
+    }
+
+    @discardableResult
+    private func handleBrowserHUDClick(_ event: NSEvent) -> Bool {
+        guard activeBrowser != nil else { return false }
+        guard let cell = fullGridCell(at: event) else { return false }
+        // Address bar is always full-grid row 0 when browser is open.
+        guard cell.row == 0 else {
+            // Letterbox / non-HUD metal: do not end edit (only WebView click does).
+            return false
+        }
+        let bar = browserHUDLayout(cols: Int(lastCols))
+        if cell.col == bar.backCol {
+            endBrowserAddressEdit(focusWeb: false)
+            activeBrowser?.goBack()
+            return true
+        }
+        if cell.col == bar.forwardCol {
+            endBrowserAddressEdit(focusWeb: false)
+            activeBrowser?.goForward()
+            return true
+        }
+        if cell.col == bar.closeCol {
+            if let i = manager?.activeIndex { dismissBrowser(onVT: i) }
+            return true
+        }
+        if cell.col >= bar.urlStart, cell.col < bar.urlEnd {
+            let shift = event.modifierFlags.contains(.shift)
+            beginBrowserAddressEdit()
+            updateActiveBrowserChrome { c in
+                let idx = self.addressIndex(atUrlCol: cell.col, bar: bar, chrome: c)
+                if shift {
+                    c.caret = idx
+                } else {
+                    c.caret = idx
+                    c.selAnchor = idx
+                }
+            }
+            browserAddressDragging = true
+            return true
+        }
+        // Click on chrome padding between buttons: keep/start edit without moving caret.
+        if !isBrowserAddressEditing {
+            beginBrowserAddressEdit(selectAll: true)
+        }
+        return true
+    }
+
+    /// Carbon HIToolbox virtual key codes (ANSI US) for reliable ⌘ chords.
+    private enum BrowserKeyCode {
+        static let a: UInt16 = 0x00
+        static let c: UInt16 = 0x08
+        static let v: UInt16 = 0x09
+        static let w: UInt16 = 0x0D
+        static let l: UInt16 = 0x25
+        static let leftBracket: UInt16 = 0x21
+        static let rightBracket: UInt16 = 0x1E
+    }
+
+    private func isCommandChord(_ event: NSEvent, keyCode: UInt16, char: String) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option)
+        else { return false }
+        if event.keyCode == keyCode { return true }
+        return event.charactersIgnoringModifiers?.lowercased() == char
+    }
+
+    /// Esc / ⌘W / address typing while a browser is active on this VT.
+    @discardableResult
+    func handleBrowserKeys(_ event: NSEvent) -> Bool {
+        guard activeBrowser != nil, let i = manager?.activeIndex else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let editing = isBrowserAddressEditing
+
+        if isCommandChord(event, keyCode: BrowserKeyCode.l, char: "l") {
+            beginBrowserAddressEdit(selectAll: true)
+            return true
+        }
+        if event.keyCode == 53 { // Escape
+            if editing {
+                endBrowserAddressEdit(focusWeb: true)
+                return true
+            }
+            dismissBrowser(onVT: i)
+            return true
+        }
+        if isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
+            dismissBrowser(onVT: i)
+            return true
+        }
+        if isCommandChord(event, keyCode: BrowserKeyCode.leftBracket, char: "[") {
+            activeBrowser?.goBack()
+            return true
+        }
+        if isCommandChord(event, keyCode: BrowserKeyCode.rightBracket, char: "]") {
+            activeBrowser?.goForward()
+            return true
+        }
+
+        // ⌘V / ⌘A / ⌘C only bind to the address bar while it is actively editing.
+        // Otherwise leave them for WebKit (page paste / select-all / copy).
+        if editing, isCommandChord(event, keyCode: BrowserKeyCode.v, char: "v") {
+            if let text = Clipboard.pasteString() {
+                insertIntoBrowserAddress(text)
+            }
+            return true
+        }
+        if editing, isCommandChord(event, keyCode: BrowserKeyCode.a, char: "a") {
+            updateActiveBrowserChrome { $0.selectAll() }
+            return true
+        }
+        if editing, isCommandChord(event, keyCode: BrowserKeyCode.c, char: "c") {
+            if let chrome = activeBrowserChrome {
+                let s: String
+                if chrome.hasSelection {
+                    let a = chrome.address
+                    let lo = a.index(a.startIndex, offsetBy: chrome.selLo)
+                    let hi = a.index(a.startIndex, offsetBy: chrome.selHi)
+                    s = String(a[lo..<hi])
+                } else {
+                    s = chrome.address
+                }
+                Clipboard.copyString(s)
+            }
+            return true
+        }
+
+        guard editing else { return false }
+
+        // Address bar typing (first responder is metal view).
+        if event.keyCode == 36 { // Return
+            commitBrowserAddress()
+            return true
+        }
+        if event.keyCode == 51 { // Delete / backspace
+            updateActiveBrowserChrome { chrome in
+                if chrome.hasSelection {
+                    self.deleteBrowserSelection(&chrome)
+                } else if chrome.caret > 0, !chrome.address.isEmpty {
+                    let idx = chrome.address.index(
+                        chrome.address.startIndex,
+                        offsetBy: chrome.caret - 1
+                    )
+                    chrome.address.remove(at: idx)
+                    chrome.caret -= 1
+                    chrome.selAnchor = chrome.caret
+                }
+            }
+            return true
+        }
+        if event.keyCode == 117 { // Forward delete
+            updateActiveBrowserChrome { chrome in
+                if chrome.hasSelection {
+                    self.deleteBrowserSelection(&chrome)
+                } else if chrome.caret < chrome.address.count {
+                    let idx = chrome.address.index(
+                        chrome.address.startIndex,
+                        offsetBy: chrome.caret
+                    )
+                    chrome.address.remove(at: idx)
+                    chrome.selAnchor = chrome.caret
+                }
+            }
+            return true
+        }
+        if event.keyCode == 123 { // left
+            updateActiveBrowserChrome { chrome in
+                if flags.contains(.shift) {
+                    chrome.caret = max(0, chrome.caret - 1)
+                } else if chrome.hasSelection {
+                    chrome.caret = chrome.selLo
+                    chrome.selAnchor = chrome.caret
+                } else {
+                    chrome.caret = max(0, chrome.caret - 1)
+                    chrome.selAnchor = chrome.caret
+                }
+            }
+            return true
+        }
+        if event.keyCode == 124 { // right
+            updateActiveBrowserChrome { chrome in
+                if flags.contains(.shift) {
+                    chrome.caret = min(chrome.address.count, chrome.caret + 1)
+                } else if chrome.hasSelection {
+                    chrome.caret = chrome.selHi
+                    chrome.selAnchor = chrome.caret
+                } else {
+                    chrome.caret = min(chrome.address.count, chrome.caret + 1)
+                    chrome.selAnchor = chrome.caret
+                }
+            }
+            return true
+        }
+        // Swallow remaining ⌘/⌃ so they never fall into the PTY as literal chars (e.g. "v").
+        if flags.contains(.command) || flags.contains(.control) {
+            return true
+        }
+        // Prefer `characters` for typing (respects shift for symbols); ignore modifiers already filtered.
+        if let chars = event.characters, !chars.isEmpty {
+            let filtered = chars.filter { ch in
+                guard ch.isASCII, !ch.isNewline else { return false }
+                // Drop control characters (C0 / DEL); keep printable ASCII.
+                guard let u = ch.unicodeScalars.first else { return false }
+                return u.value >= 0x20 && u.value != 0x7F
+            }
+            if !filtered.isEmpty {
+                insertIntoBrowserAddress(String(filtered))
+            }
+            return true
+        }
+        return true
+    }
+
+    private func deleteBrowserSelection(_ chrome: inout VTBrowserChrome) {
+        guard chrome.hasSelection else { return }
+        let a = chrome.address
+        let lo = a.index(a.startIndex, offsetBy: chrome.selLo)
+        let hi = a.index(a.startIndex, offsetBy: chrome.selHi)
+        chrome.address.removeSubrange(lo..<hi)
+        chrome.caret = chrome.selLo
+        chrome.selAnchor = chrome.caret
+    }
+
+    private func insertIntoBrowserAddress(_ text: String) {
+        let cleaned = text
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+        guard !cleaned.isEmpty else { return }
+        updateActiveBrowserChrome { chrome in
+            if chrome.hasSelection {
+                self.deleteBrowserSelection(&chrome)
+            }
+            let idx = chrome.address.index(
+                chrome.address.startIndex,
+                offsetBy: chrome.caret,
+                limitedBy: chrome.address.endIndex
+            ) ?? chrome.address.endIndex
+            chrome.address.insert(contentsOf: cleaned, at: idx)
+            chrome.caret += cleaned.count
+            chrome.selAnchor = chrome.caret
+        }
+    }
+
+    private func commitBrowserAddress() {
+        guard let chrome = activeBrowserChrome else { return }
+        var s = chrome.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return }
+        if !s.contains("://") { s = "https://\(s)" }
+        guard let url = UntrustedURL(s).embeddableHTTPURL else { return }
+        updateActiveBrowserChrome {
+            $0.editing = false
+            $0.address = url.absoluteString
+            $0.caret = url.absoluteString.count
+            $0.selAnchor = $0.caret
+            $0.visibleStart = 0
+        }
+        browserAddressDragging = false
+        activeBrowser?.load(url: url)
+        activeBrowser?.focusWebContent()
+    }
+
+    private func clearLinkHover() {
+        if linkHover != nil {
+            linkHover = nil
+        }
+        lastLinkHoverCell = nil
+        NSCursor.arrow.set()
     }
 
     /// Ghostty: ⌘PageUp / ⌘PageDown smooth-scroll; accelerate on key-repeat.
@@ -959,7 +1801,56 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func flagsChanged(with event: NSEvent) {
-        // Keep first responder; do not let the event bubble into beeps.
+        // ⌘ up/down: refresh or clear link hover underline.
+        if event.modifierFlags.contains(.command) {
+            updateLinkHover(with: event)
+        } else {
+            clearLinkHover()
+        }
+    }
+
+    /// While ⌘ is held, underline the clickable URL under the cursor.
+    private func updateLinkHover(with event: NSEvent) {
+        if activeBrowser != nil {
+            clearLinkHover()
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              let manager,
+              let cell = fullGridCell(at: event),
+              let shellRow = shellViewportRow(fromFullRow: cell.row)
+        else {
+            clearLinkHover()
+            return
+        }
+        // Skip full resolve while the pointer stays on the same cell.
+        if let last = lastLinkHoverCell,
+           last.col == cell.col, last.row == shellRow,
+           linkHover != nil {
+            NSCursor.pointingHand.set()
+            return
+        }
+        lastLinkHoverCell = (cell.col, shellRow)
+        guard let hit = manager.active.linkHitAtViewport(
+            col: UInt16(cell.col),
+            row: UInt16(shellRow)
+        ) else {
+            if linkHover != nil {
+                linkHover = nil
+                NSCursor.arrow.set()
+            }
+            return
+        }
+        let next = TerminalRenderer.LinkHoverRange(
+            row: shellRow,
+            startX: hit.startCol,
+            endX: hit.endCol
+        )
+        if linkHover != next {
+            linkHover = next
+        }
+        NSCursor.pointingHand.set()
     }
 
     /// Claim ⌘1… / ⌘F1… / ⌘C / ⌘V / ⌘F before the menu; leave ⌘Q to the system.
@@ -971,6 +1862,28 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if flags.contains(.command) {
             if event.charactersIgnoringModifiers?.lowercased() == "q" {
                 NSApp.terminate(nil)
+                return true
+            }
+            // Browser owns the VT: address chords + VT switch; never PTY paste/search.
+            if isBrowserActive {
+                if handleBrowserKeys(event) {
+                    return true
+                }
+                if let manager, handleVtSwitch(event, manager: manager) {
+                    return true
+                }
+                // Page Edit chords when address bar is idle.
+                if !isBrowserAddressEditing, handleBrowserPageEditKeys(event) {
+                    return true
+                }
+                // ⌘PgUp/PgDn scroll the page (not terminal history).
+                if !isBrowserAddressEditing, handleBrowserPageScrollKeys(event) {
+                    return true
+                }
+                // Do not fall through to the PTY paste path below.
+                return false
+            }
+            if handleBrowserKeys(event) {
                 return true
             }
             if handleSearchKeys(event) {

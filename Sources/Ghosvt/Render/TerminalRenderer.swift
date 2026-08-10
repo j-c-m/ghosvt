@@ -45,6 +45,8 @@ final class TerminalRenderer {
     var lastFgCount = 0
     var lastLayoutKey: LayoutKey?
     var lastDefBg = (r: DefaultColors.background.r, g: DefaultColors.background.g, b: DefaultColors.background.b)
+    private(set) var lastDefFg = DefaultColors.foreground
+    private(set) var lastDefBgRgb = DefaultColors.background
     /// Color used to clear the full drawable (letterbox bars match terminal / FS TUI).
     private(set) var lastLetterboxBg = DefaultColors.background
     var lastIndicator: String?
@@ -67,6 +69,15 @@ final class TerminalRenderer {
     private var lastSearchHighlights: [SearchHighlightRange] = []
     /// Stolen-row search HUD line (nil when search closed).
     private var lastSearchHUD: String?
+
+    /// ⌘-hover link underline (shell viewport coords, inclusive cols).
+    struct LinkHoverRange: Equatable {
+        var row: Int
+        var startX: Int
+        var endX: Int
+    }
+    var linkHover: LinkHoverRange?
+    private var lastLinkHover: LinkHoverRange?
 
     // MARK: Display pacing (Adaptive-Sync / fixed refresh)
     /// Shortest frame hold (1 / max Hz).
@@ -210,10 +221,12 @@ final class TerminalRenderer {
         searchHUD: String? = nil,
         searchCaretCol: Int = 0,
         searchHUDAtTop: Bool = false,
-        freezeLetterbox: Bool = false
+        freezeLetterbox: Bool = false,
+        linkHover: LinkHoverRange? = nil
     ) {
         self.fontLigatures = fontLigatures
         self.searchHighlights = searchHighlights
+        self.linkHover = linkHover
         session.updateRenderState()
         guard let renderState = session.renderState,
               let rowIter = session.rowIterator,
@@ -283,6 +296,8 @@ final class TerminalRenderer {
             defBg = DefaultColors.background
         }
         lastDefBg = (defBg.r, defBg.g, defBg.b)
+        lastDefFg = defFg
+        lastDefBgRgb = defBg
 
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
@@ -403,8 +418,12 @@ final class TerminalRenderer {
         // Cells stable: shellY is already baked into the last GPU upload.
         // visualY / search-shift change must re-pack instances (shellY in oy).
         // Kitty may still redraw without re-uploading cells.
+        let linkHoverChanged = linkHover != lastLinkHover
+        lastLinkHover = linkHover
+
         let cellsStable = !needGridRebuild && !blinkChanged && !indicatorChanged
             && !cursorChanged && !searchHUDChanged && !visualChanged
+            && !linkHoverChanged
             && lastBgCount + lastFgCount > 0
         if cellsStable {
             present(
@@ -425,6 +444,16 @@ final class TerminalRenderer {
         var bgInstances = gridCells
         var fgInstances = glyphExtras
         fgInstances.append(contentsOf: underlineExtras)
+        // ⌘-hover link underline (text color, font underline metrics).
+        if let hover = linkHover {
+            appendLinkHoverUnderline(
+                to: &fgInstances,
+                hover: hover,
+                layout: layout,
+                metrics: metrics,
+                defFg: defFg
+            )
+        }
         if abs(shellY) > 0.001 {
             for i in 0..<bgInstances.count { bgInstances[i].oy += shellY }
             for i in 0..<fgInstances.count { fgInstances[i].oy += shellY }
@@ -495,6 +524,81 @@ final class TerminalRenderer {
         )
     }
 
+    /// Paint only the stolen top-row browser address bar (no VT grid).
+    func presentBrowserChrome(
+        drawable: CAMetalDrawable,
+        renderPassDescriptor: MTLRenderPassDescriptor,
+        drawableSize: CGSize,
+        contentRect: CGRect,
+        scale: CGFloat,
+        metrics: CellMetrics,
+        cols: Int,
+        line: String,
+        caretCol: Int,
+        showCaret: Bool,
+        letterboxBg: GhosttyColorRgb,
+        defFg: GhosttyColorRgb,
+        defBg: GhosttyColorRgb,
+        selStartCol: Int = -1,
+        selEndCol: Int = -1
+    ) {
+        let pw = Float(drawableSize.width)
+        let ph = Float(drawableSize.height)
+        guard pw > 0, ph > 0, cols > 0 else {
+            presentClear(drawable: drawable, rpd: renderPassDescriptor, clearColor: MTLClearColor(
+                red: Double(letterboxBg.r) / 255,
+                green: Double(letterboxBg.g) / 255,
+                blue: Double(letterboxBg.b) / 255,
+                alpha: 1
+            ))
+            return
+        }
+        let cellWInt = max(1, metrics.cellWidthPx)
+        let cellHInt = max(1, metrics.cellHeightPx)
+        let padPx = Float((padPoints * scale).rounded(.toNearestOrAwayFromZero))
+        let layout = LayoutKey(
+            originX: Float(contentRect.minX.rounded(.toNearestOrAwayFromZero)),
+            originY: Float(contentRect.minY.rounded(.toNearestOrAwayFromZero)),
+            cellW: Float(cellWInt),
+            cellH: Float(cellHInt),
+            padPx: padPx,
+            cols: cols,
+            rows: 1,
+            fontPx: metrics.fontPx
+        )
+        var instances: [CellInstance] = []
+        appendSearchHUD(
+            to: &instances,
+            line: line,
+            caretCol: caretCol,
+            showCaret: showCaret,
+            atTop: true,
+            metrics: metrics,
+            layout: layout,
+            cellWInt: cellWInt,
+            cellHInt: cellHInt,
+            defFg: defFg,
+            defBg: defBg,
+            caretStyle: .themeBlock,
+            selStartCol: selStartCol,
+            selEndCol: selEndCol
+        )
+        uploadInstances(instances)
+        lastBgCount = 0
+        lastFgCount = instances.count
+        lastDrawnCount = instances.count
+        present(
+            bgCount: 0,
+            fgCount: instances.count,
+            kitty: nil,
+            drawable: drawable,
+            rpd: renderPassDescriptor,
+            pw: pw, ph: ph,
+            letterboxBg: letterboxBg,
+            contentActive: true
+        )
+    }
+
     /// Full-drawable clear color for max-aspect letterbox bars.
     /// Prefer painted edge cells (FS TUI) when the grid exists; else terminal default bg.
     /// Samples `rowCellCache` (pre-selection), never post-invert `gridCells` fill.
@@ -505,5 +609,48 @@ final class TerminalRenderer {
         // Mid-row left edge sits against the side letterbox on ultra-wide layouts.
         let idx = (gridRows / 2) * gridCols
         return rowCellCache[idx].bg
+    }
+
+    /// Underline for ⌘-hover clickable URL (shell viewport row/cols).
+    /// Uses each cell’s text (fg) color and CT/font underline thickness + position.
+    func appendLinkHoverUnderline(
+        to instances: inout [CellInstance],
+        hover: LinkHoverRange,
+        layout: LayoutKey,
+        metrics: CellMetrics,
+        defFg: GhosttyColorRgb
+    ) {
+        guard hover.row >= 0, hover.row < layout.rows else { return }
+        let lo = max(0, min(hover.startX, hover.endX))
+        let hi = min(layout.cols - 1, max(hover.startX, hover.endX))
+        guard lo <= hi else { return }
+        let th = Float(max(1, metrics.underlineThicknessPx))
+        let y = (layout.originY + layout.padPx + Float(hover.row) * layout.cellH)
+            .rounded(.toNearestOrAwayFromZero)
+            + Float(metrics.underlineTopPx)
+        let defR = Float(defFg.r) / 255
+        let defG = Float(defFg.g) / 255
+        let defB = Float(defFg.b) / 255
+        for col in lo...hi {
+            var r = defR, g = defG, b = defB
+            let idx = hover.row * layout.cols + col
+            if idx >= 0, idx < rowCellCache.count {
+                let fg = rowCellCache[idx].fg
+                r = Float(fg.r) / 255
+                g = Float(fg.g) / 255
+                b = Float(fg.b) / 255
+            }
+            let x = (layout.originX + layout.padPx + Float(col) * layout.cellW)
+                .rounded(.toNearestOrAwayFromZero)
+            instances.append(.make(
+                originX: x,
+                originY: y,
+                width: layout.cellW,
+                height: th,
+                u0: 0, v0: 0, u1: 0, v1: 0,
+                fr: r, fg: g, fb: b, fa: 1,
+                br: r, bg: g, bb: b, ba: 1
+            ))
+        }
     }
 }

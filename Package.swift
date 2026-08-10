@@ -55,6 +55,7 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("ImageIO"),
+                .linkedFramework("WebKit"),
             ]
         ),
     ]

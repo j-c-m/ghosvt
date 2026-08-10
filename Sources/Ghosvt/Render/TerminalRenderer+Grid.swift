@@ -308,9 +308,11 @@ extension TerminalRenderer {
                 )
             }
             if c.underline {
-                let th = max(1, layout.cellH * 0.06)
+                // Font underline metrics (same path as ⌘-hover links).
+                let th = Float(max(1, metrics.underlineThicknessPx))
+                let uy = y + Float(metrics.underlineTopPx)
                 underlineExtras.append(.make(
-                    originX: x, originY: y + layout.cellH - th - 1,
+                    originX: x, originY: uy,
                     width: layout.cellW, height: th,
                     u0: 0, v0: 0, u1: 0, v1: 0,
                     fr: fr, fg: fgG, fb: fb, fa: 1,

@@ -21,6 +21,10 @@ struct CellMetrics {
     var fontBoldItalic: CTFont
     /// Ascent in points.
     var ascent: CGFloat
+    /// Underline stroke thickness in device pixels (CT / Ghostty-style).
+    var underlineThicknessPx: Int
+    /// Distance from the **top** of the cell to the top of the underline stroke (device px).
+    var underlineTopPx: Int
 
     static func measure(fontSize: CGFloat, scale: CGFloat) -> CellMetrics {
         let s = max(scale, 0.5)
@@ -73,13 +77,24 @@ struct CellMetrics {
             0,
             Int((faceBaseline - (CGFloat(cellHPx) - faceHeight) / 2).rounded())
         )
+        let cellBaselineClamped = min(cellBaseline, cellHPx)
+
+        // CT underline metrics (thickness/position relative to baseline).
+        // Fall back to Ghostty-style ~fontPx/16 when the face reports 0.
+        let ctThick = CTFontGetUnderlineThickness(regular)
+        let ctPos = CTFontGetUnderlinePosition(regular) // typically negative = below baseline
+        let ulThick = max(1, Int(max(ctThick, CGFloat(fontPx) / 16).rounded()))
+        // y from top of cell to top of stroke: baselineFromTop - ctPos
+        let baselineFromTop = CGFloat(cellHPx - cellBaselineClamped)
+        var ulTop = Int((baselineFromTop - ctPos).rounded())
+        ulTop = min(max(0, ulTop), max(0, cellHPx - ulThick))
 
         return CellMetrics(
             cellWidth: CGFloat(cellWPx) / s,
             cellHeight: CGFloat(cellHPx) / s,
             cellWidthPx: cellWPx,
             cellHeightPx: cellHPx,
-            cellBaselinePx: min(cellBaseline, cellHPx),
+            cellBaselinePx: cellBaselineClamped,
             faceWidthPx: faceWidth,
             fontSize: fontSize,
             fontPx: fontPx,
@@ -87,7 +102,9 @@ struct CellMetrics {
             fontBold: bold,
             fontItalic: italic,
             fontBoldItalic: boldItalic,
-            ascent: ascent / s
+            ascent: ascent / s,
+            underlineThicknessPx: ulThick,
+            underlineTopPx: ulTop
         )
     }
 
