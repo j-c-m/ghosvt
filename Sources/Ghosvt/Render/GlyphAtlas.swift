@@ -191,6 +191,11 @@ final class GlyphAtlas {
         }
         var fonts = [font]
         fonts.append(contentsOf: fallbackFonts)
+        // Ghostty: after configured faces, Core Text cascade for the codepoint
+        // (e.g. U+26E8 ⛨ → STIX Two Math). Cached in SystemFontFallback.
+        fonts.append(contentsOf: SystemFontFallback.fonts(
+            for: text, primary: font, already: fallbackFonts
+        ))
         for f in fonts {
             // Skip faces that do not map every code unit (avoids .notdef tofu
             // from JetBrains Mono blocking Symbols Nerd Font icons).

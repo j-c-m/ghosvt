@@ -725,7 +725,7 @@ extension TerminalRenderer {
         ))
     }
 
-    /// Best face + single glyph for a cell: Nerd for PUA / missing primary, else primary.
+    /// Best face + single glyph: primary / Nerd, then Ghostty-style system discovery.
     func resolveGlyphFace(
         text: String,
         primary: CTFont,
@@ -741,11 +741,23 @@ extension TerminalRenderer {
             }
             return (face, glyphs[0])
         }
+        // Same as Ghostty CodepointResolver: CTFontCreateForString cascade
+        // (e.g. U+26E8 ⛨ → STIXTwoMath-Regular).
+        if let sys = SystemFontFallback.face(for: text, from: primary),
+           let glyphs = GlyphAtlas.glyphs(for: text, font: sys),
+           glyphs.count == 1 {
+            return (sys, glyphs[0])
+        }
         return nil
     }
 
     func nerdFallbackFonts(metrics: CellMetrics) -> [CTFont] {
         EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
+    }
+
+    /// HUD / address bar: Nerd first (PUA). System cascade runs inside GlyphAtlas.
+    func hudFallbackFonts(metrics: CellMetrics) -> [CTFont] {
+        nerdFallbackFonts(metrics: metrics)
     }
 
     func paintWideOrFallback(
