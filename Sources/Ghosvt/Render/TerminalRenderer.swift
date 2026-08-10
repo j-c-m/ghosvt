@@ -209,7 +209,8 @@ final class TerminalRenderer {
         searchHighlights: [SearchHighlightRange] = [],
         searchHUD: String? = nil,
         searchCaretCol: Int = 0,
-        searchHUDAtTop: Bool = false
+        searchHUDAtTop: Bool = false,
+        freezeLetterbox: Bool = false
     ) {
         self.fontLigatures = fontLigatures
         self.searchHighlights = searchHighlights
@@ -375,8 +376,15 @@ final class TerminalRenderer {
         }
 
         // After grid rebuild so edge samples match this frame's FS TUI cells.
-        let letterboxBg = letterboxBackground(defBg: defBg)
-        lastLetterboxBg = letterboxBg
+        // Freeze while any mouse button is held (tmux reverse-video selection)
+        // so side letterbox does not chase inverted edge cells; events still go to the app.
+        let letterboxBg: GhosttyColorRgb
+        if freezeLetterbox {
+            letterboxBg = lastLetterboxBg
+        } else {
+            letterboxBg = letterboxBackground(defBg: defBg)
+            lastLetterboxBg = letterboxBg
+        }
 
         let shellShiftY: Float = (searchHUD != nil && searchHUDAtTop) ? layout.cellH : 0
         let shellY = visualY + shellShiftY

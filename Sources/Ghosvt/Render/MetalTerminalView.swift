@@ -22,6 +22,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var scrollConfigApplied = false
     private var selecting = false
     private var selectRectangle = false
+    /// Any mouse button currently held (for letterbox freeze during app selection).
+    private var mouseButtonsHeld: Set<Int> = []
     private var trackingArea: NSTrackingArea?
     private var focusObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -442,7 +444,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             searchHighlights: searchHL,
             searchHUD: hudLayout?.line,
             searchCaretCol: hudLayout?.caretCol ?? 0,
-            searchHUDAtTop: config.searchPosition == .top
+            searchHUDAtTop: config.searchPosition == .top,
+            freezeLetterbox: !mouseButtonsHeld.isEmpty || selecting
         )
         syncLetterboxChrome(from: renderer)
     }
@@ -754,6 +757,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseDown(with event: NSEvent) {
+        noteMouseDown(event)
         if event.buttonNumber == 0, handleSearchRowClick(event) {
             return
         }
@@ -791,6 +795,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        noteMouseUp(event)
         if selecting, let manager {
             selecting = false
             manager.active.selectionRelease(hit: makeSelectionHit(event))
@@ -815,6 +820,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        noteMouseDown(event)
         if let manager, manager.active.isMouseTracking(), !shouldHostSelect(event) {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
             return
@@ -823,6 +829,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func rightMouseUp(with event: NSEvent) {
+        noteMouseUp(event)
         if let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
             return
@@ -838,7 +845,16 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         super.rightMouseDragged(with: event)
     }
 
+    private func noteMouseDown(_ event: NSEvent) {
+        mouseButtonsHeld.insert(event.buttonNumber)
+    }
+
+    private func noteMouseUp(_ event: NSEvent) {
+        mouseButtonsHeld.remove(event.buttonNumber)
+    }
+
     override func otherMouseDown(with event: NSEvent) {
+        noteMouseDown(event)
         // Middle button: app when tracking, else paste.
         guard event.buttonNumber == 2, let manager else {
             super.otherMouseDown(with: event)
@@ -854,6 +870,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        noteMouseUp(event)
         if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
             return
