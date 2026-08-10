@@ -10,7 +10,7 @@
 *.xcworkspace/xcuserdata/
 build.log
 DerivedData/
+# Ghostty source working tree (cloned + patched by build-libghostty.sh).
+# Pin: Vendor/ghostty.rev  Patches: patches/*.patch
 Vendor/ghostty/
-Vendor/ghostty/.zig-cache/
-Vendor/ghostty/zig-out/
 zig-build.log

@@ -173,13 +173,14 @@ extension TerminalRenderer {
         metrics: CellMetrics,
         layout: LayoutKey,
         cellWInt: Int,
-        cellHInt: Int
+        cellHInt: Int,
+        yOffset: Float = 0
     ) {
-        // Upper-right of the content grid (pad inset).
+        // Upper-right of the shell grid (pad inset). `yOffset` shifts past a top search row.
         let textW = Float(text.count) * layout.cellW
         let right = layout.originX + layout.padPx + Float(layout.cols) * layout.cellW - 4
         var ix = right - textW
-        let iy = layout.originY + layout.padPx + 4
+        let iy = layout.originY + layout.padPx + 4 + yOffset
         let font = metrics.fontBold
         for ch in text {
             let entry = atlas.entry(
@@ -199,6 +200,93 @@ extension TerminalRenderer {
                 br: 0, bg: 0, bb: 0, ba: 0.4
             ))
             ix += layout.cellW
+        }
+    }
+
+    /// Stolen VT row: full-width cell strip for `/needle` + count.
+    /// Not scrolled with visualY (HUD stays fixed). `atTop` places it above the shell.
+    func appendSearchHUD(
+        to instances: inout [CellInstance],
+        line: String,
+        caretCol: Int,
+        showCaret: Bool,
+        atTop: Bool,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        defFg: GhosttyColorRgb,
+        defBg: GhosttyColorRgb
+    ) {
+        let rowY: Float
+        if atTop {
+            rowY = layout.originY + layout.padPx
+        } else {
+            rowY = layout.originY + layout.padPx + Float(layout.rows) * layout.cellH
+        }
+        let font = metrics.font
+        let ink = CellPaintColors.RGB(defFg)
+        // Slightly lifted bar so it reads as chrome, not shell output.
+        let fill = CellPaintColors.RGB(
+            r: min(1, Float(defBg.r) / 255 + 0.08),
+            g: min(1, Float(defBg.g) / 255 + 0.08),
+            b: min(1, Float(defBg.b) / 255 + 0.08)
+        )
+        let caretFill = CellPaintColors.searchSelectedFill
+        let caretInk = CellPaintColors.searchSelectedInk
+
+        // `line` is cell-aligned: one Character (or space) per column. Empty
+        // Character is not used; spacers after wide glyphs are spaces.
+        var cells: [String] = []
+        cells.reserveCapacity(layout.cols)
+        for ch in line {
+            cells.append(String(ch))
+            if cells.count >= layout.cols { break }
+        }
+        while cells.count < layout.cols { cells.append(" ") }
+
+        for col in 0..<layout.cols {
+            let x = layout.originX + layout.padPx + Float(col) * layout.cellW
+            let s = cells[col]
+            let isCaret = showCaret && col == caretCol
+            let fr = isCaret ? caretInk.r : ink.r
+            let fg = isCaret ? caretInk.g : ink.g
+            let fb = isCaret ? caretInk.b : ink.b
+            let br = isCaret ? caretFill.r : fill.r
+            let bg = isCaret ? caretFill.g : fill.g
+            let bb = isCaret ? caretFill.b : fill.b
+
+            // Background cell (full row strip).
+            instances.append(.make(
+                originX: x, originY: rowY, width: layout.cellW, height: layout.cellH,
+                u0: 0, v0: 0, u1: 0, v1: 0,
+                fr: fr, fg: fg, fb: fb, fa: 1,
+                br: br, bg: bg, bb: bb, ba: 1
+            ))
+
+            // Spacer / blank: no glyph.
+            if s.isEmpty || s == " " { continue }
+            let entry = atlas.entry(
+                text: s,
+                bold: false,
+                italic: false,
+                font: font,
+                cellWidthPx: cellWInt,
+                cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                faceWidthPx: metrics.faceWidthPx
+            )
+            if entry.pixelW < 0.5 || entry.pixelH < 0.5 { continue }
+            let cellX = x.rounded(.towardZero)
+            instances.append(.make(
+                originX: cellX + entry.bearingX,
+                originY: rowY + entry.bearingY,
+                width: max(1, entry.pixelW),
+                height: max(1, entry.pixelH),
+                u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+                fr: fr, fg: fg, fb: fb, fa: 1,
+                br: 0, bg: 0, bb: 0, ba: 0
+            ))
         }
     }
 

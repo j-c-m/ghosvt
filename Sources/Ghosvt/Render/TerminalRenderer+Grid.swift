@@ -246,18 +246,38 @@ extension TerminalRenderer {
             selEnd = Int(rowSel.end_x)
         }
 
-        func selected(_ col: Int) -> Bool {
-            guard let s = selStart, let e = selEnd else { return false }
-            return col >= min(s, e) && col <= max(s, e)
+        // Search highlights for this viewport row (screen coords already mapped).
+        let rowSearch = searchHighlights.filter { $0.row == rowIndex }
+
+        func highlight(for col: Int) -> CellPaintColors.Highlight {
+            // Ghostty precedence: mouse selection > current search match > other matches.
+            if let s = selStart, let e = selEnd {
+                let lo = min(s, e), hi = max(s, e)
+                if col >= lo && col <= hi { return .selection }
+            }
+            var kind: CellPaintColors.Highlight = .none
+            for h in rowSearch {
+                if col >= h.startX && col <= h.endX {
+                    if h.isCurrent { return .searchSelected }
+                    kind = .search
+                }
+            }
+            return kind
         }
 
-        // 1) Background for every cell (selection invert on bg/fg pair for empty ink).
+        func selected(_ col: Int) -> Bool {
+            highlight(for: col) != .none
+        }
+
+        // 1) Background for every cell (selection invert / search gold / current peach).
         for col in 0..<layout.cols {
             let c = rowCells[col]
             let x = (layout.originX + layout.padPx + Float(col) * layout.cellW)
                 .rounded(.toNearestOrAwayFromZero)
             let yPx = y
-            let colors = CellPaintColors.pair(fg: c.fg, bg: c.bg, faint: c.faint, selected: selected(col))
+            let colors = CellPaintColors.pair(
+                fg: c.fg, bg: c.bg, faint: c.faint, highlight: highlight(for: col)
+            )
             let fr = colors.ink.r, fgG = colors.ink.g, fb = colors.ink.b
             let br = colors.fill.r, bgG = colors.fill.g, bb = colors.fill.b
             let idx = rowIndex * layout.cols + col
@@ -297,10 +317,21 @@ extension TerminalRenderer {
         }
 
         // 2) Shape text runs and stamp glyphs.
+        // Break runs at selection and search boundaries so highlight ink stays cell-local.
+        var breakCols: [Int] = []
+        if let s = selStart, let e = selEnd {
+            breakCols.append(min(s, e))
+            breakCols.append(max(s, e) + 1)
+        }
+        for h in rowSearch {
+            breakCols.append(h.startX)
+            breakCols.append(h.endX + 1)
+        }
         let segments = segmentRuns(
             rowCells,
-            selectionLo: selStart.flatMap { s in selEnd.map { e in min(s, e) } },
-            selectionHi: selStart.flatMap { s in selEnd.map { e in max(s, e) } },
+            selectionLo: nil,
+            selectionHi: nil,
+            highlightBreaks: breakCols,
             cursorCol: cursorCol
         )
         for seg in segments {
@@ -311,7 +342,8 @@ extension TerminalRenderer {
                 paintWideOrFallback(
                     col: col, rowIndex: rowIndex, rowCells: rowCells,
                     metrics: metrics, layout: layout,
-                    cellWInt: cellWInt, cellHInt: cellHInt, selected: selected(col)
+                    cellWInt: cellWInt, cellHInt: cellHInt,
+                    highlight: highlight(for: col)
                 )
             case .run(let start, let end, let style):
                 paintShapedRun(
@@ -334,18 +366,20 @@ extension TerminalRenderer {
     /// Segment a row into shape runs (Ghostty-aligned break rules).
     ///
     /// Breaks on: 2+ spaces/empties, text style (not bg), wide cells,
-    /// selection boundaries, cursor column, and bad ligatures (fi/fl/st).
+    /// selection / search boundaries, cursor column, and bad ligatures (fi/fl/st).
     /// Single spaces stay inside runs; 2+ spaces are gaps.
     func segmentRuns(
         _ cells: [TerminalRowCell],
         selectionLo: Int?,
         selectionHi: Int?,
+        highlightBreaks: [Int] = [],
         cursorCol: Int?
     ) -> [RunSeg] {
         var segs: [RunSeg] = []
         var i = 0
         var runStart: Int?
         var runStyle: TextStyleKey?
+        let breakSet = Set(highlightBreaks)
 
         func flushRun(upTo end: Int) {
             guard let s = runStart, let st = runStyle, s < end else {
@@ -362,11 +396,12 @@ extension TerminalRenderer {
         func mustBreakBefore(i: Int, runStart: Int) -> Bool {
             if i <= runStart { return false }
 
-            // Selection: break at enter (lo) and leave (hi+1). Inclusive hi.
+            // Selection / search: break at enter (lo) and leave (hi+1). Inclusive hi.
             if let lo = selectionLo, let hi = selectionHi {
                 if i == lo { return true }
                 if i == hi + 1 { return true }
             }
+            if breakSet.contains(i) { return true }
 
             // Cursor: run before cursor stops at cursor; cursor cell is its own run.
             if let cx = cursorCol {
@@ -655,17 +690,14 @@ extension TerminalRenderer {
         let pwG = entry.pixelW
         let phG = entry.pixelH
 
-        // Ink already selection-aware when caller uses CellPaintColors; for
-        // ligature runs the style colors are pre-selection, so re-apply here.
+        // Prefer gridCells ink (post selection / search highlight) over style colors.
         var ifr = fr, ifg = fg, ifb = fb
-        if selected(col) {
-            let idx = rowIndex * layout.cols + col
-            if idx < gridCells.count {
-                // gridCells store post-selection ink in fr after paintRow.
-                let cell = gridCells[idx]
-                ifr = cell.fr; ifg = cell.fg; ifb = cell.fb
-            }
+        let idx = rowIndex * layout.cols + col
+        if idx < gridCells.count {
+            let cell = gridCells[idx]
+            ifr = cell.fr; ifg = cell.fg; ifb = cell.fb
         }
+        _ = selected
 
         glyphExtras.append(.make(
             originX: ox, originY: oy,
@@ -707,7 +739,7 @@ extension TerminalRenderer {
         layout: LayoutKey,
         cellWInt: Int,
         cellHInt: Int,
-        selected: Bool
+        highlight: CellPaintColors.Highlight
     ) {
         guard col < rowCells.count else { return }
         let c = rowCells[col]
@@ -728,7 +760,7 @@ extension TerminalRenderer {
         )
         let x = layout.originX + layout.padPx + Float(col) * layout.cellW
         let y = layout.originY + layout.padPx + Float(rowIndex) * layout.cellH
-        let colors = CellPaintColors.pair(fg: c.fg, bg: c.bg, faint: c.faint, selected: selected)
+        let colors = CellPaintColors.pair(fg: c.fg, bg: c.bg, faint: c.faint, highlight: highlight)
         let fr = colors.ink.r, fgG = colors.ink.g, fb = colors.ink.b
         let br = colors.fill.r, bgG = colors.fill.g, bb = colors.fill.b
         let idx = rowIndex * layout.cols + col

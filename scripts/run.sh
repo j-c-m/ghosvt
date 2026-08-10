@@ -4,9 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT}"
 
-if [[ ! -f Vendor/ghostty/zig-out/lib/libghostty-vt.a ]]; then
-  ./scripts/build-libghostty.sh
-fi
+# Stamp-aware: rebuilds when ghostty.rev / patches / script change.
+./scripts/build-libghostty.sh
 
 # SPM may need --disable-sandbox in restricted environments
 swift build --disable-sandbox -c release 2>&1

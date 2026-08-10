@@ -8,6 +8,12 @@ enum ConsoleMode: String, Sendable {
     case shell
 }
 
+/// Where the stolen search row sits (`search-position`).
+enum SearchPosition: String, Sendable {
+    case top
+    case bottom
+}
+
 /// User configuration from `~/.config/ghosvt/config` (Ghostty-style key = value).
 struct Config: Sendable {
     var vtCount: Int = 6
@@ -30,6 +36,8 @@ struct Config: Sendable {
     var scrollToBottomOutput: Bool = false
     /// Per-VT spawn: `login` or `shell` (default for now).
     var consoleMode: ConsoleMode = .shell
+    /// Stolen search row: `top` or `bottom` (default).
+    var searchPosition: SearchPosition = .bottom
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -92,6 +100,15 @@ struct Config: Sendable {
                     cfg.consoleMode = .login
                 case "shell":
                     cfg.consoleMode = .shell
+                default:
+                    break
+                }
+            case "search-position":
+                switch value.lowercased() {
+                case "top":
+                    cfg.searchPosition = .top
+                case "bottom":
+                    cfg.searchPosition = .bottom
                 default:
                     break
                 }

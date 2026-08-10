@@ -14,21 +14,33 @@ Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-
 ## Build
 
 ```bash
-# once: vendor ghostty (if missing)
-git clone --depth 1 https://github.com/ghostty-org/ghostty.git Vendor/ghostty
-
-./scripts/build-libghostty.sh
+./scripts/build-libghostty.sh   # pin + patches + libghostty-vt.a
 swift build --disable-sandbox -c release
 swift run --disable-sandbox -c release
 # or
 ./scripts/run.sh
 ```
 
-Refresh libghostty-vt after updating `Vendor/ghostty`:
+### Vendoring libghostty-vt
+
+Ghostty is **not** committed as a full tree. The build script:
+
+1. Reads **`Vendor/ghostty.rev`** (exact commit SHA)
+2. Clones/fetches into gitignored `Vendor/ghostty/`
+3. Applies **`patches/*.patch`** in sorted order (search C shim until upstream ~1.4.0)
+4. Builds `libghostty-vt.a` and stamps inputs so rebuilds are skipped when unchanged
 
 ```bash
+# after editing patches/ or bumping the pin:
 ./scripts/build-libghostty.sh
 swift build --disable-sandbox -c release
+```
+
+Bump Ghostty:
+
+```bash
+# put the new SHA in Vendor/ghostty.rev, refresh patches if needed, then:
+./scripts/build-libghostty.sh
 ```
 
 ## Terminfo
@@ -73,6 +85,7 @@ scroll-to-bottom = keystroke, no-output
 max-aspect = 3:2
 copy-on-select = true
 font-ligatures = true
+search-position = bottom
 ```
 
 ### Options
@@ -88,6 +101,7 @@ font-ligatures = true
 | `max-aspect` / `max-aspect-ratio` | `3:2` | Cap content width/height (`3:2`, `3/2`, or float). Wider screens letterbox |
 | `copy-on-select` | `true` | Copy selection to pasteboard on mouse-up |
 | `font-ligatures` / `ligatures` | `true` | OpenType liga/calt on shaped runs |
+| `search-position` | `bottom` | Stolen search row: `top` or `bottom` |
 | `scroll-spring-k` | `120` | Overscroll spring stiffness |
 | `scroll-spring-c` | `14` | Overscroll damping |
 | `scroll-friction` | `6` | Coast friction |
@@ -106,9 +120,12 @@ Bools: `true` / `yes` / `on` / `1`.
 | **⌘Page Down** | Smooth scroll down (toward bottom); accelerates while held |
 | **⌘C** | Copy selection |
 | **⌘V** | Paste |
+| **⌘F** | Search scrollback (steals bottom VT row: `/needle`; gold/peach hits) |
+| **⌘G** / **⇧⌘G** | Next / previous match (while search open) |
+| **Esc** / **⌘F** again | Close search (restores shell rows) |
 | **⌘Q** | Quit |
 | **Shift+Enter** / **Alt+Enter** | Send LF (`\n`) — newline for apps like Grok Build |
-| **Enter** | Send CR (`\r`) |
+| **Enter** | Send CR (`\r`) (next match while search field focused) |
 | Wheel / trackpad | Scroll history (spring overscroll) |
 | Mouse drag | Host selection (or app mouse when tracking; Shift forces host select) |
 
@@ -129,6 +146,7 @@ VT switch shows a brief **VT *n*** label in the **upper-right** of the content a
 - Embedded **JetBrains Mono** (+ Nerd Symbols cascade); SGR bold uses ExtraBold when available
 - Ghostty-style sprites (blocks, box drawing, braille, powerline, etc.); DECTCEM cursor hide
 - Selection invert with correct ink; copy-on-select default on
+- Scrollback search via Ghostty **ScreenSearch** (temporary C shim until ~1.4.0); steals one shell row for a cell-style `/needle` HUD; gold / peach match paint
 - PTY gather + parse threads (Ghostty-style ring / bridge policy) so bulk IO does not stall Metal
 
 ## Fonts
@@ -143,10 +161,16 @@ Refresh embedded fonts:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/build-libghostty.sh` | Build `libghostty-vt.a` (ReleaseFast) |
-| `scripts/run.sh` | Build release + run |
+| `scripts/build-libghostty.sh` | Pin Ghostty @ `Vendor/ghostty.rev`, apply `patches/`, build `libghostty-vt.a` |
+| `scripts/run.sh` | Stamp-aware libghostty build + release run |
 | `scripts/fetch-terminfo.sh` | Refresh bundled terminfo |
 | `scripts/fetch-fonts.sh` | Refresh embedded fonts |
+
+| Path | Purpose |
+|------|---------|
+| `Vendor/ghostty.rev` | Pinned Ghostty commit |
+| `patches/*.patch` | Local libghostty-vt patches (search C shim) |
+| `Vendor/ghostty/` | Working tree (gitignored) |
 
 ## License
 

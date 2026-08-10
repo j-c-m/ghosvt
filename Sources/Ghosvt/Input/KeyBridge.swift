@@ -82,6 +82,30 @@ enum KeyBridge {
         }
     }
 
+    /// ⌘F → open/focus scrollback search.
+    static func isSearchToggle(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              !flags.contains(.shift)
+        else { return false }
+        return event.charactersIgnoringModifiers?.lowercased() == "f"
+    }
+
+    /// ⌘G / ⇧⌘G → next / previous search match. Returns true for next, false for previous.
+    static func searchNavigateForward(from event: NSEvent) -> Bool? {
+        guard event.type == .keyDown else { return nil }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option)
+        else { return nil }
+        guard event.charactersIgnoringModifiers?.lowercased() == "g" else { return nil }
+        return !flags.contains(.shift)
+    }
+
     static func handleKeyDown(_ event: NSEvent, session: TerminalSession) {
         // Encode under the session lock, then write *outside* the lock.
         // Nested writeToPty while holding the lock deadlocked NSLock on first key.

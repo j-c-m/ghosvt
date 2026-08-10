@@ -1156,6 +1156,77 @@ final class TerminalSession {
             return
         }
     }
+
+    // MARK: - Scrollback search
+
+    /// One match in screen coordinates (POINT_TAG_SCREEN). End column inclusive.
+    struct SearchMatch: Equatable {
+        var screenY: UInt32
+        var startX: UInt16
+        var endX: UInt16
+    }
+
+    /// Find all matches of `needle` in the full screen (history + active).
+    ///
+    /// Uses Ghostty `ScreenSearch` via the temporary C shim
+    /// (`ghostty_screen_search_*`) until official 1.4.0 C bindings ship.
+    /// Holds the session lock for the full search (same rule as selection).
+    /// Results are newest-first (bottom toward history).
+    func findMatches(needle: String) -> [SearchMatch] {
+        let trimmed = needle
+        guard !trimmed.isEmpty else { return [] }
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return [] }
+
+        var handle: GhosttyScreenSearch?
+        let r: GhosttyResult = trimmed.withCString { cstr in
+            let len = trimmed.utf8.count
+            return ghostty_screen_search_new(
+                nil,
+                terminal,
+                UnsafeRawPointer(cstr).assumingMemoryBound(to: UInt8.self),
+                len,
+                &handle
+            )
+        }
+        guard r == GHOSTTY_SUCCESS, let handle else { return [] }
+        defer { ghostty_screen_search_free(handle) }
+
+        var count: Int = 0
+        guard ghostty_screen_search_match_count(handle, &count) == GHOSTTY_SUCCESS,
+              count > 0
+        else { return [] }
+
+        var matches: [SearchMatch] = []
+        matches.reserveCapacity(count)
+        for i in 0..<count {
+            var m = GhosttyScreenSearchMatch()
+            m.size = MemoryLayout<GhosttyScreenSearchMatch>.size
+            guard ghostty_screen_search_match_at(handle, i, &m) == GHOSTTY_SUCCESS else {
+                continue
+            }
+            matches.append(SearchMatch(
+                screenY: m.y,
+                startX: m.start_x,
+                endX: m.end_x
+            ))
+        }
+        return matches
+    }
+
+    /// Smooth-scroll so the match row sits near the upper third of the viewport.
+    func scrollToSearchMatch(_ match: SearchMatch) {
+        let snap = queryScrollbar()
+        let maxO = snap?.maxOffset ?? scrollMaxOffset
+        let vp = max(1, Double(snap?.len ?? UInt64(rows)))
+        scrollMaxOffset = maxO
+        scrollViewportRows = vp
+        let target = Double(match.screenY) - vp * 0.25
+        scrollPhysics.smoothTo(offset: target, maxOffset: maxO)
+        // Integer viewport updates each frame via stepScroll while seeking.
+        syncIntegerViewport()
+    }
 }
 
 // MARK: - Effects

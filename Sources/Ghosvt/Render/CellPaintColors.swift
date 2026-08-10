@@ -1,12 +1,21 @@
 import CGhosttyVT
 import Foundation
 
-/// Single policy for cell fill / ink colors (including selection invert).
+/// Single policy for cell fill / ink colors (selection invert + search highlights).
 ///
 /// Matches Ghostty defaults:
-/// - selection-background = cell-foreground
-/// - selection-foreground = cell-background
+/// - selection-background = cell-foreground / selection-foreground = cell-background
+/// - search-background = #FFE082, search-foreground = black
+/// - search-selected-background = #F2A57E, search-selected-foreground = black
 enum CellPaintColors {
+    /// Paint-time highlight precedence (highest first): selection → searchSelected → search.
+    enum Highlight: Equatable {
+        case none
+        case selection
+        case search
+        case searchSelected
+    }
+
     struct RGB {
         var r: Float
         var g: Float
@@ -24,25 +33,54 @@ enum CellPaintColors {
             self.b = b
         }
 
+        init(byteR: UInt8, g byteG: UInt8, b byteB: UInt8) {
+            r = Float(byteR) / 255
+            g = Float(byteG) / 255
+            b = Float(byteB) / 255
+        }
+
         func faint(_ on: Bool) -> RGB {
             guard on else { return self }
             return RGB(r: r * 0.5, g: g * 0.5, b: b * 0.5)
         }
     }
 
-    /// Fill (background) and ink (foreground) for a cell after optional selection.
+    /// Ghostty `search-background` / `search-foreground`.
+    static let searchFill = RGB(byteR: 0xFF, g: 0xE0, b: 0x82)
+    static let searchInk = RGB(byteR: 0x00, g: 0x00, b: 0x00)
+    /// Ghostty `search-selected-background` / `search-selected-foreground`.
+    static let searchSelectedFill = RGB(byteR: 0xF2, g: 0xA5, b: 0x7E)
+    static let searchSelectedInk = RGB(byteR: 0x00, g: 0x00, b: 0x00)
+
+    /// Fill (background) and ink (foreground) for a cell after highlight.
     static func pair(
         fg: GhosttyColorRgb,
         bg: GhosttyColorRgb,
         faint: Bool,
         selected: Bool
     ) -> (fill: RGB, ink: RGB) {
-        var ink = RGB(fg).faint(faint)
-        var fill = RGB(bg)
-        if selected {
-            swap(&ink, &fill)
+        pair(fg: fg, bg: bg, faint: faint, highlight: selected ? .selection : .none)
+    }
+
+    static func pair(
+        fg: GhosttyColorRgb,
+        bg: GhosttyColorRgb,
+        faint: Bool,
+        highlight: Highlight
+    ) -> (fill: RGB, ink: RGB) {
+        let baseInk = RGB(fg).faint(faint)
+        let baseFill = RGB(bg)
+        switch highlight {
+        case .none:
+            return (baseFill, baseInk)
+        case .selection:
+            // Ghostty default: invert cell fg/bg.
+            return (baseInk, baseFill)
+        case .search:
+            return (searchFill, searchInk)
+        case .searchSelected:
+            return (searchSelectedFill, searchSelectedInk)
         }
-        return (fill, ink)
     }
 
     /// Cursor fill / text for host defaults `cell-foreground` / `cell-background`.

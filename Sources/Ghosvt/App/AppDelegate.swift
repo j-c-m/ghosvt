@@ -69,11 +69,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll (consume).
+            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll; ⌘F search.
             if flags.contains(.command) {
                 // No main menu — handle quit ourselves.
                 if event.charactersIgnoringModifiers?.lowercased() == "q" {
                     NSApp.terminate(nil)
+                    return nil
+                }
+                if view.handleSearchKeys(event) {
                     return nil
                 }
                 if view.handleVtSwitch(event, manager: manager) {
@@ -84,6 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // Other ⌘ chords: leave to the system/menu.
                 return event
+            }
+
+            // Esc / search typing before PTY (stolen VT row owns keys while open).
+            if view.handleSearchKeys(event) {
+                return nil
             }
 
             view.keyDown(with: event)

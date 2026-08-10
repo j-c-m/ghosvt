@@ -44,6 +44,18 @@ final class TerminalRenderer {
     var blinkPeriod: CFTimeInterval = 0.53
     var prewarmedKey: String?
 
+    /// Viewport-local search match ranges for this frame (row 0 = top of viewport).
+    struct SearchHighlightRange: Equatable {
+        var row: Int
+        var startX: Int
+        var endX: Int
+        var isCurrent: Bool
+    }
+    var searchHighlights: [SearchHighlightRange] = []
+    private var lastSearchHighlights: [SearchHighlightRange] = []
+    /// Stolen-row search HUD line (nil when search closed).
+    private var lastSearchHUD: String?
+
     // MARK: Display pacing (Adaptive-Sync / fixed refresh)
     /// Shortest frame hold (1 / max Hz).
     var displayMinInterval: CFTimeInterval = 1.0 / 60.0
@@ -153,9 +165,14 @@ final class TerminalRenderer {
         indicator: String?,
         clearColor: MTLClearColor,
         visualOffsetRows: Double = 0,
-        fontLigatures: Bool = true
+        fontLigatures: Bool = true,
+        searchHighlights: [SearchHighlightRange] = [],
+        searchHUD: String? = nil,
+        searchCaretCol: Int = 0,
+        searchHUDAtTop: Bool = false
     ) {
         self.fontLigatures = fontLigatures
+        self.searchHighlights = searchHighlights
         session.updateRenderState()
         guard let renderState = session.renderState,
               let rowIter = session.rowIterator,
@@ -234,6 +251,8 @@ final class TerminalRenderer {
         lastBlinkOn = blinkOn
         let indicatorChanged = indicator != lastIndicator
         lastIndicator = indicator
+        let searchHUDChanged = searchHUD != lastSearchHUD
+        lastSearchHUD = searchHUD
         let layoutChanged = lastLayoutKey != layout
         let visualChanged = abs(visualY - lastVisualY) > 0.05
         lastVisualY = visualY
@@ -278,9 +297,16 @@ final class TerminalRenderer {
         if cursorChanged {
             needGridRebuild = true
         }
+        // Search match ranges change without VT dirty.
+        let searchChanged = searchHighlights != lastSearchHighlights
+        if searchChanged {
+            needGridRebuild = true
+            lastSearchHighlights = searchHighlights
+        }
 
         if needGridRebuild {
-            if partialOnly && !cursorChanged {
+            // Search highlights / cursor breaks need a full ink pass, not dirty-only.
+            if partialOnly && !cursorChanged && !searchChanged {
                 rebuildDirtyRows(
                     renderState: renderState,
                     rowIter: rowIter,
@@ -316,7 +342,7 @@ final class TerminalRenderer {
         // Still full-clear with the current letterbox sample (updates when the
         // sample source changes — edge cache / defBg after a dirty rebuild).
         if !needGridRebuild && !blinkChanged && !indicatorChanged && !visualChanged
-            && !cursorChanged && lastDrawnCount > 0 {
+            && !cursorChanged && !searchHUDChanged && lastDrawnCount > 0 {
             present(
                 count: lastDrawnCount,
                 drawable: drawable,
@@ -328,15 +354,18 @@ final class TerminalRenderer {
             return
         }
 
-        // Compose: grid cells + underlines + cursor + VT indicator.
+        // Compose: grid cells + underlines + cursor + VT indicator + search HUD.
         // Grid positions are base (no scroll offset); apply visualY here.
+        // When search sits at top, shift the whole shell down by one cell.
+        let shellShiftY: Float = (searchHUD != nil && searchHUDAtTop) ? layout.cellH : 0
         var instances = gridCells
         // Multi-cell ligature ink after cell backgrounds so tails don't cover it.
         instances.append(contentsOf: glyphExtras)
         instances.append(contentsOf: underlineExtras)
-        if abs(visualY) > 0.001 {
+        let shellY = visualY + shellShiftY
+        if abs(shellY) > 0.001 {
             for i in 0..<instances.count {
-                instances[i].oy += visualY
+                instances[i].oy += shellY
             }
         }
 
@@ -352,7 +381,7 @@ final class TerminalRenderer {
             cellWInt: cellWInt,
             cellHInt: cellHInt,
             blinkOn: blinkOn,
-            visualY: visualY
+            visualY: shellY
         )
 
         if let indicator, !indicator.isEmpty {
@@ -362,7 +391,25 @@ final class TerminalRenderer {
                 metrics: metrics,
                 layout: layout,
                 cellWInt: cellWInt,
-                cellHInt: cellHInt
+                cellHInt: cellHInt,
+                // Sit on the shell row, not over a top search HUD.
+                yOffset: shellShiftY
+            )
+        }
+
+        if let searchHUD {
+            appendSearchHUD(
+                to: &instances,
+                line: searchHUD,
+                caretCol: searchCaretCol,
+                showCaret: blinkOn,
+                atTop: searchHUDAtTop,
+                metrics: metrics,
+                layout: layout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt,
+                defFg: defFg,
+                defBg: defBg
             )
         }
 

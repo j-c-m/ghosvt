@@ -1,0 +1,417 @@
+diff --git a/include/ghostty/vt.h b/include/ghostty/vt.h
+index 7519a3f25..b0b19c06c 100644
+--- a/include/ghostty/vt.h
++++ b/include/ghostty/vt.h
+@@ -138,6 +138,7 @@ extern "C" {
+ #include <ghostty/vt/device.h>
+ #include <ghostty/vt/focus.h>
+ #include <ghostty/vt/formatter.h>
++#include <ghostty/vt/search.h>
+ #include <ghostty/vt/render.h>
+ #include <ghostty/vt/terminal.h>
+ #include <ghostty/vt/grid_ref.h>
+diff --git a/include/ghostty/vt/search.h b/include/ghostty/vt/search.h
+new file mode 100644
+index 000000000..eff90948c
+--- /dev/null
++++ b/include/ghostty/vt/search.h
+@@ -0,0 +1,136 @@
++/**
++ * @file search.h
++ *
++ * Temporary C ABI for screen scrollback search (ScreenSearch).
++ *
++ * Ghostty implements search in Zig (`terminal/search`) but does not yet
++ * ship a stable C/Swift binding. This header is a **ghosvt shim** until
++ * libghostty-vt 1.4.0 (or the official search C API). Do not treat the
++ * symbol names or layout as stable beyond this project.
++ *
++ * Serialize with other terminal mutations (same rule as selection / grid_ref).
++ */
++
++#ifndef GHOSTTY_VT_SEARCH_H
++#define GHOSTTY_VT_SEARCH_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <ghostty/vt/types.h>
++#include <ghostty/vt/terminal.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/** @defgroup search Screen Search (shim)
++ *
++ * Full-screen text search over the active screen including scrollback,
++ * backed by Ghostty's ScreenSearch engine.
++ *
++ * @{
++ */
++
++/**
++ * Opaque handle to a completed screen search.
++ *
++ * @ingroup search
++ */
++typedef struct GhosttyScreenSearchImpl *GhosttyScreenSearch;
++
++/**
++ * One match in screen coordinates (POINT_TAG_SCREEN).
++ *
++ * Endpoints are inclusive. Multi-row engine matches are expanded into
++ * one row-local entry per row.
++ *
++ * This is a sized struct. Set size to sizeof(GhosttyScreenSearchMatch).
++ *
++ * @ingroup search
++ */
++typedef struct {
++  /** Size of this struct in bytes. */
++  size_t size;
++
++  /** Start column (0-indexed, inclusive). */
++  uint16_t start_x;
++
++  /** End column (0-indexed, inclusive). */
++  uint16_t end_x;
++
++  /** Screen row (0 = oldest history). */
++  uint32_t y;
++} GhosttyScreenSearchMatch;
++
++/**
++ * Create a searcher for the terminal's active screen, run it to completion,
++ * and return a handle with the full match list.
++ *
++ * The needle is UTF-8 and is copied. Empty needle returns GHOSTTY_INVALID_VALUE.
++ *
++ * Matches are ordered newest-first (bottom of screen toward history), matching
++ * Ghostty's ScreenSearch.matches() order.
++ *
++ * The caller must free the handle with ghostty_screen_search_free().
++ * The terminal must outlive the search handle.
++ *
++ * @param allocator Allocator, or NULL for the default
++ * @param terminal Terminal to search (must not be NULL)
++ * @param needle UTF-8 needle bytes (may be NULL only if needle_len is 0)
++ * @param needle_len Length of needle in bytes
++ * @param out Receives the search handle on success
++ * @return GHOSTTY_SUCCESS on success
++ *
++ * @ingroup search
++ */
++GHOSTTY_API GhosttyResult ghostty_screen_search_new(
++    const GhosttyAllocator *allocator,
++    GhosttyTerminal terminal,
++    const uint8_t *needle,
++    size_t needle_len,
++    GhosttyScreenSearch *out);
++
++/**
++ * Free a screen search handle.
++ *
++ * @param search Handle to free (may be NULL)
++ *
++ * @ingroup search
++ */
++GHOSTTY_API void ghostty_screen_search_free(GhosttyScreenSearch search);
++
++/**
++ * Number of row-local matches after a successful ghostty_screen_search_new.
++ *
++ * @param search Search handle
++ * @param out Receives the match count
++ * @return GHOSTTY_SUCCESS on success
++ *
++ * @ingroup search
++ */
++GHOSTTY_API GhosttyResult ghostty_screen_search_match_count(
++    GhosttyScreenSearch search,
++    size_t *out);
++
++/**
++ * Fetch a match by index (0 = most recent).
++ *
++ * @param search Search handle
++ * @param index Match index in [0, count)
++ * @param out Receives the match (size field is set by the library)
++ * @return GHOSTTY_SUCCESS, or GHOSTTY_NO_VALUE if index is out of range
++ *
++ * @ingroup search
++ */
++GHOSTTY_API GhosttyResult ghostty_screen_search_match_at(
++    GhosttyScreenSearch search,
++    size_t index,
++    GhosttyScreenSearchMatch *out);
++
++/** @} */
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* GHOSTTY_VT_SEARCH_H */
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index 5b78b8cbe..634a39f4e 100644
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -265,6 +265,11 @@ comptime {
+         @export(&c.formatter_format_buf, .{ .name = "ghostty_formatter_format_buf" });
+         @export(&c.formatter_format_alloc, .{ .name = "ghostty_formatter_format_alloc" });
+         @export(&c.formatter_free, .{ .name = "ghostty_formatter_free" });
++        // Temporary ghosvt/shim until official libghostty-vt search C API (1.4.0).
++        @export(&c.screen_search_new, .{ .name = "ghostty_screen_search_new" });
++        @export(&c.screen_search_free, .{ .name = "ghostty_screen_search_free" });
++        @export(&c.screen_search_match_count, .{ .name = "ghostty_screen_search_match_count" });
++        @export(&c.screen_search_match_at, .{ .name = "ghostty_screen_search_match_at" });
+         @export(&c.terminal_selection_format_buf, .{ .name = "ghostty_terminal_selection_format_buf" });
+         @export(&c.terminal_selection_format_alloc, .{ .name = "ghostty_terminal_selection_format_alloc" });
+         @export(&c.render_state_new, .{ .name = "ghostty_render_state_new" });
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index d6f9e6656..f2f031ba3 100644
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -8,6 +8,7 @@ pub const color = @import("color.zig");
+ pub const color_scheme = @import("color_scheme.zig");
+ pub const focus = @import("focus.zig");
+ pub const formatter = @import("formatter.zig");
++pub const search = @import("search.zig");
+ pub const grid_ref = @import("grid_ref.zig");
+ pub const grid_ref_tracked = @import("grid_ref_tracked.zig");
+ pub const io = @import("io.zig");
+@@ -82,6 +83,12 @@ pub const formatter_format_buf = formatter.format_buf;
+ pub const formatter_format_alloc = formatter.format_alloc;
+ pub const formatter_free = formatter.free;
+ 
++// Temporary ghosvt/shim search C ABI until official 1.4.0 exports.
++pub const screen_search_new = search.screen_search_new;
++pub const screen_search_free = search.screen_search_free;
++pub const screen_search_match_count = search.screen_search_match_count;
++pub const screen_search_match_at = search.screen_search_match_at;
++
+ pub const render_state_new = render.new;
+ pub const render_state_free = render.free;
+ pub const render_state_update = render.update;
+diff --git a/src/terminal/c/search.zig b/src/terminal/c/search.zig
+new file mode 100644
+index 000000000..9fc934043
+--- /dev/null
++++ b/src/terminal/c/search.zig
+@@ -0,0 +1,216 @@
++//! Temporary C ABI for terminal screen search (ScreenSearch).
++//!
++//! Ghostty has a full Zig search engine (terminal/search) but no stable C
++//! exports yet. This module is a **ghosvt shim** until libghostty-vt 1.4.0
++//! (or whenever upstream ships an official search C API). Remove or replace
++//! when that lands; keep the public names/layout easy to swap.
++//!
++//! Callers must serialize with other terminal mutations (same rule as
++//! selection / grid_ref APIs).
++
++const std = @import("std");
++const lib = @import("../lib.zig");
++const CAllocator = lib.alloc.Allocator;
++const terminal_c = @import("terminal.zig");
++const ZigTerminal = @import("../Terminal.zig");
++const ScreenSearch = @import("../search/screen.zig").ScreenSearch;
++const FlattenedHighlight = @import("../highlight.zig").Flattened;
++const Result = @import("result.zig").Result;
++
++/// One linear match in **screen** coordinates (POINT_TAG_SCREEN).
++/// Endpoints are inclusive. Multi-row Zig matches are expanded into
++/// one entry per row when collected.
++///
++/// C: GhosttyScreenSearchMatch
++pub const Match = extern struct {
++    size: usize = @sizeOf(Match),
++    start_x: u16,
++    end_x: u16,
++    /// Screen row (0 = oldest history).
++    y: u32,
++};
++
++/// Owns a completed ScreenSearch plus a flat match table for C consumers.
++const SearchWrapper = struct {
++    alloc: std.mem.Allocator,
++    /// Active-screen searcher (references terminal.screens.active).
++    search: ScreenSearch,
++    /// Flattened row-local matches, newest-first (same order as ScreenSearch.matches).
++    matches: std.ArrayListUnmanaged(Match) = .empty,
++
++    fn deinit(self: *SearchWrapper) void {
++        self.matches.deinit(self.alloc);
++        self.search.deinit();
++        self.alloc.destroy(self);
++    }
++};
++
++/// C: GhosttyScreenSearch
++pub const ScreenSearchHandle = ?*SearchWrapper;
++
++/// Create a searcher for the terminal's **active** screen and run it to completion.
++///
++/// Needle is UTF-8 (copied). Empty needle returns `invalid_value`.
++/// On success, matches are ready via `match_count` / `match_at`.
++pub fn screen_search_new(
++    alloc_: ?*const CAllocator,
++    terminal_: terminal_c.Terminal,
++    needle: ?[*]const u8,
++    needle_len: usize,
++    out: *ScreenSearchHandle,
++) callconv(lib.calling_conv) Result {
++    out.* = null;
++    const t: *ZigTerminal = (terminal_ orelse return .invalid_value).terminal;
++    if (needle_len == 0 or needle == null) return .invalid_value;
++
++    const alloc = lib.alloc.default(alloc_);
++    const slice = needle.?[0..needle_len];
++
++    const wrapper = alloc.create(SearchWrapper) catch return .out_of_memory;
++    errdefer alloc.destroy(wrapper);
++
++    wrapper.* = .{
++        .alloc = alloc,
++        // screens.active is already *Screen.
++        .search = ScreenSearch.init(alloc, t.screens.active, slice) catch {
++            return .out_of_memory;
++        },
++        .matches = .empty,
++    };
++    errdefer wrapper.search.deinit();
++
++    // Full search under the caller's lock (same as selection APIs).
++    wrapper.search.searchAll() catch {
++        wrapper.search.deinit();
++        alloc.destroy(wrapper);
++        return .out_of_memory;
++    };
++
++    collectMatches(wrapper) catch {
++        wrapper.deinit();
++        return .out_of_memory;
++    };
++
++    out.* = wrapper;
++    return .success;
++}
++
++pub fn screen_search_free(
++    handle: ScreenSearchHandle,
++) callconv(lib.calling_conv) void {
++    const wrapper = handle orelse return;
++    wrapper.deinit();
++}
++
++pub fn screen_search_match_count(
++    handle: ScreenSearchHandle,
++    out: *usize,
++) callconv(lib.calling_conv) Result {
++    const wrapper = handle orelse return .invalid_value;
++    out.* = wrapper.matches.items.len;
++    return .success;
++}
++
++/// `index` 0 = most recent match (bottom of screen), increasing toward history.
++pub fn screen_search_match_at(
++    handle: ScreenSearchHandle,
++    index: usize,
++    out: *Match,
++) callconv(lib.calling_conv) Result {
++    const wrapper = handle orelse return .invalid_value;
++    if (index >= wrapper.matches.items.len) return .no_value;
++    out.* = wrapper.matches.items[index];
++    out.size = @sizeOf(Match);
++    return .success;
++}
++
++fn collectMatches(wrapper: *SearchWrapper) error{OutOfMemory}!void {
++    const alloc = wrapper.alloc;
++    const screen = wrapper.search.screen;
++    const list = try wrapper.search.matches(alloc);
++    defer {
++        // ScreenSearch.matches returns a slice of *references* into internal
++        // result arrays — do not deinit the highlights, only free the slice.
++        alloc.free(list);
++    }
++
++    try wrapper.matches.ensureTotalCapacity(alloc, list.len);
++
++    // list is newest → oldest. Expand multi-row into per-row matches in the
++    // same order (newest first).
++    for (list) |hl| {
++        try appendExpanded(wrapper, screen, hl);
++    }
++}
++
++fn appendExpanded(
++    wrapper: *SearchWrapper,
++    screen: *@import("../Screen.zig"),
++    hl: FlattenedHighlight,
++) error{OutOfMemory}!void {
++    const start_pin = hl.startPin();
++    const end_pin = hl.endPin();
++    const start_pt = screen.pages.pointFromPin(.screen, start_pin) orelse return;
++    const end_pt = screen.pages.pointFromPin(.screen, end_pin) orelse return;
++
++    const sy = start_pt.screen.y;
++    const ey = end_pt.screen.y;
++    const sx = start_pt.screen.x;
++    const ex = end_pt.screen.x;
++    const cols = screen.pages.cols;
++
++    if (sy == ey) {
++        const lo = @min(sx, ex);
++        const hi = @max(sx, ex);
++        try wrapper.matches.append(wrapper.alloc, .{
++            .start_x = lo,
++            .end_x = hi,
++            .y = sy,
++        });
++        return;
++    }
++
++    // Multi-row: top row sx..cols-1, full middle rows, bottom 0..ex.
++    // Order within one logical match: top → bottom so paint is contiguous;
++    // overall list stays newest-first by outer order.
++    if (sy < ey) {
++        try wrapper.matches.append(wrapper.alloc, .{
++            .start_x = sx,
++            .end_x = if (cols > 0) cols - 1 else 0,
++            .y = sy,
++        });
++        var y = sy + 1;
++        while (y < ey) : (y += 1) {
++            try wrapper.matches.append(wrapper.alloc, .{
++                .start_x = 0,
++                .end_x = if (cols > 0) cols - 1 else 0,
++                .y = y,
++            });
++        }
++        try wrapper.matches.append(wrapper.alloc, .{
++            .start_x = 0,
++            .end_x = ex,
++            .y = ey,
++        });
++    } else {
++        // Reverse pin order — treat as end→start.
++        try wrapper.matches.append(wrapper.alloc, .{
++            .start_x = ex,
++            .end_x = if (cols > 0) cols - 1 else 0,
++            .y = ey,
++        });
++        var y = ey + 1;
++        while (y < sy) : (y += 1) {
++            try wrapper.matches.append(wrapper.alloc, .{
++                .start_x = 0,
++                .end_x = if (cols > 0) cols - 1 else 0,
++                .y = y,
++            });
++        }
++        try wrapper.matches.append(wrapper.alloc, .{
++            .start_x = 0,
++            .end_x = sx,
++            .y = sy,
++        });
++    }
++}
