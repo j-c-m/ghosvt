@@ -1267,7 +1267,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     // MARK: - Embedded browser (⌘-click links)
 
-    /// ⌘-click a cell → OSC 8 or bare http(s) → take over this VT with WKWebView.
+    /// ⌘-click a cell → OSC 8 or bare http(s). Embed when enabled; else system browser.
     @discardableResult
     private func handleLinkCmdClick(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -1281,7 +1281,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             col: UInt16(cell.col),
             row: UInt16(shellRow)
         ) else { return false }
-        openBrowser(url: url, onVT: manager.activeIndex)
+        if config.embeddedBrowser {
+            openBrowser(url: url, onVT: manager.activeIndex)
+        } else {
+            clearLinkHover()
+            NSWorkspace.shared.open(url)
+        }
         return true
     }
 
@@ -2240,6 +2245,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// ⌘B: open (or focus) the embedded browser on the active VT.
     @discardableResult
     func handleOpenBrowserChord(_ event: NSEvent) -> Bool {
+        guard config.embeddedBrowser else { return false }
         guard isCommandChord(event, keyCode: BrowserKeyCode.b, char: "b") else { return false }
         guard let manager else { return false }
         let index = manager.activeIndex

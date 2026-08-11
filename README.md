@@ -86,6 +86,7 @@ max-aspect = 3:2
 copy-on-select = true
 font-ligatures = true
 search-position = bottom
+embedded-browser = true
 ```
 
 ### Options
@@ -102,6 +103,7 @@ search-position = bottom
 | `copy-on-select` | `true` | Copy selection to pasteboard on mouse-up |
 | `font-ligatures` / `ligatures` | `true` | OpenType liga/calt on shaped runs |
 | `search-position` | `bottom` | Stolen search row: `top` or `bottom` |
+| `embedded-browser` | `true` | Embed via ⌘B / ⌘-click. When `false`: ⌘B off; ⌘-click opens the system browser |
 | `scroll-spring-k` | `120` | Overscroll spring stiffness |
 | `scroll-spring-c` | `14` | Overscroll damping |
 | `scroll-friction` | `6` | Coast friction |
@@ -123,6 +125,7 @@ Bools: `true` / `yes` / `on` / `1`.
 | **⌘F** | Search scrollback (steals bottom VT row: `/needle`; gold/peach hits) |
 | **⌘G** / **⇧⌘G** | Next / previous match (while search open) |
 | **Esc** / **⌘F** again | Close search (restores shell rows) |
+| **⌘B** | Open or focus embedded browser (when `embedded-browser = true`) |
 | **⌘Q** | Quit |
 | **Shift+Enter** / **Alt+Enter** | Send LF (`\n`) — newline for apps like Grok Build |
 | **Enter** | Send CR (`\r`) (next match while search field focused) |

@@ -38,6 +38,8 @@ struct Config: Sendable {
     var consoleMode: ConsoleMode = .shell
     /// Stolen search row: `top` or `bottom` (default).
     var searchPosition: SearchPosition = .bottom
+    /// When true, ⌘B / ⌘-click use the embedded WKWebView. When false, ⌘B is off and ⌘-click uses the system browser.
+    var embeddedBrowser: Bool = true
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -112,6 +114,8 @@ struct Config: Sendable {
                 default:
                     break
                 }
+            case "embedded-browser":
+                cfg.embeddedBrowser = parseBool(value)
             default:
                 break
             }
