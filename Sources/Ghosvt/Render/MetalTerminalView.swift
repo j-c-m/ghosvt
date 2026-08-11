@@ -586,7 +586,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             )
             syncLetterboxChrome(from: renderer)
         }
-        layoutActiveBrowser()
+        // Only when browser is up — avoid per-frame frame writes when idle.
+        if activeBrowser != nil {
+            layoutActiveBrowser()
+        }
     }
 
     /// Stolen-row layout: `/needle` left; count + ↑ ↓ right (Ghostty chevron order).
@@ -1215,6 +1218,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let backCol = 0
         let forwardCol = 2
         let closeCol = cols - 1
+        // URL band starts after nav arrows.
         let urlStart = 4
         let urlEnd = max(urlStart, closeCol)
         var cells = Array(repeating: " ", count: cols)
@@ -1463,7 +1467,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         // Optional: also inset left/right pad so web aligns with cell grid width.
         r.origin.x += pad
         r.size.width = max(0, r.size.width - 2 * pad)
-        browser.frame = r
+        // Per-frame draw used to assign this every tick; skip no-ops to reduce WebKit churn.
+        if abs(browser.frame.origin.x - r.origin.x) > 0.5
+            || abs(browser.frame.origin.y - r.origin.y) > 0.5
+            || abs(browser.frame.size.width - r.size.width) > 0.5
+            || abs(browser.frame.size.height - r.size.height) > 0.5 {
+            browser.frame = r
+        }
         browser.autoresizingMask = [.width, .height]
     }
 
@@ -1575,17 +1585,24 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         static let c: UInt16 = 0x08
         static let v: UInt16 = 0x09
         static let w: UInt16 = 0x0D
+        static let r: UInt16 = 0x0F
         static let l: UInt16 = 0x25
         static let leftBracket: UInt16 = 0x21
         static let rightBracket: UInt16 = 0x1E
     }
 
-    private func isCommandChord(_ event: NSEvent, keyCode: UInt16, char: String) -> Bool {
+    private func isCommandChord(
+        _ event: NSEvent,
+        keyCode: UInt16,
+        char: String,
+        allowShift: Bool = false
+    ) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.command),
               !flags.contains(.control),
               !flags.contains(.option)
         else { return false }
+        if !allowShift, flags.contains(.shift) { return false }
         if event.keyCode == keyCode { return true }
         return event.charactersIgnoringModifiers?.lowercased() == char
     }
@@ -1611,6 +1628,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         if isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
             dismissBrowser(onVT: i)
+            return true
+        }
+        // ⌘R reload; ⇧⌘R hard reload (from origin).
+        if isCommandChord(event, keyCode: BrowserKeyCode.r, char: "r", allowShift: true) {
+            endBrowserAddressEdit(focusWeb: false)
+            activeBrowser?.reload(fromOrigin: flags.contains(.shift))
             return true
         }
         if isCommandChord(event, keyCode: BrowserKeyCode.leftBracket, char: "[") {

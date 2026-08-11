@@ -311,7 +311,8 @@ extension TerminalRenderer {
                 cellWidthPx: cellWInt,
                 cellHeightPx: cellHInt,
                 cellBaselinePx: metrics.cellBaselinePx,
-                faceWidthPx: metrics.faceWidthPx
+                faceWidthPx: metrics.faceWidthPx,
+                fallbackFonts: nerdFallbackFonts(metrics: metrics)
             )
             if entry.pixelW < 0.5 || entry.pixelH < 0.5 { continue }
             let cellX = x.rounded(.towardZero)

@@ -2,8 +2,6 @@ import AppKit
 import WebKit
 
 /// Chrome-less WKWebView embed. Address bar is painted by the terminal (stolen top row).
-///
-/// Note: WKWebView does not load Safari extensions (WebKit limitation).
 final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     var onClose: (() -> Void)?
     var onURLChange: ((String, Bool, Bool) -> Void)?
@@ -59,6 +57,17 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     func goForward() {
         if webView.canGoForward { webView.goForward() }
         notifyURL()
+    }
+
+    /// ⌘R reload; ⇧⌘R reloads from origin (bypass cache).
+    func reload(fromOrigin: Bool = false) {
+        if fromOrigin {
+            webView.reloadFromOrigin()
+        } else {
+            webView.reload()
+        }
+        notifyURL()
+        focusWebContent()
     }
 
     /// Focus the page without treating it as a “leave address bar” click.
@@ -134,7 +143,11 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
 
     override func layout() {
         super.layout()
-        webView.frame = bounds
+        // Only reassign when size actually changes — continuous frame writes can
+        // upset some pages / WebKit layout (flicker, reload-looking behavior).
+        if webView.frame != bounds {
+            webView.frame = bounds
+        }
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -205,19 +218,50 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     ) {
         if let url = navigationAction.request.url {
             let scheme = url.scheme?.lowercased() ?? ""
-            if scheme == "http" || scheme == "https" || scheme == "about" {
+            // Main document + subframes: allow normal web + opaque document schemes.
+            // Cancelling blob:/data: iframes breaks many sites (and some retry forever).
+            switch scheme {
+            case "http", "https", "about", "blob", "data":
                 decisionHandler(.allow)
                 return
+            case "javascript":
+                decisionHandler(.cancel)
+                return
+            default:
+                break
             }
-            let u = UntrustedURL(url.absoluteString)
-            if case .allow(let safe) = u.decision {
-                NSWorkspace.shared.open(safe)
+            // Only send top-level exotic schemes outside; leave subframe alone.
+            if navigationAction.targetFrame?.isMainFrame != false {
+                let u = UntrustedURL(url.absoluteString)
+                if case .allow(let safe) = u.decision {
+                    NSWorkspace.shared.open(safe)
+                }
             }
             decisionHandler(.cancel)
             return
         }
         decisionHandler(.allow)
     }
-}
 
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        let url = webView.url
+        fputs(
+            "ghosvt: WebContent process died\(url.map { " on \($0.absoluteString)" } ?? ""); ⌘R to reload\n",
+            stderr
+        )
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        // target=_blank: load in this embed instead of dropping the navigation.
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+            load(url: url)
+        }
+        return nil
+    }
+}
 

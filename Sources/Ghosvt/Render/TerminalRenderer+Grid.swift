@@ -757,11 +757,6 @@ extension TerminalRenderer {
         EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
     }
 
-    /// HUD / address bar: Nerd first (PUA). System cascade runs inside GlyphAtlas.
-    func hudFallbackFonts(metrics: CellMetrics) -> [CTFont] {
-        nerdFallbackFonts(metrics: metrics)
-    }
-
     func paintWideOrFallback(
         col: Int,
         rowIndex: Int,
