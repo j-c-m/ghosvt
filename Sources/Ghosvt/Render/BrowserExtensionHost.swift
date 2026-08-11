@@ -5,25 +5,69 @@ import CryptoKit
 @preconcurrency import WebKit
 
 /// Process-wide `WKWebExtensionController` host: tab/window bridges, lifecycle, auto-grant.
-/// Main thread only. Loads installed Safari web-extension appexes via `appExtensionBundle`.
-/// Base scheme `safari-web-extension://` so packages see Safari flavor without patching.
+/// Main thread only. Packages are either Safari `.appex` (`appExtensionBundle`) or
+/// unpacked directories with root `manifest.json` (`resourceBaseURL`).
+/// Base scheme: `safari-web-extension://`.
+///
+/// **Load policy:** pinned remote packages on first browser open (not app launch).
+/// Safari `/Applications` autoload is off (native-dependent apps like Bitwarden).
+/// Firefox-flavored pins may spoof a desktop Firefox UA; Safari pins stay honest.
+/// `nativeMessaging` is never granted.
+///
+/// TODO: drive `pinnedRemotePackages` from ghosvt config instead of hardcoding.
 @available(macOS 15.4, *)
 final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     static let shared = BrowserExtensionHost()
     static let maxTabsPerWindow = 8
+
+    /// When true, also load Safari web-extension appexes from `/Applications`.
+    private static let loadInstalledSafariExtensions = false
+
+    /// Remote zip/xpi pins fetched into Application Support on first browser open.
+    private struct RemoteDirectoryPackage {
+        var url: URL
+        var dirName: String
+        /// Spoof desktop Firefox UA (needed for Bitwarden; not for Safari uBOL).
+        var spoofFirefoxUA: Bool
+    }
+
+    // TODO: ghosvt config-driven pin list.
+    private static let pinnedRemotePackages: [RemoteDirectoryPackage] = [
+        RemoteDirectoryPackage(
+            url: URL(string: "https://github.com/bitwarden/clients/releases/download/browser-v2026.7.0/dist-firefox-2026.7.0.zip")!,
+            dirName: "bitwarden-firefox-2026.7.0",
+            spoofFirefoxUA: true
+        ),
+        RemoteDirectoryPackage(
+            url: URL(string: "https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.811.1529/uBOLite_2026.811.1529.safari.zip")!,
+            dirName: "ubolite-safari-2026.811.1529",
+            spoofFirefoxUA: false
+        ),
+    ]
+
+    /// Desktop Firefox UA for packages with `spoofFirefoxUA` (Bitwarden).
+    private static let firefoxExtensionUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0"
 
     /// Stable controller storage partition (extension storage / site data).
     private static let configUUID = UUID(uuidString: "A7B3C9D1-4E5F-6789-ABCD-EF0123456789")!
     /// Safari package base scheme (must be registered via `MatchPattern` first).
     private static let extensionBaseScheme = "safari-web-extension"
 
+    /// Shared extension webview config (background / popup / options).
+    private let extensionWebViewConfiguration: WKWebViewConfiguration = {
+        let conf = WKWebViewConfiguration()
+        conf.websiteDataStore = .default()
+        return conf
+    }()
+
     private(set) lazy var controller: WKWebExtensionController = {
         WKWebExtension.MatchPattern.registerCustomURLScheme(Self.extensionBaseScheme)
         let conf = WKWebExtensionController.Configuration(identifier: Self.configUUID)
         conf.defaultWebsiteDataStore = .default()
-        let baseWV = WKWebViewConfiguration()
-        baseWV.websiteDataStore = .default()
-        conf.webViewConfiguration = baseWV
+        // Shared factory for extension pages. Firefox UA spoof is host-gated by extension id.
+        Self.installFirefoxUAHook(on: extensionWebViewConfiguration.userContentController)
+        conf.webViewConfiguration = extensionWebViewConfiguration
         let c = WKWebExtensionController(configuration: conf)
         c.delegate = self
         return c
@@ -35,12 +79,26 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     /// Bundle IDs (or resource keys) already loaded — avoid double-load.
     private var loadedKeys: Set<String> = []
     private var extensionLoadStarted = false
+    /// Context uniqueIdentifiers that should present popups with a Firefox UA.
+    private var firefoxUAContextIDs: Set<String> = []
+    private static var firefoxUAHookInstalled = false
 
-    /// Discovered Safari Web Extension on disk.
+    /// How the package is laid out on disk (WKWebExtension load path).
+    enum PackageKind: Equatable {
+        /// Safari `.appex` → `WKWebExtension(appExtensionBundle:)`.
+        case safariAppex
+        /// Unpacked root with `manifest.json` → `WKWebExtension(resourceBaseURL:)`.
+        case directory
+    }
+
+    /// Extension package on disk (Safari appex or Firefox/Chrome-style directory).
     struct DiscoveredExtension: Equatable {
         var path: URL
         var bundleIdentifier: String
         var displayName: String
+        var kind: PackageKind
+        /// When true, extension pages get a desktop Firefox UA (Bitwarden, etc.).
+        var spoofFirefoxUA: Bool
     }
 
     /// One toolbar action from a loaded extension (manifest `action`).
@@ -126,11 +184,10 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         config.webExtensionController = controller
     }
 
-    // MARK: - Discover & load Safari Web Extensions
+    // MARK: - Discover & load extensions
 
-    /// Discover installed Safari Web Extensions (`.appex` under `/Applications`) and load them.
-    /// Idempotent; call when the embedded browser first opens (not at app launch).
-    /// Settings storage is ghosvt-local (not shared with Safari).
+    /// Discover and load extension packages. Idempotent; call when the embedded
+    /// browser first opens (not at app launch). Storage is ghosvt-local.
     func loadBundledExtensionsIfNeeded() {
         guard !extensionLoadStarted else { return }
         extensionLoadStarted = true
@@ -141,10 +198,34 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     private func startExtensionLoadPipeline() {
         _ = controller // register schemes
-        let discovered = Self.discoverSafariWebExtensions()
-        fputs("ghosvt: webext discovered \(discovered.count)\n", stderr)
         Task { [weak self] in
             guard let self else { return }
+            var discovered: [DiscoveredExtension] = []
+
+            if Self.loadInstalledSafariExtensions {
+                let safari = Self.discoverSafariWebExtensions()
+                fputs("ghosvt: webext discovered \(safari.count) Safari appex(es)\n", stderr)
+                discovered.append(contentsOf: safari)
+            }
+
+            for pin in Self.pinnedRemotePackages {
+                do {
+                    let pkg = try await Self.ensureRemoteDirectoryPackage(pin)
+                    fputs(
+                        "ghosvt: webext package ready \(pkg.displayName) [\(pkg.bundleIdentifier)] "
+                            + "firefoxUA=\(pkg.spoofFirefoxUA)\n"
+                            + "  \(pkg.path.path)\n",
+                        stderr
+                    )
+                    discovered.append(pkg)
+                } catch {
+                    fputs(
+                        "ghosvt: webext package failed \(pin.dirName): \(error.localizedDescription)\n",
+                        stderr
+                    )
+                }
+            }
+
             for item in discovered {
                 await self.loadDiscoveredExtension(item)
             }
@@ -225,33 +306,326 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         return DiscoveredExtension(
             path: appexURL,
             bundleIdentifier: bid,
-            displayName: name
+            displayName: name,
+            kind: .safariAppex,
+            spoofFirefoxUA: false
         )
+    }
+
+    /// Metadata for an unpacked directory package (`manifest.json` at root).
+    static func directoryPackageMetadata(
+        at root: URL,
+        spoofFirefoxUA: Bool? = nil
+    ) -> DiscoveredExtension? {
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        let short = json["short_name"] as? String
+        let rawName = json["name"] as? String
+        // Prefer non-i18n placeholders when present.
+        let name: String = {
+            if let short, !short.hasPrefix("__MSG_") { return short }
+            if let rawName, !rawName.hasPrefix("__MSG_") { return rawName }
+            return short ?? rawName ?? root.lastPathComponent
+        }()
+
+        var bid = root.lastPathComponent
+        var inferredFirefox = false
+        if let bss = json["browser_specific_settings"] as? [String: Any] {
+            if let gecko = bss["gecko"] as? [String: Any] {
+                inferredFirefox = true
+                if let id = gecko["id"] as? String { bid = id }
+            }
+            // Explicit Safari target → never spoof unless caller overrides.
+            if bss["safari"] != nil, spoofFirefoxUA == nil {
+                inferredFirefox = false
+            }
+        } else if let apps = json["applications"] as? [String: Any],
+                  let gecko = apps["gecko"] as? [String: Any] {
+            inferredFirefox = true
+            if let id = gecko["id"] as? String { bid = id }
+        }
+
+        return DiscoveredExtension(
+            path: root,
+            bundleIdentifier: bid,
+            displayName: name,
+            kind: .directory,
+            spoofFirefoxUA: spoofFirefoxUA ?? inferredFirefox
+        )
+    }
+
+    // MARK: - Pinned remote packages
+
+    private static func extensionsCacheRoot() throws -> URL {
+        let fm = FileManager.default
+        let base = try fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let root = base
+            .appendingPathComponent("ghosvt", isDirectory: true)
+            .appendingPathComponent("Extensions", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    /// Download + unpack a zip/xpi if needed; return package meta for `resourceBaseURL` load.
+    private static func ensureRemoteDirectoryPackage(
+        _ pin: RemoteDirectoryPackage
+    ) async throws -> DiscoveredExtension {
+        let fm = FileManager.default
+        let root = try extensionsCacheRoot()
+            .appendingPathComponent(pin.dirName, isDirectory: true)
+        let stampURL = root.appendingPathComponent(".ghosvt-source")
+        let source = pin.url.absoluteString
+
+        let stampOK: Bool = {
+            guard let stamp = try? String(contentsOf: stampURL, encoding: .utf8) else { return false }
+            return stamp.trimmingCharacters(in: .whitespacesAndNewlines) == source
+        }()
+
+        if directoryPackageMetadata(at: root) == nil || !stampOK {
+            fputs("ghosvt: webext fetching \(source)\n", stderr)
+            if fm.fileExists(atPath: root.path) {
+                try fm.removeItem(at: root)
+            }
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let (tempZip, response) = try await URLSession.shared.download(from: pin.url)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                throw NSError(
+                    domain: "ghosvt.webext",
+                    code: http.statusCode,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "HTTP \(http.statusCode) fetching \(pin.dirName)",
+                    ]
+                )
+            }
+            let archiveName = pin.url.lastPathComponent.isEmpty
+                ? "\(pin.dirName).zip"
+                : pin.url.lastPathComponent
+            let zipURL = root.deletingLastPathComponent()
+                .appendingPathComponent(archiveName)
+            if fm.fileExists(atPath: zipURL.path) {
+                try fm.removeItem(at: zipURL)
+            }
+            try fm.moveItem(at: tempZip, to: zipURL)
+            try await unzip(zipURL, into: root)
+            try? fm.removeItem(at: zipURL)
+            try source.write(to: stampURL, atomically: true, encoding: .utf8)
+        }
+
+        // Always re-normalize so cached packages pick up new compat rules.
+        try normalizeDirectoryPackageForWebKit(at: root)
+
+        guard let meta = directoryPackageMetadata(
+            at: root,
+            spoofFirefoxUA: pin.spoofFirefoxUA
+        ) else {
+            throw NSError(
+                domain: "ghosvt.webext",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "no manifest.json after unpack (\(pin.dirName))"]
+            )
+        }
+        return meta
+    }
+
+    /// One-time hook: spoof Firefox UA only when `location.hostname` is a registered id.
+    /// Safari packages stay honest; Firefox packages register their context id at load.
+    private static func installFirefoxUAHook(on controller: WKUserContentController) {
+        guard !firefoxUAHookInstalled else { return }
+        firefoxUAHookInstalled = true
+        let source = #"""
+        (function () {
+          var FF = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0";
+          var hosts = (self.__ghosvtFirefoxUAHosts = self.__ghosvtFirefoxUAHosts || Object.create(null));
+          var original = navigator.userAgent;
+          function shouldSpoof() {
+            try {
+              var h = String(location.hostname || "");
+              return !!(hosts[h]);
+            } catch (e) { return false; }
+          }
+          function install() {
+            try {
+              Object.defineProperty(Navigator.prototype, "userAgent", {
+                get: function () { return shouldSpoof() ? FF : original; },
+                configurable: true
+              });
+            } catch (e1) {
+              try {
+                Object.defineProperty(navigator, "userAgent", {
+                  get: function () { return shouldSpoof() ? FF : original; },
+                  configurable: true
+                });
+              } catch (e2) {}
+            }
+          }
+          install();
+        })();
+        """#
+        controller.addUserScript(WKUserScript(
+            source: source,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+        fputs("ghosvt: webext installed Firefox UA host-gated hook\n", stderr)
+    }
+
+    /// Register this extension id for Firefox UA spoof (must run at document-start).
+    private static func registerFirefoxUAHost(
+        _ contextID: String,
+        on controller: WKUserContentController
+    ) {
+        // Escape for JS string; ids are uuid-shaped.
+        let safe = contextID.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = """
+        (function () {
+          var hosts = (self.__ghosvtFirefoxUAHosts = self.__ghosvtFirefoxUAHosts || Object.create(null));
+          hosts["\(safe)"] = 1;
+        })();
+        """
+        controller.addUserScript(WKUserScript(
+            source: source,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+    }
+
+    /// Light manifest fixes so directory packages load under WKWebExtension.
+    private static func normalizeDirectoryPackageForWebKit(at root: URL) throws {
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              var json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        var changed = false
+
+        // MV2 `browser_action` → also publish `action` for hosts that only read V3 keys.
+        if json["action"] == nil, let browserAction = json["browser_action"] {
+            json["action"] = browserAction
+            changed = true
+        }
+
+        // Firefox-only action keys (e.g. default_area: navbar).
+        if var action = json["action"] as? [String: Any],
+           action.removeValue(forKey: "default_area") != nil {
+            json["action"] = action
+            changed = true
+        }
+
+        // Firefox-only; WebKit may reject or ignore with noise.
+        if json.removeValue(forKey: "sidebar_action") != nil {
+            changed = true
+        }
+
+        // Never advertise nativeMessaging (host does not grant it).
+        for key in ["permissions", "optional_permissions"] {
+            guard let list = json[key] as? [String] else { continue }
+            let filtered = list.filter { $0 != "nativeMessaging" }
+            if filtered.count != list.count {
+                json[key] = filtered
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        let out = try JSONSerialization.data(
+            withJSONObject: json,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try out.write(to: manifestURL, options: .atomic)
+        fputs(
+            "ghosvt: webext normalized directory manifest for WebKit (\(root.lastPathComponent))\n",
+            stderr
+        )
+    }
+
+    private static func unzip(_ zipURL: URL, into dest: URL) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+                proc.arguments = ["-o", "-q", zipURL.path, "-d", dest.path]
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError = FileHandle.nullDevice
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                    if proc.terminationStatus == 0 {
+                        cont.resume()
+                    } else {
+                        cont.resume(throwing: NSError(
+                            domain: "ghosvt.webext",
+                            code: Int(proc.terminationStatus),
+                            userInfo: [NSLocalizedDescriptionKey: "unzip failed status=\(proc.terminationStatus)"]
+                        ))
+                    }
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func loadDiscoveredExtension(_ item: DiscoveredExtension) async {
         let key = item.bundleIdentifier
         if loadedKeys.contains(key) { return }
 
-        guard let bundle = Bundle(url: item.path) else {
-            fputs("ghosvt: webext cannot open \(item.path.path)\n", stderr)
-            return
-        }
-
         let package: WKWebExtension
+        let pathNote: String
         do {
-            package = try await WKWebExtension(appExtensionBundle: bundle)
+            switch item.kind {
+            case .safariAppex:
+                guard let bundle = Bundle(url: item.path) else {
+                    fputs("ghosvt: webext cannot open appex \(item.path.path)\n", stderr)
+                    return
+                }
+                package = try await WKWebExtension(appExtensionBundle: bundle)
+                pathNote = "appExtensionBundle"
+            case .directory:
+                try? Self.normalizeDirectoryPackageForWebKit(at: item.path)
+                package = try await WKWebExtension(resourceBaseURL: item.path)
+                pathNote = "resourceBaseURL"
+            }
         } catch {
             fputs(
-                "ghosvt: webext load failed \(item.displayName): \(error.localizedDescription)\n",
+                "ghosvt: webext load failed \(item.displayName) [\(item.kind)]: "
+                    + "\(error.localizedDescription)\n",
                 stderr
             )
             return
         }
 
+        for err in package.errors {
+            fputs(
+                "ghosvt: webext package error [\(key)]: \(err.localizedDescription)\n",
+                stderr
+            )
+        }
+
+        fputs(
+            "ghosvt: webext load path=\(pathNote) kind=\(item.kind) "
+                + "firefoxUA=\(item.spoofFirefoxUA) [\(key)]\n",
+            stderr
+        )
+
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             DispatchQueue.main.async {
-                self.finishLoading(package, key: key, stableSeed: key)
+                self.finishLoading(
+                    package,
+                    key: key,
+                    stableSeed: key,
+                    spoofFirefoxUA: item.spoofFirefoxUA
+                )
                 cont.resume()
             }
         }
@@ -261,7 +635,8 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     private func finishLoading(
         _ extensionPackage: WKWebExtension,
         key: String,
-        stableSeed: String
+        stableSeed: String,
+        spoofFirefoxUA: Bool
     ) {
         if loadedKeys.contains(key) { return }
         _ = controller
@@ -270,7 +645,25 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         let context = WKWebExtensionContext(for: extensionPackage)
         context.uniqueIdentifier = id
         context.baseURL = URL(string: "\(Self.extensionBaseScheme)://\(id)/")!
+        context.isInspectable = true
         Self.grantAllRequested(on: context)
+
+        if spoofFirefoxUA {
+            firefoxUAContextIDs.insert(id)
+            // Register on the shared extension UCC so background + popup both see the host.
+            let ucc = extensionWebViewConfiguration.userContentController
+            Self.installFirefoxUAHook(on: ucc)
+            Self.registerFirefoxUAHost(id, on: ucc)
+            if let conf = context.webViewConfiguration,
+               conf.userContentController !== ucc {
+                Self.installFirefoxUAHook(on: conf.userContentController)
+                Self.registerFirefoxUAHost(id, on: conf.userContentController)
+            }
+            fputs(
+                "ghosvt: webext firefox UA spoof enabled for [\(key)] host=\(id)\n",
+                stderr
+            )
+        }
 
         do {
             try controller.load(context)
@@ -284,13 +677,30 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
         loadedContexts.append(context)
         loadedKeys.insert(key)
+        Self.observeContextErrors(context, key: key)
 
         let name = extensionPackage.displayName ?? key
         fputs(
             "ghosvt: webext loaded \(name) v\(extensionPackage.displayVersion ?? "?") "
-                + "com=\(key) id=\(id) dnr=\(context.hasContentModificationRules)\n",
+                + "com=\(key) id=\(id) dnr=\(context.hasContentModificationRules) "
+                + "firefoxUA=\(spoofFirefoxUA)\n",
             stderr
         )
+        if let action = context.action(for: nil) {
+            fputs(
+                "ghosvt: webext default action presentsPopup=\(action.presentsPopup) "
+                    + "label=\(action.label)\n",
+                stderr
+            )
+        } else {
+            fputs("ghosvt: webext no default action for [\(key)]\n", stderr)
+        }
+        for err in context.errors {
+            fputs(
+                "ghosvt: webext context error [\(key)]: \(err.localizedDescription)\n",
+                stderr
+            )
+        }
         ui?.onActionDidUpdate()
 
         context.loadBackgroundContent { [weak self] error in
@@ -299,8 +709,37 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
                     "ghosvt: webext background [\(key)]: \(error.localizedDescription)\n",
                     stderr
                 )
+            } else {
+                fputs("ghosvt: webext background ready [\(key)]\n", stderr)
+            }
+            for err in context.errors {
+                fputs(
+                    "ghosvt: webext runtime [\(key)]: \(err.localizedDescription)\n",
+                    stderr
+                )
             }
             self?.ui?.onActionDidUpdate()
+        }
+    }
+
+    private static func observeContextErrors(_ context: WKWebExtensionContext, key: String) {
+        NotificationCenter.default.addObserver(
+            forName: WKWebExtensionContext.errorsDidUpdateNotification,
+            object: context,
+            queue: .main
+        ) { note in
+            // queue: .main already; capture descriptions without crossing isolation.
+            let messages: [String]
+            if let ctx = note.object as? WKWebExtensionContext {
+                messages = MainActor.assumeIsolated {
+                    ctx.errors.map(\.localizedDescription)
+                }
+            } else {
+                messages = []
+            }
+            for msg in messages {
+                fputs("ghosvt: webext error update [\(key)]: \(msg)\n", stderr)
+            }
         }
     }
 
@@ -325,27 +764,35 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     private static func grantAllRequested(on context: WKWebExtensionContext) {
         let ext = context.webExtension
         var perms: [WKWebExtension.Permission: Date] = [:]
-        for p in ext.requestedPermissions {
+        for p in ext.requestedPermissions where p != .nativeMessaging {
             perms[p] = .distantFuture
         }
-        // Ensure DNR + storage even if not listed as requested under some parsers.
+        // Common APIs directory packages expect. Never grant nativeMessaging.
         for extra: WKWebExtension.Permission in [
             .activeTab,
             .alarms,
+            .clipboardWrite,
+            .contextMenus,
+            .cookies,
             .declarativeNetRequest,
             .declarativeNetRequestWithHostAccess,
+            .menus,
             .scripting,
             .storage,
             .unlimitedStorage,
             .tabs,
+            .webNavigation,
+            .webRequest,
         ] {
             perms[extra] = .distantFuture
         }
+        perms.removeValue(forKey: .nativeMessaging)
         context.grantedPermissions = perms
         // Also set via status API so `browser.permissions` / runtime checks stay in sync.
         for p in perms.keys {
             context.setPermissionStatus(.grantedExplicitly, for: p, expirationDate: nil)
         }
+        context.setPermissionStatus(.deniedExplicitly, for: .nativeMessaging, expirationDate: nil)
 
         var patterns: [WKWebExtension.MatchPattern: Date] = [:]
         for p in ext.requestedPermissionMatchPatterns {
@@ -622,7 +1069,11 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.Permission>, Date?) -> Void
     ) {
-        completionHandler(permissions, nil)
+        let allowed = permissions.filter { $0 != .nativeMessaging }
+        if permissions.contains(.nativeMessaging) {
+            fputs("ghosvt: webext denied nativeMessaging prompt\n", stderr)
+        }
+        completionHandler(allowed, nil)
     }
 
     func webExtensionController(
@@ -651,6 +1102,21 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for context: WKWebExtensionContext,
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
+        if let webView = action.popupWebView {
+            let wantFF = firefoxUAContextIDs.contains(context.uniqueIdentifier)
+            let nextUA: String? = wantFF ? Self.firefoxExtensionUserAgent : nil
+            if webView.customUserAgent != nextUA {
+                webView.customUserAgent = nextUA
+                // Re-run page so Bitwarden re-evaluates isSafariApi under the new UA.
+                if webView.url != nil, !webView.isLoading {
+                    webView.reload()
+                }
+            }
+            fputs(
+                "ghosvt: webext popup UA spoof=\(wantFF) ctx=\(context.uniqueIdentifier)\n",
+                stderr
+            )
+        }
         guard let present = ui?.presentActionPopup else {
             completionHandler(Self.unsupportedError("action popup: no UI host"))
             return

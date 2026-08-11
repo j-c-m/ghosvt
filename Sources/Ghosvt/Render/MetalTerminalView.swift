@@ -1795,6 +1795,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private func dismissBrowser(onVT index: Int) {
         ensureSearchSlots()
         guard index >= 0, index < browserSessionByVT.count else { return }
+        openExtensionPopover?.close()
+        openExtensionPopover = nil
         if #available(macOS 15.4, *) {
             BrowserExtensionHost.shared.unregister(vtIndex: index)
         }
@@ -1808,12 +1810,19 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             browserChromeByVT[index] = VTBrowserChrome()
         }
         browserAddressDragging = false
+        cachedExtensionActionCount = 0
+        hideExtensionActionButtons()
         if browserSessionByVT.allSatisfy({ $0 == nil }) {
             removeBrowserPageClickMonitor()
         }
         clearLinkHover()
         if manager?.activeIndex == index {
             window?.makeFirstResponder(self)
+        }
+        // Terminal path must paint this turn (not wait for next key/mouse).
+        // Async avoids re-entering draw from inside a key handler mid-frame.
+        DispatchQueue.main.async { [weak self] in
+            self?.draw()
         }
     }
 
@@ -1841,12 +1850,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     private func endBrowserAddressEdit(focusWeb: Bool) {
-        let wasEditing = isBrowserAddressEditing
         updateActiveBrowserChrome { $0.editing = false }
         browserAddressDragging = false
-        // Leave metal first-responder so page keys go to WebKit.
-        // Page click already targets the web view; Esc also refocuses it.
-        if wasEditing || focusWeb {
+        // Only move first responder when requested. Opening an extension popup must
+        // leave address-edit without focusing the page (popup gets focus itself).
+        if focusWeb {
             activeBrowser?.focusWebContent()
         }
     }
@@ -2028,6 +2036,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard #available(macOS 15.4, *), let vt = manager?.activeIndex else { return }
         let items = BrowserExtensionHost.shared.toolbarItems(forVT: vt)
         guard index >= 0, index < items.count else { return }
+        // Drop address-bar first-responder so the popup can take typing.
+        endBrowserAddressEdit(focusWeb: false)
         if let anchorView {
             extensionPopupAnchor = anchorView
         } else if let col = anchorCol,
@@ -2049,10 +2059,16 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             return
         }
         // Access popupWebView so WebKit starts loading the action page.
-        guard action.popupWebView != nil else {
+        guard let webView = action.popupWebView else {
             completion(BrowserExtensionHost.unsupportedError("action has no popup webView"))
             return
         }
+        webView.isInspectable = true
+        fputs(
+            "ghosvt: webext present popup label=\(action.label) "
+                + "url=\(webView.url?.absoluteString ?? "nil")\n",
+            stderr
+        )
         guard let popover = action.popupPopover else {
             completion(BrowserExtensionHost.unsupportedError("action has no popup popover"))
             return
@@ -2060,11 +2076,19 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let anchor = extensionPopupAnchor
             ?? extensionActionButtons.first(where: { !$0.isHidden })
             ?? self
+        // Leave address-edit without focusing the page webview.
+        endBrowserAddressEdit(focusWeb: false)
         openExtensionPopover?.close()
         openExtensionPopover = popover
         popover.behavior = .transient
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         action.hasUnreadBadgeText = false
+        // After show, move key focus into the popup (password field, etc.).
+        DispatchQueue.main.async { [weak webView, weak self] in
+            guard let webView else { return }
+            let win = webView.window ?? self?.window
+            win?.makeFirstResponder(webView)
+        }
         completion(nil)
     }
 

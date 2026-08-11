@@ -609,9 +609,6 @@ final class TerminalRenderer {
             )
         }
         uploadInstances(instances)
-        lastBgCount = 0
-        lastFgCount = instances.count
-        lastDrawnCount = instances.count
         present(
             bgCount: 0,
             fgCount: instances.count,
@@ -622,6 +619,13 @@ final class TerminalRenderer {
             letterboxBg: letterboxBg,
             contentActive: true
         )
+        // Do not leave chrome instance counts in the terminal grid cache — the next
+        // full draw would take the cellsStable path and re-present the address bar
+        // until something dirties the VT (key/click).
+        lastBgCount = 0
+        lastFgCount = 0
+        lastDrawnCount = 0
+        lastLayoutKey = nil
     }
 
     /// Full-drawable clear color for max-aspect letterbox bars.
