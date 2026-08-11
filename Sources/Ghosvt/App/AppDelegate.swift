@@ -165,6 +165,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    /// ⌘Q / menu Quit: confirm before exit (covers all `NSApp.terminate` paths).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let alert = NSAlert()
+        alert.messageText = "Quit ghosvt?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        return response == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     /// App + Edit menus so standard key equivalents exist. Terminal still claims ⌘C/V via
     /// `performKeyEquivalent` when the metal view is first responder.
     @MainActor

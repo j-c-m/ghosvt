@@ -130,7 +130,7 @@ Bools: `true` / `yes` / `on` / `1`.
 | **⌘+** / **⌘=** | Increase font size (1pt; Ghostty) |
 | **⌘-** | Decrease font size (1pt; Ghostty) |
 | **⌘0** | Reset font size to config (Ghostty; not VT 10) |
-| **⌘Q** | Quit |
+| **⌘Q** | Quit (confirmation) |
 | **Shift+Enter** / **Alt+Enter** | Send LF (`\n`) — newline for apps like Grok Build |
 | **Enter** | Send CR (`\r`) (next match while search field focused) |
 | Wheel / trackpad | Scroll history (spring overscroll) |
