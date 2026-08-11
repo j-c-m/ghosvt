@@ -228,11 +228,13 @@ extension TerminalRenderer {
         defBg: GhosttyColorRgb,
         caretStyle: HUDCaretStyle = .searchHighlight,
         selStartCol: Int = -1,
-        selEndCol: Int = -1
+        selEndCol: Int = -1,
+        /// When `atTop`, which content row (0 = first stolen row). Ignored for bottom HUD.
+        topRowIndex: Int = 0
     ) {
         let rowY: Float
         if atTop {
-            rowY = layout.originY + layout.padPx
+            rowY = layout.originY + layout.padPx + Float(max(0, topRowIndex)) * layout.cellH
         } else {
             rowY = layout.originY + layout.padPx + Float(layout.rows) * layout.cellH
         }

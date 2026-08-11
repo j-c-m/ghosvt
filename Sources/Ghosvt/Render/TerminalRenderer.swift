@@ -524,7 +524,7 @@ final class TerminalRenderer {
         )
     }
 
-    /// Paint only the stolen top-row browser address bar (no VT grid).
+    /// Paint stolen browser chrome rows (address + optional tab strip). No VT grid.
     func presentBrowserChrome(
         drawable: CAMetalDrawable,
         renderPassDescriptor: MTLRenderPassDescriptor,
@@ -540,7 +540,11 @@ final class TerminalRenderer {
         defFg: GhosttyColorRgb,
         defBg: GhosttyColorRgb,
         selStartCol: Int = -1,
-        selEndCol: Int = -1
+        selEndCol: Int = -1,
+        /// Second row under address when multi-tab; nil → single-row chrome.
+        tabStripLine: String? = nil,
+        tabActiveStartCol: Int = -1,
+        tabActiveEndCol: Int = -1
     ) {
         let pw = Float(drawableSize.width)
         let ph = Float(drawableSize.height)
@@ -556,6 +560,7 @@ final class TerminalRenderer {
         let cellWInt = max(1, metrics.cellWidthPx)
         let cellHInt = max(1, metrics.cellHeightPx)
         let padPx = Float((padPoints * scale).rounded(.toNearestOrAwayFromZero))
+        let chromeRows = tabStripLine == nil ? 1 : 2
         let layout = LayoutKey(
             originX: Float(contentRect.minX.rounded(.toNearestOrAwayFromZero)),
             originY: Float(contentRect.minY.rounded(.toNearestOrAwayFromZero)),
@@ -563,7 +568,7 @@ final class TerminalRenderer {
             cellH: Float(cellHInt),
             padPx: padPx,
             cols: cols,
-            rows: 1,
+            rows: chromeRows,
             fontPx: metrics.fontPx
         )
         var instances: [CellInstance] = []
@@ -581,8 +586,28 @@ final class TerminalRenderer {
             defBg: defBg,
             caretStyle: .themeBlock,
             selStartCol: selStartCol,
-            selEndCol: selEndCol
+            selEndCol: selEndCol,
+            topRowIndex: 0
         )
+        if let strip = tabStripLine {
+            appendSearchHUD(
+                to: &instances,
+                line: strip,
+                caretCol: -1,
+                showCaret: false,
+                atTop: true,
+                metrics: metrics,
+                layout: layout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt,
+                defFg: defFg,
+                defBg: defBg,
+                caretStyle: .themeBlock,
+                selStartCol: tabActiveStartCol,
+                selEndCol: tabActiveEndCol,
+                topRowIndex: 1
+            )
+        }
         uploadInstances(instances)
         lastBgCount = 0
         lastFgCount = instances.count

@@ -7,12 +7,29 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     var onURLChange: ((String, Bool, Bool) -> Void)?
     /// Fired when the user interacts with page content (ends address-bar edit).
     var onWebContentInteraction: (() -> Void)?
+    /// URL / loading / title changes for web-extension tab property notifications.
+    var onNavigationStateChange: (() -> Void)?
+    /// `target=_blank` / window.open — host may open a new tab; if nil, load in this view.
+    var onOpenInNewTab: ((URL) -> Void)?
 
     private let webView: WKWebView
+    private var titleObservation: NSKeyValueObservation?
+    private var loadingObservation: NSKeyValueObservation?
+
+    /// Underlying page view (extension tab bridge, first-responder checks).
+    var pageWebView: WKWebView { webView }
 
     var canGoBack: Bool { webView.canGoBack }
     var canGoForward: Bool { webView.canGoForward }
     var currentURLString: String { webView.url?.absoluteString ?? "" }
+    var pageTitle: String {
+        let t = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !t.isEmpty { return t }
+        if let host = webView.url?.host, !host.isEmpty { return host }
+        let s = currentURLString
+        if s.isEmpty || s == "about:blank" { return "New Tab" }
+        return s
+    }
     /// True when the WKWebView (not the host metal view) is first responder.
     var isWebContentFirstResponder: Bool {
         window?.firstResponder === webView
@@ -22,6 +39,9 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     override init(frame frameRect: NSRect) {
         let config = WKWebViewConfiguration()
         config.preferences.isElementFullscreenEnabled = true
+        if #available(macOS 15.4, *) {
+            BrowserExtensionHost.shared.apply(to: config)
+        }
         webView = WKWebView(frame: .zero, configuration: config)
         super.init(frame: frameRect)
         wantsLayer = true
@@ -38,6 +58,18 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         }
         addSubview(webView)
         webView.frame = bounds
+
+        titleObservation = webView.observe(\.title, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.onNavigationStateChange?() }
+        }
+        loadingObservation = webView.observe(\.isLoading, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.onNavigationStateChange?() }
+        }
+    }
+
+    deinit {
+        titleObservation?.invalidate()
+        loadingObservation?.invalidate()
     }
 
     @available(*, unavailable)
@@ -75,9 +107,20 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         window?.makeFirstResponder(webView)
     }
 
+    /// Guards against WebKit / responder-chain re-entry:
+    /// metal → `forwardKeyDown` → WKWebView → us → super → metal → …
+    private var isDeliveringKeyDown = false
+
     /// Deliver a key that landed on the host view while the page should own input.
     func forwardKeyDown(_ event: NSEvent) {
         focusWebContent()
+        deliverKeyDownToWebView(event)
+    }
+
+    private func deliverKeyDownToWebView(_ event: NSEvent) {
+        guard !isDeliveringKeyDown else { return }
+        isDeliveringKeyDown = true
+        defer { isDeliveringKeyDown = false }
         webView.keyDown(with: event)
     }
 
@@ -181,8 +224,10 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     }
 
     override func keyDown(with event: NSEvent) {
-        // Parent MetalTerminalView + local monitor own Esc/⌘W/nav; this is fallback only.
-        super.keyDown(with: event)
+        // Never `super.keyDown` — next responder is MetalTerminalView and re-enters
+        // browser key routing (stack overflow on e.g. ⇧⌘← bounced from WebKit).
+        if isDeliveringKeyDown { return }
+        deliverKeyDownToWebView(event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -199,6 +244,7 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
 
     private func notifyURL() {
         onURLChange?(currentURLString, canGoBack, canGoForward)
+        onNavigationStateChange?()
     }
 
     // MARK: - WKNavigationDelegate
@@ -208,6 +254,10 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        notifyURL()
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         notifyURL()
     }
 
@@ -257,9 +307,13 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // target=_blank: load in this embed instead of dropping the navigation.
+        // target=_blank / window.open
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
-            load(url: url)
+            if let onOpenInNewTab {
+                onOpenInNewTab(url)
+            } else {
+                load(url: url)
+            }
         }
         return nil
     }

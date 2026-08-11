@@ -24,8 +24,24 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var selectRectangle = false
     /// Any mouse button currently held (for letterbox freeze during app selection).
     private var mouseButtonsHeld: Set<Int> = []
-    /// Per-VT embedded browser (nil when that VT has no open browser).
-    private var browserByVT: [EmbeddedBrowserView?] = []
+    /// Per-VT multi-tab browser session (nil when that VT has no open browser).
+    private var browserSessionByVT: [BrowserSession?] = []
+
+    /// Multi-tab browser state for one VT.
+    private final class BrowserSession {
+        var tabs: [EmbeddedBrowserView] = []
+        var activeTabIndex: Int = 0
+        static let maxTabs = 8
+
+        var activeBrowser: EmbeddedBrowserView? {
+            guard activeTabIndex >= 0, activeTabIndex < tabs.count else { return nil }
+            return tabs[activeTabIndex]
+        }
+
+        var showsTabStrip: Bool { tabs.count > 1 }
+        var stolenChromeRows: Int { showsTabStrip ? 2 : 1 }
+    }
+
     /// Per-VT address bar / nav chrome (mirrors `searchByVT`).
     private struct VTBrowserChrome {
         var address = ""
@@ -125,19 +141,23 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if searchByVT.count < n {
             searchByVT.append(contentsOf: repeatElement(VTSearchState(), count: n - searchByVT.count))
         }
-        while browserByVT.count < n {
-            browserByVT.append(nil)
+        while browserSessionByVT.count < n {
+            browserSessionByVT.append(nil)
         }
         while browserChromeByVT.count < n {
             browserChromeByVT.append(VTBrowserChrome())
         }
     }
 
+    private var activeBrowserSession: BrowserSession? {
+        ensureSearchSlots()
+        guard let i = manager?.activeIndex, i < browserSessionByVT.count else { return nil }
+        return browserSessionByVT[i]
+    }
+
     /// Whether the active VT is showing an embedded browser.
     private var activeBrowser: EmbeddedBrowserView? {
-        ensureSearchSlots()
-        guard let i = manager?.activeIndex, i < browserByVT.count else { return nil }
-        return browserByVT[i]
+        activeBrowserSession?.activeBrowser
     }
 
     /// True while the active VT has an embedded browser (PTY input suspended).
@@ -193,6 +213,58 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         // After renderer exists: Adaptive-Sync range + present pacing.
         applyDisplayRefreshRate()
+        installWebExtensionUIHooks()
+    }
+
+    /// Wire `BrowserExtensionHost` callbacks into this terminal (macOS 15.4+).
+    private func installWebExtensionUIHooks() {
+        guard #available(macOS 15.4, *) else { return }
+        let host = BrowserExtensionHost.shared
+        host.ui = BrowserExtensionHost.UIHooks(
+            activeVTIndex: { [weak self] in
+                self?.manager?.activeIndex ?? 0
+            },
+            focusVT: { [weak self] vt in
+                guard let self, let manager = self.manager else { return }
+                if manager.activeIndex != vt {
+                    manager.switchTo(vt)
+                    self.afterVtSwitch(manager: manager)
+                }
+            },
+            dismissBrowser: { [weak self] vt in
+                self?.dismissBrowser(onVT: vt)
+            },
+            openOrNavigate: { [weak self] url, vt in
+                self?.openBrowser(url: url, onVT: vt)
+            },
+            openNewTab: { [weak self] url, vt in
+                self?.openNewBrowserTab(url: url, onVT: vt, activate: true, editAddress: false)
+            },
+            activateTab: { [weak self] vt, tabIndex in
+                self?.activateBrowserTab(onVT: vt, tabIndex: tabIndex)
+            },
+            closeTab: { [weak self] vt, tabIndex in
+                self?.closeBrowserTab(onVT: vt, tabIndex: tabIndex)
+            },
+            freeVTIndex: { [weak self] in
+                guard let self else { return nil }
+                self.ensureSearchSlots()
+                return self.browserSessionByVT.enumerated().first(where: { $0.element == nil })?.offset
+            },
+            contentFrameInScreen: { [weak self] vt in
+                guard let self else { return .null }
+                self.ensureSearchSlots()
+                guard vt >= 0, vt < self.browserSessionByVT.count,
+                      let browser = self.browserSessionByVT[vt]?.activeBrowser,
+                      let win = browser.window
+                else { return .null }
+                let rect = browser.convert(browser.bounds, to: nil)
+                return win.convertToScreen(rect)
+            },
+            isAppFullscreen: { [weak self] in
+                self?.window?.styleMask.contains(.fullScreen) == true
+            }
+        )
     }
 
     /// Configure MTKView + Metal for true Adaptive-Sync (or fixed-rate pacing).
@@ -533,13 +605,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let searchHL = viewportSearchHighlights(session: manager.active)
         let hudLayout = isSearchOpen ? searchHUDLayout(cols: Int(lastCols)) : nil
         if activeBrowser != nil {
-            // Stolen top row: terminal address bar; WebView fills the rest.
-            // Use last terminal theme colors (not hardcoded defaults).
+            // Stolen top row(s): address bar (+ tab strip when multi-tab).
             let cols = max(1, Int(lastCols))
             let bar = browserHUDLayout(cols: cols)
+            let strip = browserTabStripLayout(cols: cols)
             let defBg = renderer.lastDefBgRgb
             let defFg = renderer.lastDefFg
-            // Match terminal cursor blink policy (off when VT cursor is non-blinking).
             let editing = isBrowserAddressEditing
             let caretOn: Bool
             if editing, let rs = manager.active.renderState {
@@ -562,7 +633,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 defFg: defFg,
                 defBg: defBg,
                 selStartCol: bar.selStartCol,
-                selEndCol: bar.selEndCol
+                selEndCol: bar.selEndCol,
+                tabStripLine: strip?.line,
+                tabActiveStartCol: strip?.activeStart ?? -1,
+                tabActiveEndCol: strip?.activeEnd ?? -1
             )
         } else {
             renderer.draw(
@@ -1153,6 +1227,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         } else {
             window?.makeFirstResponder(self)
         }
+        if #available(macOS 15.4, *) {
+            BrowserExtensionHost.shared.focusChanged(toVT: manager.activeIndex)
+        }
     }
 
     // MARK: - Embedded browser (⌘-click links)
@@ -1206,6 +1283,99 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         var hasSelection: Bool { selStartCol >= 0 && selEndCol > selStartCol }
     }
 
+    private struct BrowserTabStripLayout {
+        var line: String
+        var activeStart: Int
+        var activeEnd: Int
+        /// Inclusive start/exclusive end column and close-column for each tab.
+        var tabs: [(start: Int, end: Int, closeCol: Int)]
+        var plusCol: Int
+    }
+
+    /// Tab strip under the address bar when `tabCount > 1`.
+    private func browserTabStripLayout(cols: Int) -> BrowserTabStripLayout? {
+        guard let session = activeBrowserSession, session.showsTabStrip, cols > 0 else {
+            return nil
+        }
+        let n = session.tabs.count
+        // Reserve 1 col for `+` and 1 spacer before it when possible.
+        let plusBudget = 2
+        let usable = max(1, cols - plusBudget)
+        let tabWidth = max(4, usable / n)
+        var cells = Array(repeating: " ", count: cols)
+        var tabRanges: [(start: Int, end: Int, closeCol: Int)] = []
+        var activeStart = -1
+        var activeEnd = -1
+        var col = 0
+        for i in 0..<n {
+            guard col < usable else { break }
+            let start = col
+            let end = min(usable, start + tabWidth)
+            let closeCol = end - 1
+            let titleBudget = max(0, end - start - 1) // leave close ×
+            var title = session.tabs[i].pageTitle
+            if title.isEmpty { title = "Tab" }
+            let chars = Array(title)
+            let slice = chars.prefix(titleBudget)
+            for (j, ch) in slice.enumerated() where start + j < closeCol {
+                cells[start + j] = String(ch)
+            }
+            if closeCol >= start, closeCol < cols {
+                cells[closeCol] = "×"
+            }
+            tabRanges.append((start, end, closeCol))
+            if i == session.activeTabIndex {
+                activeStart = start
+                activeEnd = end
+            }
+            col = end
+        }
+        let plusCol = min(cols - 1, max(usable, cols - 1))
+        if plusCol >= 0, plusCol < cols {
+            cells[plusCol] = "+"
+        }
+        return BrowserTabStripLayout(
+            line: cells.joined(),
+            activeStart: activeStart,
+            activeEnd: activeEnd,
+            tabs: tabRanges,
+            plusCol: plusCol
+        )
+    }
+
+    /// Idle address paint: host only (full URL while editing).
+    private func prettyBrowserAddress(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "" }
+        if trimmed == "about:blank" { return "New Tab" }
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else {
+            return trimmed
+        }
+        switch scheme {
+        case "https", "http":
+            break
+        case "about":
+            return trimmed
+        case "data":
+            return "data:…"
+        case "blob":
+            return "blob:…"
+        default:
+            return trimmed
+        }
+        var host = url.host ?? ""
+        if host.hasPrefix("www.") {
+            host = String(host.dropFirst(4))
+        }
+        if host.isEmpty { return trimmed }
+        if let port = url.port {
+            let def = scheme == "https" ? 443 : 80
+            if port != def { host = "\(host):\(port)" }
+        }
+        // Keep `http://` so insecure origins stay obvious; elide `https://`.
+        return scheme == "http" ? "http://\(host)" : host
+    }
+
     /// `← →  <url…>                    ×` — stolen top terminal row.
     private func browserHUDLayout(cols: Int) -> BrowserHUDLayout {
         let chrome = activeBrowserChrome ?? VTBrowserChrome()
@@ -1226,12 +1396,18 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if cols > 2 { cells[forwardCol] = chrome.canGoForward ? "→" : "·" }
         if cols > 0 { cells[closeCol] = "×" }
         let urlBudget = max(0, urlEnd - urlStart)
-        var addr = chrome.address
-        if addr.isEmpty { addr = "https://" }
+        // Idle: pretty shortened URL (display only). Editing: full raw address for typing.
+        let addr: String
+        if chrome.editing {
+            addr = chrome.address.isEmpty ? "https://" : chrome.address
+        } else {
+            let pretty = prettyBrowserAddress(chrome.address)
+            addr = pretty.isEmpty ? "New Tab" : pretty
+        }
         let chars = Array(addr)
         let maxStart = max(0, chars.count - urlBudget)
         // Editing: keep caret (and selection edge) in the visible window.
-        // Idle: prefer trailing segment (host/path user usually needs).
+        // Idle pretty form is host-first — always scroll from the start.
         let visibleStart: Int
         if urlBudget <= 0 || chars.count <= urlBudget {
             visibleStart = 0
@@ -1250,14 +1426,20 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             }
             visibleStart = min(max(0, vs), maxStart)
         } else {
-            visibleStart = maxStart
+            visibleStart = 0
         }
         let slice = chars.dropFirst(visibleStart).prefix(urlBudget)
         let urlCells = slice.map { String($0) }
-        // Persist visible window for caret/click mapping.
-        updateActiveBrowserChrome { $0.visibleStart = visibleStart }
-        for (i, ch) in urlCells.enumerated() where urlStart + i < urlEnd {
-            cells[urlStart + i] = ch
+        // Persist visible window for caret/click mapping (editing only matters).
+        if chrome.editing {
+            updateActiveBrowserChrome { $0.visibleStart = visibleStart }
+        }
+        // Idle: center host in the URL band. Editing: left-align for caret mapping.
+        let paintOrigin = chrome.editing
+            ? urlStart
+            : urlStart + max(0, (urlBudget - urlCells.count) / 2)
+        for (i, ch) in urlCells.enumerated() where paintOrigin + i < urlEnd {
+            cells[paintOrigin + i] = ch
         }
         let caret: Int
         var selStartCol = -1
@@ -1306,35 +1488,95 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     private func openBrowser(url: URL, onVT index: Int) {
         ensureSearchSlots()
-        guard index >= 0, index < browserByVT.count else { return }
+        guard index >= 0, index < browserSessionByVT.count else { return }
         clearLinkHover()
-        // Ensure grid metrics for the stolen address row.
         if let full = fullGridSize() {
             lastCols = full.cols
             lastRows = full.rows
             lastCellW = full.cellW
             lastCellH = full.cellH
         }
-        let n = url.absoluteString.count
-        if index < browserChromeByVT.count {
-            browserChromeByVT[index] = VTBrowserChrome(
-                address: url.absoluteString,
-                editing: false,
-                caret: n,
-                selAnchor: n,
-                canGoBack: false,
-                canGoForward: false,
-                visibleStart: 0
-            )
-        }
         installBrowserPageClickMonitor()
-        if let existing = browserByVT[index] {
-            existing.isHidden = false
-            existing.load(url: url)
-            existing.focusWebContent()
+        if let session = browserSessionByVT[index], let active = session.activeBrowser {
+            active.isHidden = false
+            active.load(url: url)
+            syncChromeFromBrowser(active, onVT: index)
+            active.focusWebContent()
+            showBrowserForActiveVT()
             layoutActiveBrowser()
+            if #available(macOS 15.4, *) {
+                BrowserExtensionHost.shared.tabPropertiesChanged(
+                    browser: active,
+                    vtIndex: index,
+                    [.URL, .loading]
+                )
+            }
             return
         }
+        openNewBrowserTab(url: url, onVT: index, activate: true, editAddress: false)
+    }
+
+    /// Create a new tab on `vt` (opens a session if needed). Caps at `BrowserSession.maxTabs`.
+    @discardableResult
+    private func openNewBrowserTab(
+        url: URL?,
+        onVT index: Int,
+        activate: Bool,
+        editAddress: Bool
+    ) -> EmbeddedBrowserView? {
+        ensureSearchSlots()
+        guard index >= 0, index < browserSessionByVT.count else { return nil }
+        clearLinkHover()
+        if let full = fullGridSize() {
+            lastCols = full.cols
+            lastRows = full.rows
+            lastCellW = full.cellW
+            lastCellH = full.cellH
+        }
+        installBrowserPageClickMonitor()
+
+        let session: BrowserSession
+        if let existing = browserSessionByVT[index] {
+            session = existing
+        } else {
+            session = BrowserSession()
+            browserSessionByVT[index] = session
+        }
+        if session.tabs.count >= BrowserSession.maxTabs {
+            fputs("ghosvt: browser tab cap (\(BrowserSession.maxTabs)) on vt=\(index)\n", stderr)
+            if let url, let active = session.activeBrowser {
+                active.load(url: url)
+                if activate { activateBrowserTab(onVT: index, tabIndex: session.activeTabIndex) }
+            }
+            return session.activeBrowser
+        }
+
+        let browser = makeBrowserTabView(onVT: index)
+        addSubview(browser)
+        session.tabs.append(browser)
+        let tabIndex = session.tabs.count - 1
+        if #available(macOS 15.4, *) {
+            _ = BrowserExtensionHost.shared.addTab(browser: browser, vtIndex: index, activate: activate)
+        }
+        if activate {
+            session.activeTabIndex = tabIndex
+        }
+        let loadURL = url ?? URL(string: "about:blank")!
+        browser.load(url: loadURL)
+        showBrowserForActiveVT()
+        layoutActiveBrowser()
+        if activate {
+            syncChromeFromBrowser(browser, onVT: index)
+            if editAddress {
+                beginBrowserAddressEdit(selectAll: true)
+            } else {
+                browser.focusWebContent()
+            }
+        }
+        return browser
+    }
+
+    private func makeBrowserTabView(onVT index: Int) -> EmbeddedBrowserView {
         let browser = EmbeddedBrowserView(frame: .zero)
         browser.onClose = { [weak self] in
             self?.dismissBrowser(onVT: index)
@@ -1342,11 +1584,15 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         browser.onWebContentInteraction = { [weak self] in
             self?.endBrowserAddressEdit(focusWeb: false)
         }
-        browser.onURLChange = { [weak self] s, back, forward in
-            guard let self else { return }
+        browser.onURLChange = { [weak self, weak browser] s, back, forward in
+            guard let self, let browser else { return }
             DispatchQueue.main.async {
                 self.ensureSearchSlots()
-                guard index < self.browserChromeByVT.count else { return }
+                guard index < self.browserSessionByVT.count,
+                      let session = self.browserSessionByVT[index],
+                      session.activeBrowser === browser,
+                      index < self.browserChromeByVT.count
+                else { return }
                 if !self.browserChromeByVT[index].editing {
                     self.browserChromeByVT[index].address = s
                     self.browserChromeByVT[index].caret = s.count
@@ -1357,12 +1603,87 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 self.browserChromeByVT[index].canGoForward = forward
             }
         }
-        addSubview(browser)
-        browserByVT[index] = browser
-        browser.load(url: url)
+        browser.onNavigationStateChange = { [weak browser] in
+            guard let browser else { return }
+            if #available(macOS 15.4, *) {
+                BrowserExtensionHost.shared.tabPropertiesChanged(
+                    browser: browser,
+                    vtIndex: index,
+                    [.URL, .title, .loading, .size]
+                )
+            }
+        }
+        browser.onOpenInNewTab = { [weak self] url in
+            self?.openNewBrowserTab(url: url, onVT: index, activate: true, editAddress: false)
+        }
+        return browser
+    }
+
+    private func syncChromeFromBrowser(_ browser: EmbeddedBrowserView, onVT index: Int) {
+        ensureSearchSlots()
+        guard index < browserChromeByVT.count else { return }
+        let s = browser.currentURLString
+        browserChromeByVT[index].address = s
+        browserChromeByVT[index].caret = s.count
+        browserChromeByVT[index].selAnchor = s.count
+        browserChromeByVT[index].visibleStart = 0
+        browserChromeByVT[index].canGoBack = browser.canGoBack
+        browserChromeByVT[index].canGoForward = browser.canGoForward
+        browserChromeByVT[index].editing = false
+    }
+
+    private func activateBrowserTab(onVT index: Int, tabIndex: Int) {
+        ensureSearchSlots()
+        guard index >= 0, index < browserSessionByVT.count,
+              let session = browserSessionByVT[index],
+              tabIndex >= 0, tabIndex < session.tabs.count
+        else { return }
+        if session.activeTabIndex != tabIndex {
+            session.activeTabIndex = tabIndex
+            if #available(macOS 15.4, *) {
+                BrowserExtensionHost.shared.setActiveTab(vtIndex: index, tabIndex: tabIndex)
+            }
+        }
+        if let b = session.activeBrowser {
+            syncChromeFromBrowser(b, onVT: index)
+        }
         showBrowserForActiveVT()
-        browser.focusWebContent()
         layoutActiveBrowser()
+        session.activeBrowser?.focusWebContent()
+    }
+
+    private func closeBrowserTab(onVT index: Int, tabIndex: Int) {
+        ensureSearchSlots()
+        guard index >= 0, index < browserSessionByVT.count,
+              let session = browserSessionByVT[index],
+              tabIndex >= 0, tabIndex < session.tabs.count
+        else { return }
+        if session.tabs.count == 1 {
+            dismissBrowser(onVT: index)
+            return
+        }
+        let wasActive = session.activeTabIndex == tabIndex
+        let browser = session.tabs[tabIndex]
+        // Host first while the embed is still strongly held (didCloseTab / webView).
+        if #available(macOS 15.4, *) {
+            BrowserExtensionHost.shared.closeTab(vtIndex: index, tabIndex: tabIndex)
+        }
+        browser.removeFromSuperview()
+        session.tabs.remove(at: tabIndex)
+        // Mirror host active-index clamp; host already fired didActivateTab if needed.
+        if session.activeTabIndex >= session.tabs.count {
+            session.activeTabIndex = session.tabs.count - 1
+        } else if tabIndex < session.activeTabIndex {
+            session.activeTabIndex -= 1
+        } else if wasActive {
+            session.activeTabIndex = min(tabIndex, session.tabs.count - 1)
+        }
+        if let b = session.activeBrowser {
+            syncChromeFromBrowser(b, onVT: index)
+        }
+        showBrowserForActiveVT()
+        layoutActiveBrowser()
+        session.activeBrowser?.focusWebContent()
     }
 
     /// ⌘X/C/V/A for the page when the address bar is not editing.
@@ -1407,14 +1728,21 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     private func dismissBrowser(onVT index: Int) {
         ensureSearchSlots()
-        guard index >= 0, index < browserByVT.count else { return }
-        browserByVT[index]?.removeFromSuperview()
-        browserByVT[index] = nil
+        guard index >= 0, index < browserSessionByVT.count else { return }
+        if #available(macOS 15.4, *) {
+            BrowserExtensionHost.shared.unregister(vtIndex: index)
+        }
+        if let session = browserSessionByVT[index] {
+            for t in session.tabs {
+                t.removeFromSuperview()
+            }
+        }
+        browserSessionByVT[index] = nil
         if index < browserChromeByVT.count {
             browserChromeByVT[index] = VTBrowserChrome()
         }
         browserAddressDragging = false
-        if browserByVT.allSatisfy({ $0 == nil }) {
+        if browserSessionByVT.allSatisfy({ $0 == nil }) {
             removeBrowserPageClickMonitor()
         }
         clearLinkHover()
@@ -1426,13 +1754,16 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private func showBrowserForActiveVT() {
         ensureSearchSlots()
         let active = manager?.activeIndex ?? 0
-        for (i, b) in browserByVT.enumerated() {
-            b?.isHidden = (i != active)
+        for (i, session) in browserSessionByVT.enumerated() {
+            guard let session else { continue }
+            let vtVisible = (i == active)
+            for (ti, tab) in session.tabs.enumerated() {
+                tab.isHidden = !(vtVisible && ti == session.activeTabIndex)
+            }
         }
-        // Sync chrome from the newly active browser (per-VT); end address edit on switch.
         if active < browserChromeByVT.count {
             browserChromeByVT[active].editing = false
-            if let b = browserByVT[active] {
+            if let b = browserSessionByVT[active]?.activeBrowser {
                 if browserChromeByVT[active].address.isEmpty {
                     browserChromeByVT[active].address = b.currentURLString
                 }
@@ -1454,27 +1785,30 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
     }
 
-    /// WebView sits under the stolen top terminal row inside the content rect.
+    /// Active WebView sits under stolen chrome rows (address + optional tab strip).
     ///
     /// AppKit frames use bottom-left origin: keep `origin.y` (content bottom) and
-    /// shrink `height` so the top of the rect drops by one pad + cell row.
-    /// (Raising origin would steal from the bottom and cover the address bar.)
+    /// shrink `height` so the top of the rect drops by chrome rows.
     private func layoutActiveBrowser() {
-        guard let browser = activeBrowser, let metrics else { return }
+        guard let session = activeBrowserSession, let metrics else { return }
         var r = contentRectPoints()
-        let steal = pad + metrics.cellHeight
+        let rows = CGFloat(session.stolenChromeRows)
+        let steal = pad + metrics.cellHeight * rows
         r.size.height = max(0, r.size.height - steal)
-        // Optional: also inset left/right pad so web aligns with cell grid width.
         r.origin.x += pad
         r.size.width = max(0, r.size.width - 2 * pad)
-        // Per-frame draw used to assign this every tick; skip no-ops to reduce WebKit churn.
-        if abs(browser.frame.origin.x - r.origin.x) > 0.5
-            || abs(browser.frame.origin.y - r.origin.y) > 0.5
-            || abs(browser.frame.size.width - r.size.width) > 0.5
-            || abs(browser.frame.size.height - r.size.height) > 0.5 {
-            browser.frame = r
+        for (i, browser) in session.tabs.enumerated() {
+            let visible = i == session.activeTabIndex
+            browser.isHidden = !visible
+            guard visible else { continue }
+            if abs(browser.frame.origin.x - r.origin.x) > 0.5
+                || abs(browser.frame.origin.y - r.origin.y) > 0.5
+                || abs(browser.frame.size.width - r.size.width) > 0.5
+                || abs(browser.frame.size.height - r.size.height) > 0.5 {
+                browser.frame = r
+            }
+            browser.autoresizingMask = [.width, .height]
         }
-        browser.autoresizingMask = [.width, .height]
     }
 
     private func beginBrowserAddressEdit(selectAll: Bool = false) {
@@ -1514,7 +1848,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         // Allow drag past the URL band: clamp to ends.
         let col: Int
         if cell.row != 0 {
-            // Drag below bar: keep last caret (don't end edit — only page click does).
+            // Drag on strip / content: keep last caret (only page click ends edit).
             return
         }
         if cell.col < bar.urlStart {
@@ -1535,11 +1869,35 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     @discardableResult
     private func handleBrowserHUDClick(_ event: NSEvent) -> Bool {
-        guard activeBrowser != nil else { return false }
+        guard activeBrowser != nil, let vt = manager?.activeIndex else { return false }
         guard let cell = fullGridCell(at: event) else { return false }
-        // Address bar is always full-grid row 0 when browser is open.
+        let strip = browserTabStripLayout(cols: Int(lastCols))
+        // Row 1: tab strip (only when multi-tab).
+        if let strip, cell.row == 1 {
+            endBrowserAddressEdit(focusWeb: false)
+            if cell.col == strip.plusCol {
+                openNewBrowserTab(
+                    url: URL(string: "about:blank"),
+                    onVT: vt,
+                    activate: true,
+                    editAddress: true
+                )
+                return true
+            }
+            for (i, t) in strip.tabs.enumerated() {
+                if cell.col == t.closeCol {
+                    closeBrowserTab(onVT: vt, tabIndex: i)
+                    return true
+                }
+                if cell.col >= t.start, cell.col < t.end {
+                    activateBrowserTab(onVT: vt, tabIndex: i)
+                    return true
+                }
+            }
+            return true
+        }
+        // Address bar is full-grid row 0 when browser is open.
         guard cell.row == 0 else {
-            // Letterbox / non-HUD metal: do not end edit (only WebView click does).
             return false
         }
         let bar = browserHUDLayout(cols: Int(lastCols))
@@ -1554,10 +1912,16 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             return true
         }
         if cell.col == bar.closeCol {
-            if let i = manager?.activeIndex { dismissBrowser(onVT: i) }
+            dismissBrowser(onVT: vt)
             return true
         }
         if cell.col >= bar.urlStart, cell.col < bar.urlEnd {
+            // Idle paints a centered host-only string — column→caret mapping is wrong
+            // until the full URL is left-aligned for edit. Enter with select-all.
+            if !isBrowserAddressEditing {
+                beginBrowserAddressEdit(selectAll: true)
+                return true
+            }
             let shift = event.modifierFlags.contains(.shift)
             beginBrowserAddressEdit()
             updateActiveBrowserChrome { c in
@@ -1584,12 +1948,15 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         static let a: UInt16 = 0x00
         static let b: UInt16 = 0x0B
         static let c: UInt16 = 0x08
+        static let t: UInt16 = 0x11
         static let v: UInt16 = 0x09
         static let w: UInt16 = 0x0D
         static let r: UInt16 = 0x0F
         static let l: UInt16 = 0x25
         static let leftBracket: UInt16 = 0x21
         static let rightBracket: UInt16 = 0x1E
+        static let leftArrow: UInt16 = 0x7B
+        static let rightArrow: UInt16 = 0x7C
     }
 
     private func isCommandChord(
@@ -1615,23 +1982,35 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard let manager else { return false }
         let index = manager.activeIndex
         ensureSearchSlots()
-        if index < browserByVT.count, let existing = browserByVT[index], !existing.isHidden {
-            // Already open on this VT — focus the address bar.
+        if index < browserSessionByVT.count, browserSessionByVT[index]?.activeBrowser != nil {
             beginBrowserAddressEdit(selectAll: true)
             return true
         }
-        // about:blank is embeddable; address bar starts ready for typing.
-        guard let blank = URL(string: "about:blank") else { return false }
-        openBrowser(url: blank, onVT: index)
-        beginBrowserAddressEdit(selectAll: true)
+        openNewBrowserTab(
+            url: URL(string: "about:blank"),
+            onVT: index,
+            activate: true,
+            editAddress: true
+        )
         return true
     }
 
-    /// Esc / ⌘W / address typing while a browser is active on this VT.
+    /// Esc / ⌘W / ⌘T / address typing while a browser is active on this VT.
     @discardableResult
     func handleBrowserKeys(_ event: NSEvent) -> Bool {
         // ⌘B works even before a browser exists on this VT.
         if handleOpenBrowserChord(event) { return true }
+        // ⌘T: new tab (opens browser if needed).
+        if isCommandChord(event, keyCode: BrowserKeyCode.t, char: "t") {
+            guard let i = manager?.activeIndex else { return false }
+            openNewBrowserTab(
+                url: URL(string: "about:blank"),
+                onVT: i,
+                activate: true,
+                editAddress: true
+            )
+            return true
+        }
         guard activeBrowser != nil, let i = manager?.activeIndex else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let editing = isBrowserAddressEditing
@@ -1649,8 +2028,25 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             return true
         }
         if isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
-            dismissBrowser(onVT: i)
+            // Close active tab; last tab dismisses the session.
+            if let session = browserSessionByVT[i] {
+                closeBrowserTab(onVT: i, tabIndex: session.activeTabIndex)
+            } else {
+                dismissBrowser(onVT: i)
+            }
             return true
+        }
+        // ⌘⌥← / ⌘⌥→ cycle tabs.
+        if flags.contains(.command), flags.contains(.option),
+           !flags.contains(.control) {
+            if event.keyCode == BrowserKeyCode.leftArrow || event.keyCode == BrowserKeyCode.rightArrow,
+               let session = browserSessionByVT[i], session.tabs.count > 1 {
+                let delta = event.keyCode == BrowserKeyCode.leftArrow ? -1 : 1
+                let n = session.tabs.count
+                let next = (session.activeTabIndex + delta + n) % n
+                activateBrowserTab(onVT: i, tabIndex: next)
+                return true
+            }
         }
         // ⌘R reload; ⇧⌘R hard reload (from origin).
         if isCommandChord(event, keyCode: BrowserKeyCode.r, char: "r", allowShift: true) {
@@ -1735,7 +2131,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         if event.keyCode == 123 { // left
             updateActiveBrowserChrome { chrome in
-                if flags.contains(.shift) {
+                if flags.contains(.command) {
+                    // ⌘← / ⇧⌘←: jump (or select) to start of address.
+                    chrome.caret = 0
+                    if !flags.contains(.shift) { chrome.selAnchor = 0 }
+                } else if flags.contains(.shift) {
                     chrome.caret = max(0, chrome.caret - 1)
                 } else if chrome.hasSelection {
                     chrome.caret = chrome.selLo
@@ -1749,7 +2149,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         if event.keyCode == 124 { // right
             updateActiveBrowserChrome { chrome in
-                if flags.contains(.shift) {
+                if flags.contains(.command) {
+                    // ⌘→ / ⇧⌘→: jump (or select) to end of address.
+                    chrome.caret = chrome.address.count
+                    if !flags.contains(.shift) { chrome.selAnchor = chrome.caret }
+                } else if flags.contains(.shift) {
                     chrome.caret = min(chrome.address.count, chrome.caret + 1)
                 } else if chrome.hasSelection {
                     chrome.caret = chrome.selHi
