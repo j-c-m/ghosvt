@@ -115,8 +115,7 @@ Bools: `true` / `yes` / `on` / `1`.
 | Binding | Action |
 |---------|--------|
 | **⌘1…⌘9** | Switch to VT 1…9 |
-| **⌘0** | VT 10 (if `vt-count` ≥ 10) |
-| **⌘F1…⌘F*n*** | Same |
+| **⌘F1…⌘F*n*** | Switch to VT 1…*n* |
 | **⌘← / ⌘→** | Previous / next VT |
 | **⌘Page Up** | Smooth scroll up (older history); accelerates while held |
 | **⌘Page Down** | Smooth scroll down (toward bottom); accelerates while held |
@@ -126,6 +125,9 @@ Bools: `true` / `yes` / `on` / `1`.
 | **⌘G** / **⇧⌘G** | Next / previous match (while search open) |
 | **Esc** / **⌘F** again | Close search (restores shell rows) |
 | **⌘B** | Open or focus embedded browser (when `embedded-browser = true`) |
+| **⌘+** / **⌘=** | Increase font size (1pt; Ghostty) |
+| **⌘-** | Decrease font size (1pt; Ghostty) |
+| **⌘0** | Reset font size to config (Ghostty; not VT 10) |
 | **⌘Q** | Quit |
 | **Shift+Enter** / **Alt+Enter** | Send LF (`\n`) — newline for apps like Grok Build |
 | **Enter** | Send CR (`\r`) (next match while search field focused) |

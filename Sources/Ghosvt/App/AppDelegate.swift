@@ -81,6 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         NSApp.terminate(nil)
                         return nil
                     }
+                    // Host chrome: font zoom applies to terminal + browser chrome rows.
+                    if view.handleFontSizeKeys(event) {
+                        return nil
+                    }
                     // Address bar (when editing) or app chords (Esc path is non-cmd).
                     if view.handleBrowserKeys(event) {
                         return nil
@@ -126,6 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return nil
                 }
                 if view.handleBrowserKeys(event) {
+                    return nil
+                }
+                if view.handleFontSizeKeys(event) {
                     return nil
                 }
                 if view.handleSearchKeys(event) {

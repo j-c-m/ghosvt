@@ -19,6 +19,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var lastCellH: UInt32 = 0
     private var lastScale: CGFloat = 0
     private var lastFontSize: CGFloat = 0
+    /// Font size from config before runtime zoom (⌘0 restores this).
+    private var originalFontSize: CGFloat?
     private var lastFrameTime: CFTimeInterval = 0
     private var scrollConfigApplied = false
     private var selecting = false
@@ -2556,6 +2558,70 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard let dir = KeyBridge.scrollPageDirection(from: event) else { return false }
         manager.active.scrollPageSmooth(direction: dir, isRepeat: event.isARepeat)
         return true
+    }
+
+    /// Ghostty macOS defaults: ⌘+/⌘= increase, ⌘- decrease (1pt), ⌘0 reset.
+    @discardableResult
+    func handleFontSizeKeys(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option)
+        else { return false }
+
+        let keyCode = event.keyCode
+        // US: 24 = `=`, 27 = `-`, 29 = `0`; keypad: 69 = `+`, 78 = `-`, 82 = `0`.
+        let chars = event.charactersIgnoringModifiers ?? ""
+        let increase =
+            keyCode == 24 || keyCode == 69
+            || chars == "=" || chars == "+"
+        let decrease =
+            keyCode == 27 || keyCode == 78
+            || chars == "-" || chars == "−"
+        let reset =
+            (keyCode == 29 || keyCode == 82 || chars == "0")
+            && !flags.contains(.shift)
+
+        if increase {
+            adjustFontSize(by: 1)
+            return true
+        }
+        if decrease {
+            adjustFontSize(by: -1)
+            return true
+        }
+        if reset {
+            resetFontSize()
+            return true
+        }
+        return false
+    }
+
+    /// Runtime font zoom (points). Clamped like Ghostty (1…255). Rebuilds metrics + VT size.
+    private func adjustFontSize(by delta: CGFloat) {
+        if originalFontSize == nil {
+            originalFontSize = config.fontSize
+        }
+        let next = min(255, max(1, config.fontSize + delta))
+        applyFontSize(next)
+    }
+
+    private func resetFontSize() {
+        let base = originalFontSize ?? config.fontSize
+        originalFontSize = base
+        applyFontSize(base)
+    }
+
+    private func applyFontSize(_ points: CGFloat) {
+        let next = min(255, max(1, points))
+        guard abs(next - config.fontSize) > 0.001 else { return }
+        config.fontSize = next
+        refreshMetrics(force: true)
+        applyResize()
+        if activeBrowser != nil {
+            layoutActiveBrowser()
+        }
     }
 
     override func flagsChanged(with event: NSEvent) {

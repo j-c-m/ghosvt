@@ -14,15 +14,15 @@ enum KeyBridge {
 
         let keyCode = event.keyCode
 
-        // Main keyboard 1–9,0
+        // Main keyboard 1–9 (⌘0 is font-size reset, Ghostty-style — not VT 10).
         let mainDigitKeys: [UInt16: Int] = [
             18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
-            22: 6, 26: 7, 28: 8, 25: 9, 29: 10,
+            22: 6, 26: 7, 28: 8, 25: 9,
         ]
-        // Numeric keypad 1–9,0
+        // Numeric keypad 1–9
         let padDigitKeys: [UInt16: Int] = [
             83: 1, 84: 2, 85: 3, 86: 4, 87: 5,
-            88: 6, 89: 7, 91: 8, 92: 9, 82: 10,
+            88: 6, 89: 7, 91: 8, 92: 9,
         ]
         if let n = mainDigitKeys[keyCode] ?? padDigitKeys[keyCode], n >= 1, n <= vtCount {
             return n - 1
@@ -32,9 +32,6 @@ enum KeyBridge {
             if ch >= "1", ch <= "9" {
                 let n = Int(ch.asciiValue! - UInt8(ascii: "0"))
                 if n >= 1, n <= vtCount { return n - 1 }
-            }
-            if ch == "0", vtCount >= 10 {
-                return 9
             }
         }
 
