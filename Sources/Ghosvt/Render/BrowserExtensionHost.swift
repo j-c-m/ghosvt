@@ -1,28 +1,53 @@
 import AppKit
-import WebKit
+import CryptoKit
+// Preconcurrency: WKWebExtension types are MainActor-annotated; this host is only
+// used from AppKit’s main thread (not from MTKView.draw).
+@preconcurrency import WebKit
 
-/// Process-wide `WKWebExtensionController` host: tab/window bridges, lifecycle events, auto-grant.
-///
-/// **Window model:** each VT with a browser session is one `WKWebExtensionWindow`.
-/// **openNewWindow policy:** prefer a free VT (no browser); if none, open tabs on the
-/// active VT. There is no second `NSWindow` — fullscreen single-window host.
+/// Process-wide `WKWebExtensionController` host: tab/window bridges, lifecycle, auto-grant.
+/// Main thread only. Loads installed Safari web-extension appexes via `appExtensionBundle`.
+/// Base scheme `safari-web-extension://` so packages see Safari flavor without patching.
 @available(macOS 15.4, *)
-@MainActor
 final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     static let shared = BrowserExtensionHost()
     static let maxTabsPerWindow = 8
 
-    /// Stable id so extension storage survives relaunches.
+    /// Stable controller storage partition (extension storage / site data).
     private static let configUUID = UUID(uuidString: "A7B3C9D1-4E5F-6789-ABCD-EF0123456789")!
+    /// Safari package base scheme (must be registered via `MatchPattern` first).
+    private static let extensionBaseScheme = "safari-web-extension"
 
     private(set) lazy var controller: WKWebExtensionController = {
+        WKWebExtension.MatchPattern.registerCustomURLScheme(Self.extensionBaseScheme)
         let conf = WKWebExtensionController.Configuration(identifier: Self.configUUID)
+        conf.defaultWebsiteDataStore = .default()
+        let baseWV = WKWebViewConfiguration()
+        baseWV.websiteDataStore = .default()
+        conf.webViewConfiguration = baseWV
         let c = WKWebExtensionController(configuration: conf)
         c.delegate = self
         return c
     }()
 
     private var windowsByVT: [Int: ExtensionWindowBridge] = [:]
+    /// Loaded extension contexts.
+    private(set) var loadedContexts: [WKWebExtensionContext] = []
+    /// Bundle IDs (or resource keys) already loaded — avoid double-load.
+    private var loadedKeys: Set<String> = []
+    private var extensionLoadStarted = false
+
+    /// Discovered Safari Web Extension on disk.
+    struct DiscoveredExtension: Equatable {
+        var path: URL
+        var bundleIdentifier: String
+        var displayName: String
+    }
+
+    /// One toolbar action from a loaded extension (manifest `action`).
+    struct ToolbarItem {
+        let context: WKWebExtensionContext
+        let action: WKWebExtension.Action
+    }
 
     /// UI callbacks set by `MetalTerminalView` once.
     struct UIHooks {
@@ -41,9 +66,28 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         var contentFrameInScreen: (Int) -> CGRect
         /// Whether the host app window is in fullscreen (for windowState).
         var isAppFullscreen: () -> Bool
+        /// Present extension action popup (NSPopover) relative to chrome.
+        var presentActionPopup: (WKWebExtension.Action, @escaping ((any Error)?) -> Void) -> Void
+        /// Icon/badge/title changed — refresh address-bar action buttons.
+        var onActionDidUpdate: () -> Void
     }
 
     var ui: UIHooks?
+
+    /// Actions for the active tab on `vt` (or default actions if no tab).
+    func toolbarItems(forVT vt: Int) -> [ToolbarItem] {
+        let tab = windowsByVT[vt]?.activeTab
+        return loadedContexts.compactMap { ctx in
+            guard let action = ctx.action(for: tab) else { return nil }
+            return ToolbarItem(context: ctx, action: action)
+        }
+    }
+
+    /// User clicked a toolbar action — marks user gesture; may open popup via delegate.
+    func performToolbarItem(_ item: ToolbarItem, forVT vt: Int) {
+        let tab = windowsByVT[vt]?.activeTab
+        item.context.performAction(for: tab)
+    }
 
     // MARK: - Logging
 
@@ -82,6 +126,243 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         config.webExtensionController = controller
     }
 
+    // MARK: - Discover & load Safari Web Extensions
+
+    /// Discover installed Safari Web Extensions (`.appex` under `/Applications`) and load them.
+    /// Idempotent; call when the embedded browser first opens (not at app launch).
+    /// Settings storage is ghosvt-local (not shared with Safari).
+    func loadBundledExtensionsIfNeeded() {
+        guard !extensionLoadStarted else { return }
+        extensionLoadStarted = true
+        DispatchQueue.main.async { [weak self] in
+            self?.startExtensionLoadPipeline()
+        }
+    }
+
+    private func startExtensionLoadPipeline() {
+        _ = controller // register schemes
+        let discovered = Self.discoverSafariWebExtensions()
+        fputs("ghosvt: webext discovered \(discovered.count)\n", stderr)
+        Task { [weak self] in
+            guard let self else { return }
+            for item in discovered {
+                await self.loadDiscoveredExtension(item)
+            }
+            DispatchQueue.main.async {
+                self.ui?.onActionDidUpdate()
+            }
+        }
+    }
+
+    /// Scan `/Applications` and `~/Applications` for Safari Web Extension appexes.
+    static func discoverSafariWebExtensions() -> [DiscoveredExtension] {
+        let fm = FileManager.default
+        var appRoots: [URL] = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true),
+        ]
+        if let urls = fm.urls(for: .applicationDirectory, in: .localDomainMask).first {
+            appRoots.append(urls)
+        }
+        if let urls = fm.urls(for: .applicationDirectory, in: .userDomainMask).first {
+            appRoots.append(urls)
+        }
+
+        var seen = Set<String>()
+        var results: [DiscoveredExtension] = []
+
+        for root in appRoots {
+            guard let apps = try? fm.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for appURL in apps where appURL.pathExtension == "app" {
+                let plugins = appURL
+                    .appendingPathComponent("Contents", isDirectory: true)
+                    .appendingPathComponent("PlugIns", isDirectory: true)
+                guard let plugs = try? fm.contentsOfDirectory(
+                    at: plugins,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
+
+                for plug in plugs where plug.pathExtension == "appex" {
+                    guard let meta = safariWebExtensionMetadata(at: plug),
+                          seen.insert(meta.bundleIdentifier).inserted
+                    else { continue }
+                    results.append(meta)
+                }
+            }
+        }
+
+        results.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        return results
+    }
+
+    private static let safariWebExtensionPoint = "com.apple.Safari.web-extension"
+
+    private static func safariWebExtensionMetadata(at appexURL: URL) -> DiscoveredExtension? {
+        guard let bundle = Bundle(url: appexURL),
+              let info = bundle.infoDictionary,
+              let nsExt = info["NSExtension"] as? [String: Any],
+              let point = nsExt["NSExtensionPointIdentifier"] as? String,
+              point == safariWebExtensionPoint
+        else { return nil }
+
+        // Prefer packages that actually ship a web extension manifest.
+        let manifest = appexURL
+            .appendingPathComponent("Contents/Resources/manifest.json")
+        guard FileManager.default.fileExists(atPath: manifest.path) else { return nil }
+
+        let bid = bundle.bundleIdentifier
+            ?? info["CFBundleIdentifier"] as? String
+            ?? appexURL.lastPathComponent
+        let name = (info["CFBundleDisplayName"] as? String)
+            ?? (info["CFBundleName"] as? String)
+            ?? appexURL.deletingPathExtension().lastPathComponent
+        return DiscoveredExtension(
+            path: appexURL,
+            bundleIdentifier: bid,
+            displayName: name
+        )
+    }
+
+    private func loadDiscoveredExtension(_ item: DiscoveredExtension) async {
+        let key = item.bundleIdentifier
+        if loadedKeys.contains(key) { return }
+
+        guard let bundle = Bundle(url: item.path) else {
+            fputs("ghosvt: webext cannot open \(item.path.path)\n", stderr)
+            return
+        }
+
+        let package: WKWebExtension
+        do {
+            package = try await WKWebExtension(appExtensionBundle: bundle)
+        } catch {
+            fputs(
+                "ghosvt: webext load failed \(item.displayName): \(error.localizedDescription)\n",
+                stderr
+            )
+            return
+        }
+
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async {
+                self.finishLoading(package, key: key, stableSeed: key)
+                cont.resume()
+            }
+        }
+    }
+
+    /// Register package with stable `safari-web-extension://` identity and grants.
+    private func finishLoading(
+        _ extensionPackage: WKWebExtension,
+        key: String,
+        stableSeed: String
+    ) {
+        if loadedKeys.contains(key) { return }
+        _ = controller
+
+        let id = Self.stableExtensionUUID(from: stableSeed).uuidString.lowercased()
+        let context = WKWebExtensionContext(for: extensionPackage)
+        context.uniqueIdentifier = id
+        context.baseURL = URL(string: "\(Self.extensionBaseScheme)://\(id)/")!
+        Self.grantAllRequested(on: context)
+
+        do {
+            try controller.load(context)
+        } catch {
+            fputs(
+                "ghosvt: webext controller.load failed [\(key)]: \(error.localizedDescription)\n",
+                stderr
+            )
+            return
+        }
+
+        loadedContexts.append(context)
+        loadedKeys.insert(key)
+
+        let name = extensionPackage.displayName ?? key
+        fputs(
+            "ghosvt: webext loaded \(name) v\(extensionPackage.displayVersion ?? "?") "
+                + "com=\(key) id=\(id) dnr=\(context.hasContentModificationRules)\n",
+            stderr
+        )
+        ui?.onActionDidUpdate()
+
+        context.loadBackgroundContent { [weak self] error in
+            if let error {
+                fputs(
+                    "ghosvt: webext background [\(key)]: \(error.localizedDescription)\n",
+                    stderr
+                )
+            }
+            self?.ui?.onActionDidUpdate()
+        }
+    }
+
+    /// Deterministic UUID from a stable string (bundle id or fixed seed).
+    private static func stableExtensionUUID(from seed: String) -> UUID {
+        var hasher = SHA256()
+        hasher.update(data: Data("ghosvt.webext.v1:".utf8))
+        hasher.update(data: Data(seed.utf8))
+        let digest = hasher.finalize()
+        var bytes = Array(digest.prefix(16))
+        // RFC 4122 version 4 / variant 1 bits (still deterministic).
+        bytes[6] = (bytes[6] & 0x0F) | 0x40
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
+
+    private static func grantAllRequested(on context: WKWebExtensionContext) {
+        let ext = context.webExtension
+        var perms: [WKWebExtension.Permission: Date] = [:]
+        for p in ext.requestedPermissions {
+            perms[p] = .distantFuture
+        }
+        // Ensure DNR + storage even if not listed as requested under some parsers.
+        for extra: WKWebExtension.Permission in [
+            .activeTab,
+            .alarms,
+            .declarativeNetRequest,
+            .declarativeNetRequestWithHostAccess,
+            .scripting,
+            .storage,
+            .unlimitedStorage,
+            .tabs,
+        ] {
+            perms[extra] = .distantFuture
+        }
+        context.grantedPermissions = perms
+        // Also set via status API so `browser.permissions` / runtime checks stay in sync.
+        for p in perms.keys {
+            context.setPermissionStatus(.grantedExplicitly, for: p, expirationDate: nil)
+        }
+
+        var patterns: [WKWebExtension.MatchPattern: Date] = [:]
+        for p in ext.requestedPermissionMatchPatterns {
+            patterns[p] = .distantFuture
+        }
+        let patternStrings = ["*://*/*", "<all_urls>", "http://*/*", "https://*/*", "*://*/*/*"]
+        for s in patternStrings {
+            if let pat = try? WKWebExtension.MatchPattern(string: s) {
+                patterns[pat] = .distantFuture
+            }
+        }
+        context.grantedPermissionMatchPatterns = patterns
+        for pat in patterns.keys {
+            context.setPermissionStatus(.grantedExplicitly, for: pat, expirationDate: nil)
+        }
+    }
+
     // MARK: - Registry / lifecycle
 
     @discardableResult
@@ -93,7 +374,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         if ui?.activeVTIndex() == vtIndex {
             controller.didFocusWindow(window)
         }
-        fputs("ghosvt: webext window open vt=\(vtIndex)\n", stderr)
         return window
     }
 
@@ -113,7 +393,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             window.activeTabIndex = index
             controller.didActivateTab(tab, previousActiveTab: previous === tab ? nil : previous)
         }
-        fputs("ghosvt: webext tab open vt=\(vtIndex) index=\(index) tabs=\(window.tabs.count)\n", stderr)
         return tab
     }
 
@@ -155,7 +434,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             if ui?.activeVTIndex() == vtIndex {
                 controller.didFocusWindow(focusedWindow())
             }
-            fputs("ghosvt: webext window close vt=\(vtIndex)\n", stderr)
             return
         }
         if window.activeTabIndex >= window.tabs.count {
@@ -170,7 +448,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         if wasActive, let active = window.activeTab {
             controller.didActivateTab(active, previousActiveTab: nil)
         }
-        fputs("ghosvt: webext tab close vt=\(vtIndex) tabs=\(window.tabs.count)\n", stderr)
     }
 
     func unregister(vtIndex: Int) {
@@ -182,7 +459,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         if ui?.activeVTIndex() == vtIndex {
             controller.didFocusWindow(focusedWindow())
         }
-        fputs("ghosvt: webext window close vt=\(vtIndex)\n", stderr)
     }
 
     func focusChanged(toVT index: Int) {
@@ -268,10 +544,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(tab, nil)
         } else if let active = window?.activeTab {
             // Cap hit: navigate active tab instead of growing past max.
-            fputs(
-                "ghosvt: webext openNewTab cap on vt=\(vt); navigating active tab\n",
-                stderr
-            )
             if let url = configuration.url {
                 active.notePendingLoad(url)
                 active.browser?.load(url: url)
@@ -292,12 +564,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             completionHandler(nil, Self.unsupportedError("no UI host"))
             return
         }
-        if configuration.shouldBePrivate {
-            Self.logUnsupported(
-                "openNewWindow private",
-                detail: "private windows not supported; opening normal"
-            )
-        }
 
         let urls = configuration.tabURLs.isEmpty
             ? [URL(string: "about:blank")!]
@@ -308,10 +574,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         if let free {
             vt = free
             usedFreeVT = true
-            fputs(
-                "ghosvt: webext openNewWindow → free vt=\(vt) tabs=\(urls.count)\n",
-                stderr
-            )
             ui.openOrNavigate(urls[0], vt)
             for extra in urls.dropFirst() {
                 ui.openNewTab(extra, vt)
@@ -320,10 +582,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
             // No free VT: map "window" to new tab(s) on the active VT.
             vt = ui.activeVTIndex()
             usedFreeVT = false
-            fputs(
-                "ghosvt: webext openNewWindow → no free VT; tabs on active vt=\(vt) count=\(urls.count)\n",
-                stderr
-            )
             for url in urls {
                 ui.openNewTab(url, vt)
             }
@@ -331,13 +589,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
         if configuration.shouldBeFocused || usedFreeVT {
             ui.focusVT(vt)
-        }
-        // Frame from configuration is ignored (fullscreen host owns geometry).
-        if configuration.frame != .null, configuration.frame != .zero {
-            Self.logUnsupported(
-                "openNewWindow frame",
-                detail: "ignored \(NSStringFromRect(configuration.frame))"
-            )
         }
 
         if let window = windowsByVT[vt] {
@@ -371,10 +622,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.Permission>, Date?) -> Void
     ) {
-        fputs(
-            "ghosvt: webext auto-grant permissions count=\(permissions.count) ext=\(extensionContext.uniqueIdentifier)\n",
-            stderr
-        )
         completionHandler(permissions, nil)
     }
 
@@ -385,10 +632,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<URL>, Date?) -> Void
     ) {
-        fputs(
-            "ghosvt: webext auto-grant URL access count=\(urls.count) ext=\(extensionContext.uniqueIdentifier)\n",
-            stderr
-        )
         completionHandler(urls, nil)
     }
 
@@ -399,10 +642,6 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.MatchPattern>, Date?) -> Void
     ) {
-        fputs(
-            "ghosvt: webext auto-grant match patterns count=\(matchPatterns.count) ext=\(extensionContext.uniqueIdentifier)\n",
-            stderr
-        )
         completionHandler(matchPatterns, nil)
     }
 
@@ -412,7 +651,11 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for context: WKWebExtensionContext,
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
-        completionHandler(Self.unsupportedError("action popup not implemented"))
+        guard let present = ui?.presentActionPopup else {
+            completionHandler(Self.unsupportedError("action popup: no UI host"))
+            return
+        }
+        present(action, completionHandler)
     }
 
     func webExtensionController(
@@ -420,12 +663,10 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         didUpdate action: WKWebExtension.Action,
         forExtensionContext context: WKWebExtensionContext
     ) {
-        // No toolbar chrome yet; log so badge/title changes are visible while debugging.
-        fputs(
-            "ghosvt: webext action update ext=\(context.uniqueIdentifier)\n",
-            stderr
-        )
+        ui?.onActionDidUpdate()
     }
+
+    // MARK: - Native messaging (unsupported)
 
     func webExtensionController(
         _ controller: WKWebExtensionController,
@@ -434,12 +675,7 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         replyHandler: @escaping (Any?, (any Error)?) -> Void
     ) {
-        replyHandler(
-            nil,
-            Self.unsupportedError(
-                "native messaging not implemented\(applicationIdentifier.map { " app=\($0)" } ?? "")"
-            )
-        )
+        replyHandler(nil, Self.unsupportedError("native messaging is not supported"))
     }
 
     func webExtensionController(
@@ -448,14 +684,14 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping ((any Error)?) -> Void
     ) {
-        completionHandler(Self.unsupportedError("native messaging ports not implemented"))
+        completionHandler(Self.unsupportedError("native messaging is not supported"))
     }
+
 }
 
 // MARK: - Window
 
 @available(macOS 15.4, *)
-@MainActor
 final class ExtensionWindowBridge: NSObject, WKWebExtensionWindow {
     weak var host: BrowserExtensionHost?
     let vtIndex: Int
@@ -574,7 +810,6 @@ final class ExtensionWindowBridge: NSObject, WKWebExtensionWindow {
 // MARK: - Tab
 
 @available(macOS 15.4, *)
-@MainActor
 final class ExtensionTabBridge: NSObject, WKWebExtensionTab {
     weak var host: BrowserExtensionHost?
     weak var windowBridge: ExtensionWindowBridge?
@@ -830,14 +1065,10 @@ final class ExtensionTabBridge: NSObject, WKWebExtensionTab {
             return
         }
         let url = configuration.url ?? webView?.url
-        let before = windowBridge?.tabs.count ?? 0
         ui.openNewTab(url, vt)
         let tab = host.window(forVT: vt)?.tabs.last
         if let tab {
             tab.parentTabRef = self
-            if (host.window(forVT: vt)?.tabs.count ?? 0) <= before {
-                fputs("ghosvt: webext duplicate hit tab cap vt=\(vt)\n", stderr)
-            }
             completionHandler(tab, nil)
         } else {
             completionHandler(nil, BrowserExtensionHost.unsupportedError("failed to duplicate tab"))
@@ -876,12 +1107,7 @@ final class ExtensionTabBridge: NSObject, WKWebExtensionTab {
         }
         webView.takeSnapshot(with: configuration) { image, error in
             DispatchQueue.main.async {
-                if let error {
-                    fputs("ghosvt: webext takeSnapshot error: \(error.localizedDescription)\n", stderr)
-                    completionHandler(nil, error)
-                } else {
-                    completionHandler(image, nil)
-                }
+                completionHandler(image, error)
             }
         }
     }

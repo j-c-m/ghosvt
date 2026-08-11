@@ -3,6 +3,7 @@ import CGhosttyVT
 import Metal
 import MetalKit
 import QuartzCore
+import WebKit
 
 final class MetalTerminalView: MTKView, NSMenuItemValidation {
     var manager: VtManager?
@@ -73,13 +74,21 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var browserAddressDragging = false
     /// Local monitor: end address edit only on real page clicks (not hover).
     private var browserPageClickMonitor: Any?
+    /// Extension action buttons overlaid on the address bar (after ← →, before URL).
+    private var extensionActionButtons: [NSButton] = []
+    /// Anchor for the last presented extension popup (for positioning).
+    private weak var extensionPopupAnchor: NSView?
+    private var openExtensionPopover: NSPopover?
+    /// Cached toolbar slot count — never call MainActor/WebKit host from `draw`.
+    private var cachedExtensionActionCount = 0
     /// ⌘-hover link underline (shell viewport coords).
     private var linkHover: TerminalRenderer.LinkHoverRange?
     /// Last cell used for link-hover resolve (skip full scan while stationary).
     private var lastLinkHoverCell: (col: Int, row: Int)?
     private var trackingArea: NSTrackingArea?
-    private var focusObservers: [NSObjectProtocol] = []
-    private var workspaceObservers: [NSObjectProtocol] = []
+    /// Focus/screen observers use selector-based `NotificationCenter` registration on `self`.
+    private var focusObserversInstalled = false
+    private var workspaceObserversInstalled = false
     /// Last logged display range (minInterval, maxInterval, maxFps); skip repeat logs.
     private var lastLoggedDisplay: (minI: CFTimeInterval, maxI: CFTimeInterval, fps: Int)?
 
@@ -263,6 +272,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             },
             isAppFullscreen: { [weak self] in
                 self?.window?.styleMask.contains(.fullScreen) == true
+            },
+            presentActionPopup: { [weak self] action, completion in
+                self?.presentExtensionActionPopup(action, completion: completion)
+            },
+            onActionDidUpdate: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.refreshExtensionToolbarCacheAndButtons()
+                }
             }
         )
     }
@@ -382,87 +399,97 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     private func removeFocusObservers() {
-        for o in focusObservers {
-            NotificationCenter.default.removeObserver(o)
-        }
-        focusObservers.removeAll()
+        guard focusObserversInstalled else { return }
+        let nc = NotificationCenter.default
+        nc.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        nc.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        nc.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
+        focusObserversInstalled = false
     }
 
     private func removeWorkspaceObservers() {
+        guard workspaceObserversInstalled else { return }
         let nc = NSWorkspace.shared.notificationCenter
-        for o in workspaceObservers {
-            nc.removeObserver(o)
-        }
-        workspaceObservers.removeAll()
+        nc.removeObserver(self, name: NSWorkspace.screensDidSleepNotification, object: nil)
+        nc.removeObserver(self, name: NSWorkspace.screensDidWakeNotification, object: nil)
+        nc.removeObserver(self, name: NSWorkspace.didWakeNotification, object: nil)
+        workspaceObserversInstalled = false
     }
 
     private func installFocusObservers() {
         removeFocusObservers()
         guard let window else { return }
         let nc = NotificationCenter.default
-        // Capture manager weakly via view; notifications are main-queue.
-        focusObservers.append(nc.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.manager?.active.encodeFocus(gained: true)
-            }
-        })
-        focusObservers.append(nc.addObserver(
-            forName: NSWindow.didResignKeyNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.manager?.active.encodeFocus(gained: false)
-            }
-        })
-        // Fullscreen move / drag to another display: scale, grid, VRR.
-        focusObservers.append(nc.addObserver(
-            forName: NSWindow.didChangeScreenNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.rebindDisplay()
-            }
-        })
+        // Selector observers stay on the main actor (MTKView); avoid @Sendable block captures.
+        nc.addObserver(
+            self,
+            selector: #selector(handleWindowDidBecomeKey),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
+        nc.addObserver(
+            self,
+            selector: #selector(handleWindowDidResignKey),
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+        nc.addObserver(
+            self,
+            selector: #selector(handleWindowDidChangeScreen),
+            name: NSWindow.didChangeScreenNotification,
+            object: window
+        )
+        focusObserversInstalled = true
     }
 
     private func installWorkspaceObservers() {
         removeWorkspaceObservers()
         let nc = NSWorkspace.shared.notificationCenter
         // Pause only when displays actually sleep — not willSleep (can cancel).
-        workspaceObservers.append(nc.addObserver(
-            forName: NSWorkspace.screensDidSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.isPaused = true
-            }
-        })
+        nc.addObserver(
+            self,
+            selector: #selector(handleScreensDidSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
         // Both wake paths may fire; resumeAfterSleep gates on isPaused.
-        workspaceObservers.append(nc.addObserver(
-            forName: NSWorkspace.screensDidWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.resumeAfterSleep()
-            }
-        })
-        workspaceObservers.append(nc.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.resumeAfterSleep()
-            }
-        })
+        nc.addObserver(
+            self,
+            selector: #selector(handleScreensDidWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+        nc.addObserver(
+            self,
+            selector: #selector(handleSystemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        workspaceObserversInstalled = true
+    }
+
+    @objc private func handleWindowDidBecomeKey(_ note: Notification) {
+        manager?.active.encodeFocus(gained: true)
+    }
+
+    @objc private func handleWindowDidResignKey(_ note: Notification) {
+        manager?.active.encodeFocus(gained: false)
+    }
+
+    @objc private func handleWindowDidChangeScreen(_ note: Notification) {
+        rebindDisplay()
+    }
+
+    @objc private func handleScreensDidSleep(_ note: Notification) {
+        isPaused = true
+    }
+
+    @objc private func handleScreensDidWake(_ note: Notification) {
+        resumeAfterSleep()
+    }
+
+    @objc private func handleSystemDidWake(_ note: Notification) {
+        resumeAfterSleep()
     }
 
     /// Adaptive-Sync + HiDPI metrics + resize all live VTs (SIGWINCH).
@@ -638,7 +665,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 tabActiveStartCol: strip?.activeStart ?? -1,
                 tabActiveEndCol: strip?.activeEnd ?? -1
             )
+            // Frames only — host is not queried on the paint path.
+            layoutExtensionActionButtons(layout: bar)
         } else {
+            hideExtensionActionButtons()
             renderer.draw(
                 session: manager.active,
                 metrics: metrics,
@@ -1275,6 +1305,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         var closeCol: Int
         var urlStart: Int
         var urlEnd: Int // exclusive
+        /// Extension action columns (after ← →, before URL); empty if none loaded.
+        var actionCols: [Int] = []
         /// Char index of the first visible address character (matches paint).
         var visibleStart: Int = 0
         /// Selection in bar columns (absolute); invalid when `selEndCol <= selStartCol`.
@@ -1356,6 +1388,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             break
         case "about":
             return trimmed
+        case "safari-web-extension", "webkit-extension":
+            // e.g. …/dashboard.html → "dashboard"
+            let last = url.pathComponents.last ?? "extension"
+            if last.hasSuffix(".html") {
+                return String(last.dropLast(5))
+            }
+            return last.isEmpty ? "extension" : last
         case "data":
             return "data:…"
         case "blob":
@@ -1376,7 +1415,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return scheme == "http" ? "http://\(host)" : host
     }
 
-    /// `← →  <url…>                    ×` — stolen top terminal row.
+    /// Count of extension action slots for the active browser VT (0 if none / old macOS).
+    /// Uses cache only — safe from `draw` / HUD layout.
+    private func extensionActionSlotCount() -> Int {
+        guard activeBrowser != nil else { return 0 }
+        return cachedExtensionActionCount
+    }
+
+    /// `← →  [ext…]  <url…>                    ×` — stolen top terminal row.
     private func browserHUDLayout(cols: Int) -> BrowserHUDLayout {
         let chrome = activeBrowserChrome ?? VTBrowserChrome()
         guard cols > 0 else {
@@ -1388,12 +1434,21 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let backCol = 0
         let forwardCol = 2
         let closeCol = cols - 1
-        // URL band starts after nav arrows.
-        let urlStart = 4
+        // After ← →, then one cell per extension action, then URL.
+        // Layout: 0=←  2=→  4..=actions  then URL … close.
+        let actionCount = min(extensionActionSlotCount(), max(0, closeCol - 5))
+        var actionCols: [Int] = []
+        if actionCount > 0 {
+            for i in 0..<actionCount {
+                actionCols.append(4 + i)
+            }
+        }
+        let urlStart = actionCount > 0 ? (4 + actionCount + 1) : 4
         let urlEnd = max(urlStart, closeCol)
         var cells = Array(repeating: " ", count: cols)
         if cols > 0 { cells[backCol] = chrome.canGoBack ? "←" : "·" }
         if cols > 2 { cells[forwardCol] = chrome.canGoForward ? "→" : "·" }
+        // Action slots left blank (NSButton overlay paints the real icon).
         if cols > 0 { cells[closeCol] = "×" }
         let urlBudget = max(0, urlEnd - urlStart)
         // Idle: pretty shortened URL (display only). Editing: full raw address for typing.
@@ -1467,6 +1522,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 closeCol: closeCol,
                 urlStart: urlStart,
                 urlEnd: urlEnd,
+                actionCols: actionCols,
                 visibleStart: visibleStart,
                 selStartCol: selStartCol,
                 selEndCol: selEndCol
@@ -1482,11 +1538,19 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             closeCol: closeCol,
             urlStart: urlStart,
             urlEnd: urlEnd,
+            actionCols: actionCols,
             visibleStart: visibleStart
         )
     }
 
+    /// Discover/load Safari web extensions on first browser open (not at app launch).
+    private func ensureBrowserExtensionsLoaded() {
+        guard #available(macOS 15.4, *) else { return }
+        BrowserExtensionHost.shared.loadBundledExtensionsIfNeeded()
+    }
+
     private func openBrowser(url: URL, onVT index: Int) {
+        ensureBrowserExtensionsLoaded()
         ensureSearchSlots()
         guard index >= 0, index < browserSessionByVT.count else { return }
         clearLinkHover()
@@ -1524,6 +1588,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         activate: Bool,
         editAddress: Bool
     ) -> EmbeddedBrowserView? {
+        ensureBrowserExtensionsLoaded()
         ensureSearchSlots()
         guard index >= 0, index < browserSessionByVT.count else { return nil }
         clearLinkHover()
@@ -1573,6 +1638,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 browser.focusWebContent()
             }
         }
+        refreshExtensionToolbarCacheAndButtons()
         return browser
     }
 
@@ -1844,6 +1910,164 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return min(chrome.address.count, max(0, bar.visibleStart + vis))
     }
 
+    // MARK: - Extension action chrome (after ← →, before URL)
+
+    /// Frame of a full-grid cell in view coordinates (AppKit bottom-left origin).
+    private func fullGridCellFrame(col: Int, row: Int) -> CGRect? {
+        guard let metrics, let full = fullGridSize(),
+              col >= 0, row >= 0,
+              col < Int(full.cols), row < Int(full.rows)
+        else { return nil }
+        let content = contentRectPoints()
+        let x = content.minX + pad + CGFloat(col) * metrics.cellWidth
+        // contentRect uses top-left-style minY (see fullGridCell); match that.
+        let yFromTopTop = content.minY + pad + CGFloat(row) * metrics.cellHeight
+        let y = bounds.height - (yFromTopTop + metrics.cellHeight)
+        return CGRect(
+            x: x,
+            y: y,
+            width: metrics.cellWidth,
+            height: metrics.cellHeight
+        )
+    }
+
+    private func hideExtensionActionButtons() {
+        for b in extensionActionButtons {
+            b.isHidden = true
+        }
+    }
+
+    /// Query host + rebuild button images (not from `draw`).
+    private func refreshExtensionToolbarCacheAndButtons() {
+        guard #available(macOS 15.4, *), activeBrowser != nil,
+              let vt = manager?.activeIndex
+        else {
+            cachedExtensionActionCount = 0
+            hideExtensionActionButtons()
+            return
+        }
+        let items = BrowserExtensionHost.shared.toolbarItems(forVT: vt)
+        cachedExtensionActionCount = items.count
+        ensureExtensionActionButtonCount(items.count)
+        let bar = browserHUDLayout(cols: max(1, Int(lastCols)))
+        let cols = bar.actionCols
+        for (i, btn) in extensionActionButtons.enumerated() {
+            guard i < items.count, i < cols.count,
+                  let frame = fullGridCellFrame(col: cols[i], row: 0)
+            else {
+                btn.isHidden = true
+                continue
+            }
+            let item = items[i]
+            let action = item.action
+            let size = CGSize(width: max(16, frame.width), height: max(16, frame.height))
+            btn.image = action.icon(for: size)
+            btn.isEnabled = action.isEnabled
+            btn.isHidden = false
+            btn.tag = i
+            let badge = action.badgeText
+            var tip = action.label
+            if !badge.isEmpty {
+                tip = tip.isEmpty ? badge : "\(tip) (\(badge))"
+            }
+            btn.toolTip = tip.isEmpty ? item.context.webExtension.displayName : tip
+            let inset = max(1, min(frame.width, frame.height) * 0.1)
+            btn.frame = frame.insetBy(dx: inset, dy: inset)
+        }
+        for i in items.count..<extensionActionButtons.count {
+            extensionActionButtons[i].isHidden = true
+        }
+    }
+
+    /// Reposition existing buttons only (paint path / layout).
+    private func layoutExtensionActionButtons(layout: BrowserHUDLayout) {
+        guard activeBrowser != nil else {
+            hideExtensionActionButtons()
+            return
+        }
+        let cols = layout.actionCols
+        for (i, btn) in extensionActionButtons.enumerated() {
+            guard i < cachedExtensionActionCount, i < cols.count,
+                  let frame = fullGridCellFrame(col: cols[i], row: 0)
+            else {
+                btn.isHidden = true
+                continue
+            }
+            let inset = max(1, min(frame.width, frame.height) * 0.1)
+            btn.frame = frame.insetBy(dx: inset, dy: inset)
+            btn.isHidden = false
+        }
+    }
+
+    private func ensureExtensionActionButtonCount(_ n: Int) {
+        while extensionActionButtons.count < n {
+            let btn = NSButton(frame: .zero)
+            btn.isBordered = false
+            btn.imagePosition = .imageOnly
+            btn.imageScaling = .scaleProportionallyDown
+            btn.setButtonType(.momentaryChange)
+            btn.focusRingType = .none
+            btn.wantsLayer = true
+            btn.layer?.backgroundColor = NSColor.clear.cgColor
+            btn.target = self
+            btn.action = #selector(extensionActionButtonClicked(_:))
+            addSubview(btn)
+            extensionActionButtons.append(btn)
+        }
+    }
+
+    @objc private func extensionActionButtonClicked(_ sender: NSButton) {
+        performExtensionAction(at: sender.tag, anchorCol: nil, anchorView: sender)
+    }
+
+    private func performExtensionAction(
+        at index: Int,
+        anchorCol: Int?,
+        anchorView: NSView? = nil
+    ) {
+        guard #available(macOS 15.4, *), let vt = manager?.activeIndex else { return }
+        let items = BrowserExtensionHost.shared.toolbarItems(forVT: vt)
+        guard index >= 0, index < items.count else { return }
+        if let anchorView {
+            extensionPopupAnchor = anchorView
+        } else if let col = anchorCol,
+                  let frame = fullGridCellFrame(col: col, row: 0) {
+            ensureExtensionActionButtonCount(index + 1)
+            extensionActionButtons[index].frame = frame
+            extensionPopupAnchor = extensionActionButtons[index]
+        }
+        BrowserExtensionHost.shared.performToolbarItem(items[index], forVT: vt)
+    }
+
+    @available(macOS 15.4, *)
+    private func presentExtensionActionPopup(
+        _ action: WKWebExtension.Action,
+        completion: @escaping ((any Error)?) -> Void
+    ) {
+        guard action.presentsPopup else {
+            completion(BrowserExtensionHost.unsupportedError("action has no popup"))
+            return
+        }
+        // Access popupWebView so WebKit starts loading the action page.
+        guard action.popupWebView != nil else {
+            completion(BrowserExtensionHost.unsupportedError("action has no popup webView"))
+            return
+        }
+        guard let popover = action.popupPopover else {
+            completion(BrowserExtensionHost.unsupportedError("action has no popup popover"))
+            return
+        }
+        let anchor = extensionPopupAnchor
+            ?? extensionActionButtons.first(where: { !$0.isHidden })
+            ?? self
+        openExtensionPopover?.close()
+        openExtensionPopover = popover
+        popover.behavior = .transient
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+        action.hasUnreadBadgeText = false
+        completion(nil)
+    }
+
     /// Drag-extend selection while mouse is down in the address bar.
     private func handleBrowserAddressDrag(_ event: NSEvent) {
         guard browserAddressDragging, isBrowserAddressEditing else { return }
@@ -1913,6 +2137,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if cell.col == bar.forwardCol {
             endBrowserAddressEdit(focusWeb: false)
             activeBrowser?.goForward()
+            return true
+        }
+        if bar.actionCols.contains(cell.col) {
+            endBrowserAddressEdit(focusWeb: false)
+            if let idx = bar.actionCols.firstIndex(of: cell.col) {
+                performExtensionAction(at: idx, anchorCol: cell.col)
+            }
             return true
         }
         if cell.col == bar.closeCol {
