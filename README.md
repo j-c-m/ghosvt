@@ -179,4 +179,6 @@ Refresh embedded fonts:
 
 ## License
 
-App code: TBD. libghostty-vt: Ghostty project license.
+ghosvt is **[MIT](LICENSE.md)**
+
+Vendored **libghostty-vt** remains under the [Ghostty project license](https://github.com/ghostty-org/ghostty/blob/main/LICENSE).
