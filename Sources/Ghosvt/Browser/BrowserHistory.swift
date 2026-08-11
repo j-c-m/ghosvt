@@ -15,11 +15,19 @@ final class BrowserHistory: @unchecked Sendable {
         var lastVisit: Date
     }
 
+    /// Soft cap; oldest by last_visit drop first.
+    private static let maxEntries = 10_000
+    /// Drop visits older than this (seconds).
+    private static let maxAge: TimeInterval = 180 * 24 * 60 * 60
+
     private let queue = DispatchQueue(label: "ghosvt.browser.history")
     private var db: OpaquePointer?
 
     private init() {
-        queue.sync { openDatabase() }
+        queue.sync {
+            openDatabase()
+            prune()
+        }
     }
 
     deinit {
@@ -32,7 +40,8 @@ final class BrowserHistory: @unchecked Sendable {
 
     // MARK: - Public
 
-    /// Record a successful navigation (http/https only). Upserts by URL.
+    /// Record a finished navigation (http/https only). Upserts by normalized URL.
+    /// Call once per successful load (`didFinish`) — not on address commit.
     func record(url: URL, title: String?) {
         guard let key = Self.storageKey(for: url) else { return }
         let title = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -84,6 +93,8 @@ final class BrowserHistory: @unchecked Sendable {
             return
         }
         db = handle
+        exec("PRAGMA journal_mode=WAL;")
+        exec("PRAGMA busy_timeout=3000;")
         exec("""
             CREATE TABLE IF NOT EXISTS history (
                 url TEXT PRIMARY KEY NOT NULL,
@@ -122,11 +133,43 @@ final class BrowserHistory: @unchecked Sendable {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { return }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, url, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-        sqlite3_bind_text(stmt, 2, title, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, url, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT)
         sqlite3_bind_double(stmt, 3, now)
         if sqlite3_step(stmt) != SQLITE_DONE {
             fputs("ghosvt: browser history upsert failed\n", stderr)
+        }
+    }
+
+    /// Age + size cap; called once at open.
+    private func prune() {
+        guard let db else { return }
+
+        let cutoff = Date().timeIntervalSince1970 - Self.maxAge
+        var ageStmt: OpaquePointer?
+        if sqlite3_prepare_v2(
+            db,
+            "DELETE FROM history WHERE last_visit < ?;",
+            -1,
+            &ageStmt,
+            nil
+        ) == SQLITE_OK, let ageStmt {
+            defer { sqlite3_finalize(ageStmt) }
+            sqlite3_bind_double(ageStmt, 1, cutoff)
+            _ = sqlite3_step(ageStmt)
+        }
+
+        let sql = """
+            DELETE FROM history WHERE rowid NOT IN (
+                SELECT rowid FROM history ORDER BY last_visit DESC LIMIT ?
+            );
+            """
+        var capStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &capStmt, nil) == SQLITE_OK, let capStmt {
+            defer { sqlite3_finalize(capStmt) }
+            sqlite3_bind_int(capStmt, 1, Int32(Self.maxEntries))
+            _ = sqlite3_step(capStmt)
         }
     }
 
@@ -157,8 +200,10 @@ final class BrowserHistory: @unchecked Sendable {
 
         var out: [Entry] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let url = String(cString: sqlite3_column_text(stmt, 0))
-            let title = String(cString: sqlite3_column_text(stmt, 1))
+            guard let urlPtr = sqlite3_column_text(stmt, 0),
+                  let titlePtr = sqlite3_column_text(stmt, 1) else { continue }
+            let url = String(cString: urlPtr)
+            let title = String(cString: titlePtr)
             let count = Int(sqlite3_column_int(stmt, 2))
             let last = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 3))
             out.append(Entry(url: url, title: title, visitCount: count, lastVisit: last))
@@ -186,16 +231,12 @@ final class BrowserHistory: @unchecked Sendable {
             let u = e.url
             let stripped = stripScheme(u).lowercased()
             if stripped.hasPrefix(lower) {
-                // Selection covers everything after the typed host fragment in the full URL.
-                // Map: "github.com" → "https://github.com/..." select from after typed length
-                // inside the full string at the host start.
                 if let range = u.lowercased().range(of: lower) {
                     let from = u.distance(from: u.startIndex, to: range.upperBound)
                     if from < u.count {
                         return (u, from)
                     }
                 }
-                // Fallback: select from end of scheme prefix.
                 let selectFrom = min(u.count, max(partial.count, 0))
                 if u.count > selectFrom {
                     return (u, selectFrom)
@@ -219,21 +260,57 @@ final class BrowserHistory: @unchecked Sendable {
             .replacingOccurrences(of: "_", with: "\\_")
     }
 
+    // MARK: - Normalize
+
     /// Persistable http(s) URL string, or nil to skip.
     private static func storageKey(for url: URL) -> String? {
-        guard let scheme = url.scheme?.lowercased() else { return nil }
-        switch scheme {
+        guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        guard let rawScheme = c.scheme?.lowercased() else { return nil }
+        switch rawScheme {
         case "http", "https":
-            break
+            c.scheme = rawScheme
         default:
             return nil
         }
-        guard let host = url.host, !host.isEmpty else { return nil }
-        // Normalize: drop fragment for history key.
-        guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url.absoluteString
+        guard var host = c.host?.lowercased(), !host.isEmpty else { return nil }
+        if host.hasSuffix(".") {
+            host = String(host.dropLast())
         }
+        guard !host.isEmpty else { return nil }
+        c.host = host
         c.fragment = nil
-        return c.url?.absoluteString ?? url.absoluteString
+
+        if let port = c.port {
+            if (rawScheme == "http" && port == 80) || (rawScheme == "https" && port == 443) {
+                c.port = nil
+            }
+        }
+
+        // Collapse trailing slash on non-root paths (`/foo/` → `/foo`).
+        var path = c.path
+        if path.count > 1, path.hasSuffix("/") {
+            path = String(path.dropLast())
+        }
+        c.path = path
+
+        if let items = c.queryItems, !items.isEmpty {
+            let kept = items.filter { !isTrackingQueryName($0.name) }
+            c.queryItems = kept.isEmpty ? nil : kept
+        }
+
+        return c.string ?? c.url?.absoluteString
+    }
+
+    private static let trackingQueryExact: Set<String> = [
+        "gclid", "gbraid", "wbraid", "dclid", "gclsrc",
+        "fbclid", "mc_cid", "mc_eid", "msclkid", "yclid", "twclid",
+        "igshid", "_ga", "_gl", "si", "mkt_tok", "vero_id",
+    ]
+
+    private static func isTrackingQueryName(_ name: String) -> Bool {
+        let n = name.lowercased()
+        if n.hasPrefix("utm_") { return true }
+        if trackingQueryExact.contains(n) { return true }
+        return false
     }
 }

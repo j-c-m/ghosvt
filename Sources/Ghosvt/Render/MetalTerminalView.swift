@@ -2534,7 +2534,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         browserAddressDragging = false
         activeBrowser?.load(url: url)
         activeBrowser?.focusWebContent()
-        BrowserHistory.shared.record(url: url, title: activeBrowser?.pageTitle)
     }
 
     private func clearLinkHover() {
