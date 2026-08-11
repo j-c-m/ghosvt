@@ -316,6 +316,9 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         notifyURL()
+        if let url = webView.url {
+            BrowserHistory.shared.record(url: url, title: webView.title)
+        }
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {

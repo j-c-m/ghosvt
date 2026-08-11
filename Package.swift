@@ -56,6 +56,7 @@ let package = Package(
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("ImageIO"),
                 .linkedFramework("WebKit"),
+                .linkedLibrary("sqlite3"),
             ]
         ),
     ]

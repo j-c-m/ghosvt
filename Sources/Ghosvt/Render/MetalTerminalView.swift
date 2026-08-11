@@ -633,11 +633,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let hudLayout = isSearchOpen ? searchHUDLayout(cols: Int(lastCols)) : nil
         if activeBrowser != nil {
             // Stolen top row(s): address bar (+ tab strip when multi-tab).
+            // Do not reuse the previous VT's FS-TUI letterbox / edge sample — browser
+            // chrome owns the surface and borders reset to host defaults.
             let cols = max(1, Int(lastCols))
             let bar = browserHUDLayout(cols: cols)
             let strip = browserTabStripLayout(cols: cols)
-            let defBg = renderer.lastDefBgRgb
-            let defFg = renderer.lastDefFg
+            let defBg = DefaultColors.background
+            let defFg = DefaultColors.foreground
+            let letterboxBg = DefaultColors.background
             let editing = isBrowserAddressEditing
             let caretOn: Bool
             if editing, let rs = manager.active.renderState {
@@ -656,7 +659,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 line: bar.line,
                 caretCol: bar.caretCol,
                 showCaret: caretOn && !bar.hasSelection,
-                letterboxBg: renderer.lastLetterboxBg,
+                letterboxBg: letterboxBg,
                 defFg: defFg,
                 defBg: defBg,
                 selStartCol: bar.selStartCol,
@@ -665,6 +668,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 tabActiveStartCol: strip?.activeStart ?? -1,
                 tabActiveEndCol: strip?.activeEnd ?? -1
             )
+            syncLetterboxChrome(bg: letterboxBg)
             // Frames only — host is not queried on the paint path.
             layoutExtensionActionButtons(layout: bar)
         } else {
@@ -688,7 +692,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 freezeLetterbox: !mouseButtonsHeld.isEmpty || selecting,
                 linkHover: linkHover
             )
-            syncLetterboxChrome(from: renderer)
+            syncLetterboxChrome(bg: renderer.lastLetterboxBg)
         }
         // Only when browser is up — avoid per-frame frame writes when idle.
         if activeBrowser != nil {
@@ -860,9 +864,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return out
     }
 
-    /// Keep MTKView clear + window chrome in lockstep with terminal / FS TUI background.
-    private func syncLetterboxChrome(from renderer: TerminalRenderer) {
-        let bg = renderer.lastLetterboxBg
+    /// Keep MTKView clear + window chrome in lockstep with letterbox / content bg.
+    private func syncLetterboxChrome(bg: GhosttyColorRgb) {
         let next = MTLClearColor(
             red: Double(bg.r) / 255,
             green: Double(bg.g) / 255,
@@ -2357,10 +2360,18 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             commitBrowserAddress()
             return true
         }
+        // Tab accepts history completion suffix (selected text).
+        if event.keyCode == 48 { // Tab
+            acceptHistoryCompletion()
+            return true
+        }
         if event.keyCode == 51 { // Delete / backspace
+            var dismissedCompletion = false
             updateActiveBrowserChrome { chrome in
                 if chrome.hasSelection {
+                    // Drop suggested suffix only; do not re-complete immediately.
                     self.deleteBrowserSelection(&chrome)
+                    dismissedCompletion = true
                 } else if chrome.caret > 0, !chrome.address.isEmpty {
                     let idx = chrome.address.index(
                         chrome.address.startIndex,
@@ -2370,6 +2381,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                     chrome.caret -= 1
                     chrome.selAnchor = chrome.caret
                 }
+            }
+            if !dismissedCompletion {
+                applyHistoryCompletionIfNeeded()
             }
             return true
         }
@@ -2407,6 +2421,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             return true
         }
         if event.keyCode == 124 { // right
+            // Bare → at start of completion selection accepts the suggestion.
+            if !flags.contains(.shift), !flags.contains(.command),
+               let chrome = activeBrowserChrome,
+               chrome.hasSelection, chrome.caret == chrome.selLo, chrome.caret < chrome.selHi {
+                acceptHistoryCompletion()
+                return true
+            }
             updateActiveBrowserChrome { chrome in
                 if flags.contains(.command) {
                     // ⌘→ / ⇧⌘→: jump (or select) to end of address.
@@ -2472,10 +2493,33 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             chrome.caret += cleaned.count
             chrome.selAnchor = chrome.caret
         }
+        applyHistoryCompletionIfNeeded()
+    }
+
+    /// If caret is at the end, fill best history match and select the suffix (type-over).
+    private func applyHistoryCompletionIfNeeded() {
+        updateActiveBrowserChrome { chrome in
+            guard !chrome.hasSelection, chrome.caret == chrome.address.count else { return }
+            let typed = chrome.address
+            guard let hit = BrowserHistory.shared.completion(for: typed) else { return }
+            chrome.address = hit.url
+            chrome.caret = min(hit.selectFrom, hit.url.count)
+            chrome.selAnchor = hit.url.count
+        }
+    }
+
+    /// Accept gray-selection completion (caret → end).
+    private func acceptHistoryCompletion() {
+        updateActiveBrowserChrome { chrome in
+            guard chrome.hasSelection, chrome.caret < chrome.selAnchor else { return }
+            chrome.caret = chrome.address.count
+            chrome.selAnchor = chrome.caret
+        }
     }
 
     private func commitBrowserAddress() {
         guard let chrome = activeBrowserChrome else { return }
+        // Accept completion selection before commit.
         var s = chrome.address.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.isEmpty { return }
         if !s.contains("://") { s = "https://\(s)" }
@@ -2490,6 +2534,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         browserAddressDragging = false
         activeBrowser?.load(url: url)
         activeBrowser?.focusWebContent()
+        BrowserHistory.shared.record(url: url, title: activeBrowser?.pageTitle)
     }
 
     private func clearLinkHover() {
