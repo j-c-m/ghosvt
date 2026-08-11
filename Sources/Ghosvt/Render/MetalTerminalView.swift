@@ -1789,6 +1789,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     ///
     /// AppKit frames use bottom-left origin: keep `origin.y` (content bottom) and
     /// shrink `height` so the top of the rect drops by chrome rows.
+    /// Final frame is pixel-aligned so WebKit text is not rasterized on half-pixels.
     private func layoutActiveBrowser() {
         guard let session = activeBrowserSession, let metrics else { return }
         var r = contentRectPoints()
@@ -1797,14 +1798,17 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         r.size.height = max(0, r.size.height - steal)
         r.origin.x += pad
         r.size.width = max(0, r.size.width - 2 * pad)
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        r = ContentLayout.pixelAlign(r, scale: scale)
         for (i, browser) in session.tabs.enumerated() {
             let visible = i == session.activeTabIndex
             browser.isHidden = !visible
             guard visible else { continue }
-            if abs(browser.frame.origin.x - r.origin.x) > 0.5
-                || abs(browser.frame.origin.y - r.origin.y) > 0.5
-                || abs(browser.frame.size.width - r.size.width) > 0.5
-                || abs(browser.frame.size.height - r.size.height) > 0.5 {
+            let eps = 0.5 / scale
+            if abs(browser.frame.origin.x - r.origin.x) > eps
+                || abs(browser.frame.origin.y - r.origin.y) > eps
+                || abs(browser.frame.size.width - r.size.width) > eps
+                || abs(browser.frame.size.height - r.size.height) > eps {
                 browser.frame = r
             }
             browser.autoresizingMask = [.width, .height]

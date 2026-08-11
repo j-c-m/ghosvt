@@ -32,4 +32,21 @@ enum ContentLayout {
         }
         return CGRect(x: x, y: y, width: contentW, height: contentH)
     }
+
+    /// Snap a points rect so each edge lands on a whole device pixel for `scale`.
+    /// Snaps min/max (not origin+size) so width/height stay consistent.
+    static func pixelAlign(_ rect: CGRect, scale: CGFloat) -> CGRect {
+        let s = max(scale, 0.5)
+        func snap(_ v: CGFloat) -> CGFloat { (v * s).rounded() / s }
+        let x0 = snap(rect.minX)
+        let y0 = snap(rect.minY)
+        let x1 = snap(rect.maxX)
+        let y1 = snap(rect.maxY)
+        return CGRect(
+            x: x0,
+            y: y0,
+            width: max(0, x1 - x0),
+            height: max(0, y1 - y0)
+        )
+    }
 }
