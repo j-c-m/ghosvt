@@ -17,7 +17,7 @@ enum SearchPosition: String, Sendable {
 /// User configuration from `~/.config/ghosvt/config` (Ghostty-style key = value).
 struct Config: Sendable {
     var vtCount: Int = 6
-    var fontSize: CGFloat = 20
+    var fontSize: CGFloat = 18
     /// Scrollback cap in bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`).
     /// Default 50 MB matches Ghostty. Zero disables scrollback.
     var scrollbackLimitBytes: Int = 50_000_000

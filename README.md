@@ -78,7 +78,7 @@ Ghostty-style file: **`~/.config/ghosvt/config`**
 ```
 # ~/.config/ghosvt/config
 vt-count = 6
-font-size = 20
+font-size = 18
 console-mode = shell
 scrollback-limit = 50000000
 scroll-to-bottom = keystroke, no-output
@@ -94,7 +94,7 @@ embedded-browser = true
 | Key | Default | Notes |
 |-----|---------|--------|
 | `vt-count` | `6` | 1…12 |
-| `font-size` | `20` | Points |
+| `font-size` | `18` | Points |
 | `console-mode` | `shell` | `shell` \| `login` (alias `getty`) |
 | `scrollback-limit` | `50000000` | Bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`). `unlimited` or `0` (off) |
 | `scrollback-limit-bytes` | — | Alias for `scrollback-limit` |
