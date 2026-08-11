@@ -114,11 +114,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return event
             }
 
-            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll; ⌘F search; ⌘W browser.
+            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll; ⌘F search; ⌘B browser.
             if flags.contains(.command) {
                 // No main menu — handle quit ourselves.
                 if event.charactersIgnoringModifiers?.lowercased() == "q" {
                     NSApp.terminate(nil)
+                    return nil
+                }
+                // ⌘B before search so it always opens the embed on this VT.
+                if view.handleOpenBrowserChord(event) {
                     return nil
                 }
                 if view.handleBrowserKeys(event) {

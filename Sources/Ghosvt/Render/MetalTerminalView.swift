@@ -1582,6 +1582,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// Carbon HIToolbox virtual key codes (ANSI US) for reliable ⌘ chords.
     private enum BrowserKeyCode {
         static let a: UInt16 = 0x00
+        static let b: UInt16 = 0x0B
         static let c: UInt16 = 0x08
         static let v: UInt16 = 0x09
         static let w: UInt16 = 0x0D
@@ -1607,9 +1608,30 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return event.charactersIgnoringModifiers?.lowercased() == char
     }
 
+    /// ⌘B: open (or focus) the embedded browser on the active VT.
+    @discardableResult
+    func handleOpenBrowserChord(_ event: NSEvent) -> Bool {
+        guard isCommandChord(event, keyCode: BrowserKeyCode.b, char: "b") else { return false }
+        guard let manager else { return false }
+        let index = manager.activeIndex
+        ensureSearchSlots()
+        if index < browserByVT.count, let existing = browserByVT[index], !existing.isHidden {
+            // Already open on this VT — focus the address bar.
+            beginBrowserAddressEdit(selectAll: true)
+            return true
+        }
+        // about:blank is embeddable; address bar starts ready for typing.
+        guard let blank = URL(string: "about:blank") else { return false }
+        openBrowser(url: blank, onVT: index)
+        beginBrowserAddressEdit(selectAll: true)
+        return true
+    }
+
     /// Esc / ⌘W / address typing while a browser is active on this VT.
     @discardableResult
     func handleBrowserKeys(_ event: NSEvent) -> Bool {
+        // ⌘B works even before a browser exists on this VT.
+        if handleOpenBrowserChord(event) { return true }
         guard activeBrowser != nil, let i = manager?.activeIndex else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let editing = isBrowserAddressEditing
