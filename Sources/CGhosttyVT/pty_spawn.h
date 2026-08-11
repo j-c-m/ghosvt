@@ -16,7 +16,7 @@ typedef enum {
     GHOSVT_CONSOLE_LOGIN = 0,
     /**
      * Ghostty-style shell session: `login -flp $USER` → login shell.
-     * Shows "Last login: …"; no getty banner, no password. Default for now.
+     * Shows "Last login: …"; no getty banner, no password.
      */
     GHOSVT_CONSOLE_SHELL = 1,
 } GhosvtConsoleMode;

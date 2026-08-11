@@ -34,8 +34,8 @@ struct Config: Sendable {
     /// Default: keystroke on, output off (`keystroke, no-output`).
     var scrollToBottomKeystroke: Bool = true
     var scrollToBottomOutput: Bool = false
-    /// Per-VT spawn: `login` or `shell` (default for now).
-    var consoleMode: ConsoleMode = .shell
+    /// Per-VT spawn: `login` (default) or `shell`.
+    var consoleMode: ConsoleMode = .login
     /// Stolen search row: `top` or `bottom` (default).
     var searchPosition: SearchPosition = .bottom
     /// When true, ⌘B / ⌘-click use the embedded WKWebView. When false, ⌘B is off and ⌘-click uses the system browser.

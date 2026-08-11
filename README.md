@@ -2,7 +2,7 @@
 
 Fullscreen macOS multi-VT terminal on **libghostty-vt** + **Metal**.
 
-Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-mode = shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**). **`login`** mode uses a getty banner and a full password prompt.
+Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-mode = login`** uses a getty banner and a full password prompt. **`shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**).
 
 ## Requirements
 
@@ -65,8 +65,8 @@ Refresh from Ghostty.app:
 
 | `console-mode` | Behavior |
 |----------------|----------|
-| **`shell`** (default) | Ghostty-style `login -flp $USER` → login shell; shows `Last login: …`; no getty banner |
-| **`login`** | Getty banner + scrubbed env + `/usr/bin/login -p` (password prompt) |
+| **`login`** (default) | Getty banner + scrubbed env + `/usr/bin/login -p` (password prompt) |
+| **`shell`** | Ghostty-style `login -flp $USER` → login shell; shows `Last login: …`; no getty banner |
 
 Alias: `getty` → `login`.
 
@@ -79,7 +79,7 @@ Ghostty-style file: **`~/.config/ghosvt/config`**
 # ~/.config/ghosvt/config
 vt-count = 6
 font-size = 18
-console-mode = shell
+console-mode = login
 scrollback-limit = 50000000
 scroll-to-bottom = keystroke, no-output
 max-aspect = 3:2
@@ -95,7 +95,7 @@ embedded-browser = true
 |-----|---------|--------|
 | `vt-count` | `6` | 1…12 |
 | `font-size` | `18` | Points |
-| `console-mode` | `shell` | `shell` \| `login` (alias `getty`) |
+| `console-mode` | `login` | `login` (alias `getty`) \| `shell` |
 | `scrollback-limit` | `50000000` | Bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`). `unlimited` or `0` (off) |
 | `scrollback-limit-bytes` | — | Alias for `scrollback-limit` |
 | `scroll-to-bottom` | `keystroke, no-output` | Comma list: `keystroke` / `no-keystroke` / `output` / `no-output` |

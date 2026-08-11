@@ -70,7 +70,7 @@ final class TerminalSession {
     private var mouseEvent: GhosttyMouseEvent?
     private var mouseButtonsDown: Set<Int> = []
 
-    init(index: Int, scrollbackLimitBytes: Int, consoleMode: ConsoleMode = .shell) {
+    init(index: Int, scrollbackLimitBytes: Int, consoleMode: ConsoleMode = .login) {
         self.index = index
         self.scrollbackLimitBytes = scrollbackLimitBytes
         self.consoleMode = consoleMode
