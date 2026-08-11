@@ -42,6 +42,8 @@ final class TerminalSession {
     private let lock = NSLock()
     private let scrollbackLimitBytes: Int
     private let consoleMode: ConsoleMode
+    /// Getty banner host override; nil → system hostname.
+    private let bannerHostname: String?
 
     /// Last integer row pushed to `ghostty_terminal_scroll_viewport`.
     private var lastSyncedIntegerRow: UInt64?
@@ -70,10 +72,16 @@ final class TerminalSession {
     private var mouseEvent: GhosttyMouseEvent?
     private var mouseButtonsDown: Set<Int> = []
 
-    init(index: Int, scrollbackLimitBytes: Int, consoleMode: ConsoleMode = .login) {
+    init(
+        index: Int,
+        scrollbackLimitBytes: Int,
+        consoleMode: ConsoleMode = .login,
+        bannerHostname: String? = nil
+    ) {
         self.index = index
         self.scrollbackLimitBytes = scrollbackLimitBytes
         self.consoleMode = consoleMode
+        self.bannerHostname = bannerHostname
     }
 
     /// Apply config spring/friction constants to this session's physics.
@@ -758,31 +766,40 @@ final class TerminalSession {
         let mode: GhosvtConsoleMode = consoleMode == .shell
             ? GHOSVT_CONSOLE_SHELL
             : GHOSVT_CONSOLE_LOGIN
-        let fd: Int32
-        if let path = Terminfo.databasePath {
-            fd = path.withCString { cPath in
-                ghosvt_pty_spawn(
-                    Int32(index),
-                    cols,
-                    rows,
-                    cellWidthPx,
-                    cellHeightPx,
-                    cPath,
-                    mode,
-                    &pid
-                )
-            }
-        } else {
-            fd = ghosvt_pty_spawn(
+        let hostOverride = bannerHostname.flatMap { $0.isEmpty ? nil : $0 }
+        let terminfo = Terminfo.databasePath
+
+        func spawn(
+            terminfoPath: UnsafePointer<CChar>?,
+            hostname: UnsafePointer<CChar>?
+        ) -> Int32 {
+            ghosvt_pty_spawn(
                 Int32(index),
                 cols,
                 rows,
                 cellWidthPx,
                 cellHeightPx,
-                nil,
+                terminfoPath,
                 mode,
+                hostname,
                 &pid
             )
+        }
+
+        let fd: Int32
+        switch (terminfo, hostOverride) {
+        case let (path?, host?):
+            fd = path.withCString { cPath in
+                host.withCString { cHost in
+                    spawn(terminfoPath: cPath, hostname: cHost)
+                }
+            }
+        case let (path?, nil):
+            fd = path.withCString { spawn(terminfoPath: $0, hostname: nil) }
+        case let (nil, host?):
+            fd = host.withCString { spawn(terminfoPath: nil, hostname: $0) }
+        case (nil, nil):
+            fd = spawn(terminfoPath: nil, hostname: nil)
         }
         if fd < 0 {
             let err = String(cString: strerror(errno))

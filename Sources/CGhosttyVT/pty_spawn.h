@@ -30,12 +30,15 @@ typedef enum {
  * @param terminfo_dir Absolute path to a terminfo database dir containing
  *        78/xterm-ghostty (and optionally 67/ghostty). May be NULL to fall
  *        back to xterm-256color without TERMINFO override.
+ * @param banner_hostname Optional override for the getty banner host field
+ *        (`console-mode = login` only). NULL or empty → `gethostname(2)`.
  * @return master fd (>=0) or -1 on error
  */
 int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
                      uint32_t cell_width_px, uint32_t cell_height_px,
                      const char *terminfo_dir,
                      GhosvtConsoleMode console_mode,
+                     const char *banner_hostname,
                      pid_t *child_out);
 
 int ghosvt_pty_set_winsize(int master_fd, uint16_t cols, uint16_t rows,

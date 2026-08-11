@@ -36,6 +36,8 @@ struct Config: Sendable {
     var scrollToBottomOutput: Bool = false
     /// Per-VT spawn: `login` (default) or `shell`.
     var consoleMode: ConsoleMode = .login
+    /// Getty banner hostname (`login` mode). Nil/empty → system `gethostname`.
+    var bannerHostname: String?
     /// Stolen search row: `top` or `bottom` (default).
     var searchPosition: SearchPosition = .bottom
     /// When true, ⌘B / ⌘-click use the embedded WKWebView. When false, ⌘B is off and ⌘-click uses the system browser.
@@ -105,6 +107,10 @@ struct Config: Sendable {
                 default:
                     break
                 }
+            case "banner-hostname":
+                // Empty clears override (system hostname).
+                let t = value.trimmingCharacters(in: .whitespaces)
+                cfg.bannerHostname = t.isEmpty ? nil : t
             case "search-position":
                 switch value.lowercased() {
                 case "top":

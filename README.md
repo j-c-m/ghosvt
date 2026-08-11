@@ -80,6 +80,7 @@ Ghostty-style file: **`~/.config/ghosvt/config`**
 vt-count = 6
 font-size = 18
 console-mode = login
+# banner-hostname = my-host   # getty banner only; omit for system hostname
 scrollback-limit = 50000000
 scroll-to-bottom = keystroke, no-output
 max-aspect = 3:2
@@ -96,6 +97,7 @@ embedded-browser = true
 | `vt-count` | `6` | 1…12 |
 | `font-size` | `18` | Points |
 | `console-mode` | `login` | `login` (alias `getty`) \| `shell` |
+| `banner-hostname` | *(system)* | Getty banner host field when `console-mode = login`. Empty/omit → `gethostname` |
 | `scrollback-limit` | `50000000` | Bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`). `unlimited` or `0` (off) |
 | `scrollback-limit-bytes` | — | Alias for `scrollback-limit` |
 | `scroll-to-bottom` | `keystroke, no-output` | Comma list: `keystroke` / `no-keystroke` / `output` / `no-output` |

@@ -16,7 +16,8 @@ final class VtManager {
             TerminalSession(
                 index: $0,
                 scrollbackLimitBytes: config.scrollbackLimitBytes,
-                consoleMode: config.consoleMode
+                consoleMode: config.consoleMode,
+                bannerHostname: config.bannerHostname
             )
         }
         for s in sessions {

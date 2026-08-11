@@ -29,7 +29,7 @@ static int terminfo_has_xterm_ghostty(const char *dir) {
     return stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
-static void write_banner(int tty_index) {
+static void write_banner(int tty_index, const char *hostname_override) {
     char ostype[64] = "Darwin";
     char machine[64] = "arm64";
     char host[256] = "localhost";
@@ -38,7 +38,9 @@ static void write_banner(int tty_index) {
     (void)sysctlbyname("kern.ostype", ostype, &len, NULL, 0);
     len = sizeof(machine);
     (void)sysctlbyname("hw.machine", machine, &len, NULL, 0);
-    if (gethostname(host, sizeof(host)) != 0) {
+    if (hostname_override && hostname_override[0]) {
+        strncpy(host, hostname_override, sizeof(host) - 1);
+    } else if (gethostname(host, sizeof(host)) != 0) {
         strncpy(host, "localhost", sizeof(host) - 1);
     }
     host[sizeof(host) - 1] = '\0';
@@ -168,6 +170,7 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
                      uint32_t cell_width_px, uint32_t cell_height_px,
                      const char *terminfo_dir,
                      GhosvtConsoleMode console_mode,
+                     const char *banner_hostname,
                      pid_t *child_out) {
     if (!child_out) {
         return -1;
@@ -187,7 +190,7 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
     }
 
     if (child == 0) {
-        /* Copy path before scrubbing (and for setenv's own storage). */
+        /* Copy paths before scrubbing (and for setenv's own storage). */
         char terminfo_buf[4096];
         const char *ti = NULL;
         if (terminfo_dir && terminfo_dir[0]) {
@@ -195,13 +198,20 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
             terminfo_buf[sizeof(terminfo_buf) - 1] = '\0';
             ti = terminfo_buf;
         }
+        char host_buf[256];
+        const char *host_override = NULL;
+        if (banner_hostname && banner_hostname[0]) {
+            strncpy(host_buf, banner_hostname, sizeof(host_buf) - 1);
+            host_buf[sizeof(host_buf) - 1] = '\0';
+            host_override = host_buf;
+        }
 
         if (console_mode == GHOSVT_CONSOLE_SHELL) {
             exec_shell_mode(ti);
             /* not reached */
         }
 
-        write_banner(tty_index);
+        write_banner(tty_index, host_override);
         setup_login_env(ti);
         /*
          * login -p: keep only the scrubbed env we just built (TERM/TERMINFO/…).
