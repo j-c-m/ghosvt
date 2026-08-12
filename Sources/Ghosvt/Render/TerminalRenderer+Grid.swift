@@ -5,6 +5,9 @@ import Metal
 
 // MARK: - Grid rebuild + row paint
 extension TerminalRenderer {
+    /// Max paints if the glyph atlas resets mid-pass (invalidates earlier UVs).
+    private static let atlasPaintAttempts = 3
+
     func rebuildAllRows(
         renderState: GhosttyRenderState,
         rowIter: GhosttyRenderStateRowIterator,
@@ -18,20 +21,8 @@ extension TerminalRenderer {
     ) {
         gridCols = layout.cols
         gridRows = layout.rows
-        gridCells = Array(
-            repeating: CellInstance.make(
-                originX: 0, originY: 0, width: layout.cellW, height: layout.cellH,
-                u0: 0, v0: 0, u1: 0, v1: 0,
-                fr: 0, fg: 0, fb: 0, fa: 1,
-                br: Float(defBg.r) / 255, bg: Float(defBg.g) / 255, bb: Float(defBg.b) / 255, ba: 1
-            ),
-            count: layout.cols * layout.rows
-        )
-        // Also keep decoration instances separate: underlines appended after grid in compose.
-        // Bake underlines into a parallel array rebuilt with grid.
-        underlineExtras = []
-        glyphExtras = []
-        rebuildRows(
+        paintGridWithAtlasRetry(
+            resetGridCells: true,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -40,8 +31,7 @@ extension TerminalRenderer {
             defFg: defFg,
             defBg: defBg,
             cellWInt: cellWInt,
-            cellHInt: cellHInt,
-            onlyDirty: false
+            cellHInt: cellHInt
         )
     }
 
@@ -56,11 +46,9 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int
     ) {
-        // Ink lives in glyphExtras (global). Always repaint every row so scroll /
-        // partial dirty cannot wipe clean rows' text.
-        underlineExtras = []
-        glyphExtras = []
-        rebuildRows(
+        // Ink is global in glyphExtras — always repaint every row.
+        paintGridWithAtlasRetry(
+            resetGridCells: false,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -69,9 +57,51 @@ extension TerminalRenderer {
             defFg: defFg,
             defBg: defBg,
             cellWInt: cellWInt,
-            cellHInt: cellHInt,
-            onlyDirty: false
+            cellHInt: cellHInt
         )
+    }
+
+    /// Clears ink extras and repaints; retries if `atlas.packGeneration` changes mid-pass.
+    private func paintGridWithAtlasRetry(
+        resetGridCells: Bool,
+        renderState: GhosttyRenderState,
+        rowIter: GhosttyRenderStateRowIterator,
+        cells: GhosttyRenderStateRowCells,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        defFg: GhosttyColorRgb,
+        defBg: GhosttyColorRgb,
+        cellWInt: Int,
+        cellHInt: Int
+    ) {
+        for _ in 0..<Self.atlasPaintAttempts {
+            let gen = atlas.packGeneration
+            if resetGridCells {
+                gridCells = Array(
+                    repeating: CellInstance.make(
+                        originX: 0, originY: 0, width: layout.cellW, height: layout.cellH,
+                        u0: 0, v0: 0, u1: 0, v1: 0,
+                        fr: 0, fg: 0, fb: 0, fa: 1,
+                        br: Float(defBg.r) / 255, bg: Float(defBg.g) / 255, bb: Float(defBg.b) / 255, ba: 1
+                    ),
+                    count: layout.cols * layout.rows
+                )
+            }
+            underlineExtras = []
+            glyphExtras = []
+            rebuildRows(
+                renderState: renderState,
+                rowIter: rowIter,
+                cells: cells,
+                metrics: metrics,
+                layout: layout,
+                defFg: defFg,
+                defBg: defBg,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt
+            )
+            if atlas.packGeneration == gen { break }
+        }
     }
 
     func rebuildRows(
@@ -83,9 +113,9 @@ extension TerminalRenderer {
         defFg: GhosttyColorRgb,
         defBg: GhosttyColorRgb,
         cellWInt: Int,
-        cellHInt: Int,
-        onlyDirty: Bool
+        cellHInt: Int
     ) {
+        let genAtStart = atlas.packGeneration
         var iter = rowIter
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iter)
 
@@ -105,7 +135,6 @@ extension TerminalRenderer {
                 defFg: defFg,
                 defBg: defBg
             )
-            // Cache full row for cursor under-glyph.
             let base = rowIndex * layout.cols
             if rowCellCache.count < layout.cols * layout.rows {
                 rowCellCache = Array(
@@ -134,8 +163,9 @@ extension TerminalRenderer {
 
             var clean = false
             _ = ghostty_render_state_row_set(iter, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
+
+            if atlas.packGeneration != genAtStart { break }
         }
-        _ = onlyDirty
     }
 
     // MARK: - Run segmentation + shaped paint

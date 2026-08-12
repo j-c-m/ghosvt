@@ -54,6 +54,8 @@ final class GlyphAtlas {
     private var glyphCache: [GlyphKey: Entry] = [:]
     private var spriteCache: [SpriteKey: Entry] = [:]
     private let padding = 1
+    /// Bumped on `clear()`. Mid-paint eviction invalidates earlier UVs; repaint when this changes.
+    private(set) var packGeneration: Int = 0
 
     private struct SpriteKey: Hashable {
         let codepoint: UInt32
@@ -64,7 +66,7 @@ final class GlyphAtlas {
 
     let emptyUV = SIMD4<Float>(0, 0, 0, 0)
 
-    init?(device: MTLDevice, width: Int = 2048, height: Int = 2048) {
+    init?(device: MTLDevice, width: Int = 4096, height: Int = 4096) {
         self.device = device
         self.atlasWidth = width
         self.atlasHeight = height
@@ -94,6 +96,7 @@ final class GlyphAtlas {
         shelfX = 1
         shelfY = 0
         shelfH = 1
+        packGeneration &+= 1
         uploadFull()
     }
 
@@ -477,16 +480,17 @@ final class GlyphAtlas {
         pixelW: Float,
         pixelH: Float
     ) -> Entry? {
-        guard let rect = allocate(width: cellW + padding * 2, height: cellH + padding * 2) else {
-            clear()
-            guard let rect2 = allocate(width: cellW + padding * 2, height: cellH + padding * 2) else {
-                return nil
-            }
+        let w = cellW + padding * 2
+        let h = cellH + padding * 2
+        if let rect = allocate(width: w, height: h) {
             return write(
-                coverage, cellW: cellW, cellH: cellH, rect: rect2,
+                coverage, cellW: cellW, cellH: cellH, rect: rect,
                 bearingX: bearingX, bearingY: bearingY, pixelW: pixelW, pixelH: pixelH
             )
         }
+        // Full: clear and place this glyph. packGeneration bumps so the grid repaints.
+        clear()
+        guard let rect = allocate(width: w, height: h) else { return nil }
         return write(
             coverage, cellW: cellW, cellH: cellH, rect: rect,
             bearingX: bearingX, bearingY: bearingY, pixelW: pixelW, pixelH: pixelH
