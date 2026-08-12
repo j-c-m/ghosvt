@@ -29,10 +29,11 @@ static int terminfo_has_xterm_ghostty(const char *dir) {
     return stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
-static void write_banner(int tty_index, const char *hostname_override) {
+static void write_banner(int tty_index, const char *hostname_override, int use_real_tty) {
     char ostype[64] = "Darwin";
     char machine[64] = "arm64";
     char host[256] = "localhost";
+    char tty_name[256];
 
     size_t len = sizeof(ostype);
     (void)sysctlbyname("kern.ostype", ostype, &len, NULL, 0);
@@ -45,7 +46,21 @@ static void write_banner(int tty_index, const char *hostname_override) {
     }
     host[sizeof(host) - 1] = '\0';
 
-    dprintf(STDOUT_FILENO, "%s/%s (%s) (ttyv%d)\n\n", ostype, machine, host, tty_index);
+    if (use_real_tty) {
+        char *name = ttyname(STDOUT_FILENO);
+        if (name && name[0]) {
+            const char *base = strrchr(name, '/');
+            base = (base && base[1]) ? base + 1 : name;
+            snprintf(tty_name, sizeof(tty_name), "%s", base);
+        } else {
+            snprintf(tty_name, sizeof(tty_name), "ttyv%d", tty_index);
+        }
+    } else {
+        snprintf(tty_name, sizeof(tty_name), "ttyv%d", tty_index);
+    }
+    tty_name[sizeof(tty_name) - 1] = '\0';
+
+    dprintf(STDOUT_FILENO, "%s/%s (%s) (%s)\n\n", ostype, machine, host, tty_name);
     fsync(STDOUT_FILENO);
 }
 
@@ -171,6 +186,7 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
                      const char *terminfo_dir,
                      GhosvtConsoleMode console_mode,
                      const char *banner_hostname,
+                     int banner_real_tty,
                      pid_t *child_out) {
     if (!child_out) {
         return -1;
@@ -211,7 +227,7 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
             /* not reached */
         }
 
-        write_banner(tty_index, host_override);
+        write_banner(tty_index, host_override, banner_real_tty);
         setup_login_env(ti);
         /*
          * login -p: keep only the scrubbed env we just built (TERM/TERMINFO/…).

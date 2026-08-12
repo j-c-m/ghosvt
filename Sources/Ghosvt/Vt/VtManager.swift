@@ -17,7 +17,8 @@ final class VtManager {
                 index: $0,
                 scrollbackLimitBytes: config.scrollbackLimitBytes,
                 consoleMode: config.consoleMode,
-                bannerHostname: config.bannerHostname
+                bannerHostname: config.bannerHostname,
+                bannerRealTty: config.bannerRealTty
             )
         }
         for s in sessions {

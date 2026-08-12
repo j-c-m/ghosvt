@@ -103,6 +103,7 @@ vt-count = 6
 font-size = 18
 console-mode = login
 # banner-hostname = my-host   # getty banner only; omit for system hostname
+# banner-tty = real           # real (default) = PTY slave (e.g. ttys001); fake = ttyvN
 scrollback-limit = 50000000
 scroll-to-bottom = keystroke, no-output
 max-aspect = 3:2
@@ -120,6 +121,7 @@ embedded-browser = true
 | `font-size` | `18` | Points |
 | `console-mode` | `login` | `login` (alias `getty`) \| `shell` |
 | `banner-hostname` | *(system)* | Getty banner host field when `console-mode = login`. Empty/omit → `gethostname` |
+| `banner-tty` | `real` | Getty banner tty field: `real` / `device` / `pty` → PTY slave name; `fake` / `virtual` / `ttyv` → `ttyvN` |
 | `scrollback-limit` | `50000000` | Bytes (Ghostty `scrollback-limit` / `scrollback-limit-bytes`). `unlimited` or `0` (off) |
 | `scrollback-limit-bytes` | — | Alias for `scrollback-limit` |
 | `scroll-to-bottom` | `keystroke, no-output` | Comma list: `keystroke` / `no-keystroke` / `output` / `no-output` |

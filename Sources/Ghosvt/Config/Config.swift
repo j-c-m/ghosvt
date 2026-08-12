@@ -38,6 +38,8 @@ struct Config: Sendable {
     var consoleMode: ConsoleMode = .login
     /// Getty banner hostname (`login` mode). Nil/empty → system `gethostname`.
     var bannerHostname: String?
+    /// Getty banner tty field: true = PTY slave name (default); false = fake `ttyvN`.
+    var bannerRealTty: Bool = true
     /// Stolen search row: `top` or `bottom` (default).
     var searchPosition: SearchPosition = .bottom
     /// When true, ⌘B / ⌘-click use the embedded WKWebView. When false, ⌘B is off and ⌘-click uses the system browser.
@@ -111,6 +113,15 @@ struct Config: Sendable {
                 // Empty clears override (system hostname).
                 let t = value.trimmingCharacters(in: .whitespaces)
                 cfg.bannerHostname = t.isEmpty ? nil : t
+            case "banner-tty":
+                switch value.lowercased() {
+                case "fake", "virtual", "ttyv":
+                    cfg.bannerRealTty = false
+                case "real", "device", "pty":
+                    cfg.bannerRealTty = true
+                default:
+                    break
+                }
             case "search-position":
                 switch value.lowercased() {
                 case "top":

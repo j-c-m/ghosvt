@@ -32,6 +32,8 @@ typedef enum {
  *        back to xterm-256color without TERMINFO override.
  * @param banner_hostname Optional override for the getty banner host field
  *        (`console-mode = login` only). NULL or empty → `gethostname(2)`.
+ * @param banner_real_tty Non-zero (default in app config): PTY slave name (e.g. ttys001).
+ *        Zero: fake Linux-style ttyvN from `tty_index`.
  * @return master fd (>=0) or -1 on error
  */
 int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
@@ -39,6 +41,7 @@ int ghosvt_pty_spawn(int tty_index, uint16_t cols, uint16_t rows,
                      const char *terminfo_dir,
                      GhosvtConsoleMode console_mode,
                      const char *banner_hostname,
+                     int banner_real_tty,
                      pid_t *child_out);
 
 int ghosvt_pty_set_winsize(int master_fd, uint16_t cols, uint16_t rows,

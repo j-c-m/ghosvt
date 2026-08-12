@@ -44,6 +44,8 @@ final class TerminalSession {
     private let consoleMode: ConsoleMode
     /// Getty banner host override; nil → system hostname.
     private let bannerHostname: String?
+    /// Getty banner tty: false = ttyvN; true = PTY slave basename.
+    private let bannerRealTty: Bool
 
     /// Last integer row pushed to `ghostty_terminal_scroll_viewport`.
     private var lastSyncedIntegerRow: UInt64?
@@ -76,12 +78,14 @@ final class TerminalSession {
         index: Int,
         scrollbackLimitBytes: Int,
         consoleMode: ConsoleMode = .login,
-        bannerHostname: String? = nil
+        bannerHostname: String? = nil,
+        bannerRealTty: Bool = true
     ) {
         self.index = index
         self.scrollbackLimitBytes = scrollbackLimitBytes
         self.consoleMode = consoleMode
         self.bannerHostname = bannerHostname
+        self.bannerRealTty = bannerRealTty
     }
 
     /// Apply config spring/friction constants to this session's physics.
@@ -781,6 +785,7 @@ final class TerminalSession {
                 terminfoPath,
                 mode,
                 hostname,
+                bannerRealTty ? 1 : 0,
                 &pid
             )
         }
