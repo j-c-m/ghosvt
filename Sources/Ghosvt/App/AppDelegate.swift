@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var metalView: MetalTerminalView?
     private var manager: VtManager?
     private var config = Config()
+    /// True after `terminateLater` until the quit panel replies.
+    private var quitTerminatePending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = Config.load()
@@ -71,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let view = self.metalView, let manager = self.manager else {
                 return event
+            }
+            // Quit panel eats all keys while open.
+            if view.handleQuitConfirmKey(event) {
+                return nil
             }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
@@ -165,15 +171,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    /// ⌘Q / menu Quit: confirm before exit (covers all `NSApp.terminate` paths).
+    /// ⌘Q / menu Quit: centered terminal panel (covers all `NSApp.terminate` paths).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let alert = NSAlert()
-        alert.messageText = "Quit ghosvt?"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Quit")
-        alert.addButton(withTitle: "Cancel")
-        let response = alert.runModal()
-        return response == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+        if quitTerminatePending {
+            return .terminateCancel
+        }
+        guard let view = metalView else {
+            return .terminateNow
+        }
+        quitTerminatePending = true
+        view.presentQuitConfirm { [weak self] confirmed in
+            guard let self else { return }
+            self.quitTerminatePending = false
+            NSApp.reply(toApplicationShouldTerminate: confirmed)
+        }
+        return .terminateLater
     }
 
     /// App + Edit menus so standard key equivalents exist. Terminal still claims ⌘C/V via

@@ -203,6 +203,87 @@ extension TerminalRenderer {
         }
     }
 
+    /// Centered TUI quit panel. Box-drawing uses `entrySprite` (same as VT cells).
+    func appendQuitDialog(
+        to instances: inout [CellInstance],
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int
+    ) {
+        let lines = [
+            "┌────────────────┐",
+            "│  Quit ghosvt?  │",
+            "│     y / n      │",
+            "└────────────────┘",
+        ]
+        let boxCols = lines[0].count
+        let boxRows = lines.count
+        guard layout.cols > 0, layout.rows > 0 else { return }
+        let startCol = max(0, (layout.cols - boxCols) / 2)
+        let startRow = max(0, (layout.rows - boxRows) / 2)
+        let font = metrics.fontBold
+        let ink = CellPaintColors.RGB(DefaultColors.foreground)
+        let fill = CellPaintColors.RGB(r: 0.08, g: 0.08, b: 0.10)
+
+        for (r, line) in lines.enumerated() {
+            let row = startRow + r
+            guard row < layout.rows else { break }
+            let rowTop = (layout.originY + layout.padPx + Float(row) * layout.cellH)
+                .rounded(.toNearestOrAwayFromZero)
+            var col = startCol
+            for ch in line {
+                guard col < layout.cols else { break }
+                let s = String(ch)
+                let x = (layout.originX + layout.padPx + Float(col) * layout.cellW)
+                    .rounded(.towardZero)
+                // Cell background.
+                instances.append(.make(
+                    originX: x, originY: rowTop, width: layout.cellW, height: layout.cellH,
+                    u0: 0, v0: 0, u1: 0, v1: 0,
+                    fr: ink.r, fg: ink.g, fb: ink.b, fa: 1,
+                    br: fill.r, bg: fill.g, bb: fill.b, ba: 0.95
+                ))
+                if s != " " {
+                    let entry: GlyphAtlas.Entry
+                    if let cp = s.unicodeScalars.first?.value,
+                       s.unicodeScalars.count == 1,
+                       SpriteFace.covers(cp) {
+                        entry = atlas.entrySprite(
+                            codepoint: cp,
+                            cellWidthPx: cellWInt,
+                            cellHeightPx: cellHInt,
+                            cellBaselinePx: metrics.cellBaselinePx
+                        )
+                    } else {
+                        entry = atlas.entry(
+                            text: s,
+                            bold: true,
+                            italic: false,
+                            font: font,
+                            cellWidthPx: cellWInt,
+                            cellHeightPx: cellHInt,
+                            cellBaselinePx: metrics.cellBaselinePx,
+                            faceWidthPx: metrics.faceWidthPx
+                        )
+                    }
+                    if entry.pixelW >= 0.5, entry.pixelH >= 0.5 {
+                        instances.append(.make(
+                            originX: x + entry.bearingX,
+                            originY: rowTop + entry.bearingY,
+                            width: max(1, entry.pixelW),
+                            height: max(1, entry.pixelH),
+                            u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+                            fr: ink.r, fg: ink.g, fb: ink.b, fa: 1,
+                            br: 0, bg: 0, bb: 0, ba: 0
+                        ))
+                    }
+                }
+                col += 1
+            }
+        }
+    }
+
     /// Caret style for stolen-row HUDs.
     enum HUDCaretStyle {
         /// Search: peach block + black ink.

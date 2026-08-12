@@ -57,8 +57,17 @@ final class TerminalRenderer {
     var lastCursorVisible: Bool = false
     /// Grid cache is shared across VTs; force rebuild when the painted session changes.
     private var lastDrawnSessionIndex: Int = -1
+    /// Last `quitConfirm` passed to `draw` / chrome (invalidate GPU pack on toggle).
+    private var lastQuitConfirm = false
     var blinkPeriod: CFTimeInterval = 0.53
     var prewarmedKey: String?
+
+    /// Drop packed instance counts so the next frame rebuilds (e.g. quit panel closed).
+    func invalidatePackedInstances() {
+        lastBgCount = 0
+        lastFgCount = 0
+        lastDrawnCount = 0
+    }
 
     /// Viewport-local search match ranges for this frame (row 0 = top of viewport).
     struct SearchHighlightRange: Equatable {
@@ -224,7 +233,8 @@ final class TerminalRenderer {
         searchCaretCol: Int = 0,
         searchHUDAtTop: Bool = false,
         freezeLetterbox: Bool = false,
-        linkHover: LinkHoverRange? = nil
+        linkHover: LinkHoverRange? = nil,
+        quitConfirm: Bool = false
     ) {
         self.fontLigatures = fontLigatures
         self.searchHighlights = searchHighlights
@@ -234,7 +244,19 @@ final class TerminalRenderer {
               let rowIter = session.rowIterator,
               let cells = session.rowCells
         else {
-            presentClear(drawable: drawable, rpd: renderPassDescriptor, clearColor: clearColor)
+            if quitConfirm {
+                presentQuitOnly(
+                    drawable: drawable,
+                    renderPassDescriptor: renderPassDescriptor,
+                    drawableSize: drawableSize,
+                    contentRect: contentRect,
+                    scale: scale,
+                    metrics: metrics,
+                    clearColor: clearColor
+                )
+            } else {
+                presentClear(drawable: drawable, rpd: renderPassDescriptor, clearColor: clearColor)
+            }
             return
         }
 
@@ -428,10 +450,14 @@ final class TerminalRenderer {
         // Kitty may still redraw without re-uploading cells.
         let linkHoverChanged = linkHover != lastLinkHover
         lastLinkHover = linkHover
+        // Open or close must re-pack: dismiss otherwise re-presents the dialog buffer.
+        let quitChanged = quitConfirm != lastQuitConfirm
+        lastQuitConfirm = quitConfirm
 
         let cellsStable = !needGridRebuild && !blinkChanged && !indicatorChanged
             && !cursorChanged && !searchHUDChanged && !visualChanged
             && !linkHoverChanged
+            && !quitChanged
             && lastBgCount + lastFgCount > 0
         if cellsStable {
             present(
@@ -510,6 +536,16 @@ final class TerminalRenderer {
             )
         }
 
+        if quitConfirm {
+            appendQuitDialog(
+                to: &fgInstances,
+                metrics: metrics,
+                layout: layout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt
+            )
+        }
+
         var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         _ = ghostty_render_state_set(renderState, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
 
@@ -532,6 +568,63 @@ final class TerminalRenderer {
         )
     }
 
+    /// Quit panel only (no live VT / before first grid).
+    private func presentQuitOnly(
+        drawable: CAMetalDrawable,
+        renderPassDescriptor: MTLRenderPassDescriptor,
+        drawableSize: CGSize,
+        contentRect: CGRect,
+        scale: CGFloat,
+        metrics: CellMetrics,
+        clearColor: MTLClearColor
+    ) {
+        let pw = Float(drawableSize.width)
+        let ph = Float(drawableSize.height)
+        guard pw > 0, ph > 0 else {
+            presentClear(drawable: drawable, rpd: renderPassDescriptor, clearColor: clearColor)
+            return
+        }
+        let cellWInt = max(1, metrics.cellWidthPx)
+        let cellHInt = max(1, metrics.cellHeightPx)
+        let padPx = Float((padPoints * scale).rounded(.toNearestOrAwayFromZero))
+        let originX = Float(contentRect.minX.rounded(.toNearestOrAwayFromZero))
+        let originY = Float(contentRect.minY.rounded(.toNearestOrAwayFromZero))
+        let cols = max(1, Int((Float(contentRect.width) - 2 * padPx) / Float(cellWInt)))
+        let rows = max(1, Int((Float(contentRect.height) - 2 * padPx) / Float(cellHInt)))
+        let layout = LayoutKey(
+            originX: originX, originY: originY,
+            cellW: Float(cellWInt), cellH: Float(cellHInt), padPx: padPx,
+            cols: cols, rows: rows, fontPx: metrics.fontPx
+        )
+        var instances: [CellInstance] = []
+        appendQuitDialog(
+            to: &instances,
+            metrics: metrics,
+            layout: layout,
+            cellWInt: cellWInt,
+            cellHInt: cellHInt
+        )
+        uploadInstances(instances)
+        lastBgCount = 0
+        lastFgCount = instances.count
+        lastDrawnCount = instances.count
+        let letterboxBg = DefaultColors.background
+        present(
+            bgCount: 0,
+            fgCount: instances.count,
+            kitty: nil,
+            drawable: drawable,
+            rpd: renderPassDescriptor,
+            pw: pw, ph: ph,
+            letterboxBg: letterboxBg,
+            contentActive: true
+        )
+        lastBgCount = 0
+        lastFgCount = 0
+        lastDrawnCount = 0
+        lastLayoutKey = nil
+    }
+
     /// Paint stolen browser chrome rows (address + optional tab strip). No VT grid.
     func presentBrowserChrome(
         drawable: CAMetalDrawable,
@@ -552,7 +645,10 @@ final class TerminalRenderer {
         /// Second row under address when multi-tab; nil → single-row chrome.
         tabStripLine: String? = nil,
         tabActiveStartCol: Int = -1,
-        tabActiveEndCol: Int = -1
+        tabActiveEndCol: Int = -1,
+        quitConfirm: Bool = false,
+        /// Full shell grid for centering the quit panel (chrome layout is 1–2 rows).
+        quitLayoutRows: Int = 24
     ) {
         let pw = Float(drawableSize.width)
         let ph = Float(drawableSize.height)
@@ -614,6 +710,25 @@ final class TerminalRenderer {
                 selStartCol: tabActiveStartCol,
                 selEndCol: tabActiveEndCol,
                 topRowIndex: 1
+            )
+        }
+        if quitConfirm {
+            let shellLayout = LayoutKey(
+                originX: layout.originX,
+                originY: layout.originY,
+                cellW: layout.cellW,
+                cellH: layout.cellH,
+                padPx: layout.padPx,
+                cols: cols,
+                rows: max(chromeRows, quitLayoutRows),
+                fontPx: layout.fontPx
+            )
+            appendQuitDialog(
+                to: &instances,
+                metrics: metrics,
+                layout: shellLayout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt
             )
         }
         uploadInstances(instances)

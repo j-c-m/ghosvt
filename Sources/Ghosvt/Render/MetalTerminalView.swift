@@ -88,6 +88,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// Last cell used for link-hover resolve (skip full scan while stationary).
     private var lastLinkHoverCell: (col: Int, row: Int)?
     private var trackingArea: NSTrackingArea?
+
+    /// Centered terminal-style quit panel (⌘Q / menu Quit).
+    private(set) var isQuitConfirmOpen = false
+    private var quitConfirmCompletion: ((Bool) -> Void)?
     /// Focus/screen observers use selector-based `NotificationCenter` registration on `self`.
     private var focusObserversInstalled = false
     private var workspaceObserversInstalled = false
@@ -668,7 +672,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 selEndCol: bar.selEndCol,
                 tabStripLine: strip?.line,
                 tabActiveStartCol: strip?.activeStart ?? -1,
-                tabActiveEndCol: strip?.activeEnd ?? -1
+                tabActiveEndCol: strip?.activeEnd ?? -1,
+                quitConfirm: isQuitConfirmOpen,
+                quitLayoutRows: max(1, Int(lastRows))
             )
             syncLetterboxChrome(bg: letterboxBg)
             // Frames only — host is not queried on the paint path.
@@ -692,7 +698,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 searchCaretCol: hudLayout?.caretCol ?? 0,
                 searchHUDAtTop: config.searchPosition == .top,
                 freezeLetterbox: !mouseButtonsHeld.isEmpty || selecting,
-                linkHover: linkHover
+                linkHover: linkHover,
+                quitConfirm: isQuitConfirmOpen
             )
             syncLetterboxChrome(bg: renderer.lastLetterboxBg)
         }
@@ -2677,10 +2684,75 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         NSCursor.pointingHand.set()
     }
 
+    /// Show centered quit panel; `completion(true)` quits.
+    func presentQuitConfirm(completion: @escaping (Bool) -> Void) {
+        if isQuitConfirmOpen {
+            // Already waiting — drop the newer terminate request.
+            completion(false)
+            return
+        }
+        isQuitConfirmOpen = true
+        quitConfirmCompletion = completion
+    }
+
+    /// Keys while quit panel is open. Returns true if consumed.
+    @discardableResult
+    func handleQuitConfirmKey(_ event: NSEvent) -> Bool {
+        guard isQuitConfirmOpen, event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Ignore pure modifiers.
+        if event.keyCode == 56 || event.keyCode == 60 || event.keyCode == 59
+            || event.keyCode == 62 || event.keyCode == 58 || event.keyCode == 61
+            || event.keyCode == 55 || event.keyCode == 54 {
+            return true
+        }
+        // Second ⌘Q while open → confirm quit.
+        if flags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "q" {
+            resolveQuitConfirm(true)
+            return true
+        }
+        switch event.keyCode {
+        case 36, 76: // Return / keypad Enter
+            resolveQuitConfirm(true)
+            return true
+        case 53: // Esc
+            resolveQuitConfirm(false)
+            return true
+        default:
+            break
+        }
+        let ch = event.charactersIgnoringModifiers?.lowercased()
+        switch ch {
+        case "y":
+            resolveQuitConfirm(true)
+            return true
+        case "n":
+            resolveQuitConfirm(false)
+            return true
+        default:
+            // Swallow everything else so the PTY does not see it.
+            return true
+        }
+    }
+
+    private func resolveQuitConfirm(_ confirmed: Bool) {
+        guard isQuitConfirmOpen else { return }
+        isQuitConfirmOpen = false
+        let done = quitConfirmCompletion
+        quitConfirmCompletion = nil
+        // Drop packed GPU instances so the next frame cannot re-present the panel.
+        renderer?.invalidatePackedInstances()
+        done?(confirmed)
+    }
+
     /// Claim ⌘1… / ⌘F1… / ⌘C / ⌘V / ⌘F before the menu; leave ⌘Q to the system.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown else {
             return super.performKeyEquivalent(with: event)
+        }
+        if handleQuitConfirmKey(event) {
+            return true
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
