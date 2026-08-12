@@ -55,6 +55,8 @@ final class TerminalRenderer {
     var lastCursorX: Int = -1
     var lastCursorY: Int = -1
     var lastCursorVisible: Bool = false
+    /// Grid cache is shared across VTs; force rebuild when the painted session changes.
+    private var lastDrawnSessionIndex: Int = -1
     var blinkPeriod: CFTimeInterval = 0.53
     var prewarmedKey: String?
 
@@ -337,7 +339,7 @@ final class TerminalRenderer {
         lastCursorVisible = cursorVis
 
         var needGridRebuild: Bool
-        let partialOnly: Bool
+        var partialOnly: Bool
         switch dirty {
         case GHOSTTY_RENDER_STATE_DIRTY_FALSE:
             needGridRebuild = layoutChanged
@@ -358,6 +360,12 @@ final class TerminalRenderer {
         if searchChanged {
             needGridRebuild = true
             lastSearchHighlights = searchHighlights
+        }
+        // Idle VTs stay DIRTY_FALSE; without a full rebuild the previous VT's cache sticks.
+        if session.index != lastDrawnSessionIndex {
+            lastDrawnSessionIndex = session.index
+            needGridRebuild = true
+            partialOnly = false
         }
 
         if needGridRebuild {
