@@ -377,15 +377,14 @@ final class TerminalSession {
         }
     }
 
-    /// Two-phase render-state update: hold the session lock only for begin.
+    /// Snapshot terminal → render state. Hold the session lock for both begin and
+    /// end so the parse thread cannot mutate the terminal mid-update (torn grapheme
+    /// slices → bogus GRAPHEMES_LEN and heap corruption in cell text reads).
     func updateRenderState() {
         lock.lock()
-        guard let terminal, let renderState else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard let terminal, let renderState else { return }
         _ = ghostty_render_state_begin_update(renderState, terminal)
-        lock.unlock()
         _ = ghostty_render_state_end_update(renderState)
     }
 

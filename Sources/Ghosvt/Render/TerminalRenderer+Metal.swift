@@ -211,24 +211,36 @@ extension TerminalRenderer {
     }
 
     func cellTextUTF8(_ cells: GhosttyRenderStateRowCells) -> String? {
-        var storage = [UInt8](repeating: 0, count: 128)
-        var written = 0
-        let result = storage.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
-            var gb = GhosttyBuffer(ptr: buf.baseAddress, cap: buf.count, len: 0)
-            let r = ghostty_render_state_row_cells_get(
-                cells,
-                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
-                &gb
-            )
-            if r == GHOSTTY_SUCCESS {
+        // Prefer UTF-8. Grow on OUT_OF_SPACE (long ZWJ / combining clusters).
+        var cap = 128
+        for _ in 0..<6 {
+            var storage = [UInt8](repeating: 0, count: cap)
+            var written = 0
+            var needed = 0
+            let result = storage.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
+                var gb = GhosttyBuffer(ptr: buf.baseAddress, cap: buf.count, len: 0)
+                let r = ghostty_render_state_row_cells_get(
+                    cells,
+                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
+                    &gb
+                )
                 written = Int(gb.len)
+                needed = Int(gb.len)
+                return r
             }
-            return r
-        }
-        if result == GHOSTTY_SUCCESS, written > 0 {
-            return String(bytes: storage.prefix(written), encoding: .utf8)
+            if result == GHOSTTY_SUCCESS {
+                if written <= 0 { return nil }
+                return String(bytes: storage.prefix(written), encoding: .utf8)
+            }
+            if result == GHOSTTY_OUT_OF_SPACE {
+                cap = max(needed, cap * 2, 1)
+                continue
+            }
+            break
         }
 
+        // Fallback: GRAPHEMES_BUF requires *at least* graphemes_len u32s (no cap check).
+        // Capping to 16 overflowed the heap on long unicode clusters (vtebench).
         var graphemeLen: UInt32 = 0
         _ = ghostty_render_state_row_cells_get(
             cells,
@@ -236,7 +248,10 @@ extension TerminalRenderer {
             &graphemeLen
         )
         guard graphemeLen > 0 else { return nil }
-        var codepoints = [UInt32](repeating: 0, count: min(Int(graphemeLen), 16))
+        let len = Int(graphemeLen)
+        // Pathological length (corrupt state): refuse rather than allocate gigabytes.
+        guard len <= 4096 else { return nil }
+        var codepoints = [UInt32](repeating: 0, count: len)
         codepoints.withUnsafeMutableBufferPointer { buf in
             _ = ghostty_render_state_row_cells_get(
                 cells,
@@ -244,7 +259,7 @@ extension TerminalRenderer {
                 buf.baseAddress
             )
         }
-        let scalars = codepoints.prefix(Int(graphemeLen)).compactMap { UnicodeScalar($0) }
+        let scalars = codepoints.compactMap { UnicodeScalar($0) }
         let s = String(String.UnicodeScalarView(scalars))
         return s.isEmpty ? nil : s
     }
