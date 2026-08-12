@@ -6,17 +6,28 @@ enum Terminfo {
 
     /// Absolute path to the terminfo database directory (contains `78/xterm-ghostty`).
     static let databasePath: String? = {
-        let candidates: [URL?] = [
-            Bundle.module.url(forResource: "terminfo", withExtension: nil, subdirectory: "Resources"),
-            Bundle.module.url(forResource: "terminfo", withExtension: nil),
-            Bundle.module.resourceURL?.appendingPathComponent("Resources/terminfo"),
-            Bundle.module.resourceURL?.appendingPathComponent("terminfo"),
-            // Source-tree fallback (swift run from package root / debug).
+        // App Resources, SPM resource bundle (when present), then source tree.
+        var candidates: [URL?] = [
+            Bundle.main.url(forResource: "terminfo", withExtension: nil),
+            Bundle.main.url(forResource: "terminfo", withExtension: nil, subdirectory: "Resources"),
+            Bundle.main.resourceURL?.appendingPathComponent("terminfo"),
+            Bundle.main.resourceURL?.appendingPathComponent("Resources/terminfo"),
+        ]
+
+        #if SWIFT_PACKAGE
+        candidates.append(Bundle.module.url(forResource: "terminfo", withExtension: nil, subdirectory: "Resources"))
+        candidates.append(Bundle.module.url(forResource: "terminfo", withExtension: nil))
+        candidates.append(Bundle.module.resourceURL?.appendingPathComponent("Resources/terminfo"))
+        candidates.append(Bundle.module.resourceURL?.appendingPathComponent("terminfo"))
+        #endif
+
+        candidates.append(
             URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent("Resources/terminfo"),
-        ]
+                .appendingPathComponent("Resources/terminfo")
+        )
+
         for case let url? in candidates {
             let entry = url.appendingPathComponent("78/xterm-ghostty")
             if FileManager.default.isReadableFile(atPath: entry.path) {

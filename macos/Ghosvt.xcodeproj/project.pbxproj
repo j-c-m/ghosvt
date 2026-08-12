@@ -1,0 +1,721 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1F979CB70F8C06ED52499EDD /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D81D8B93ABBF401E0F634E55 /* AppDelegate.swift */; };
+		E8F342BC5CC7D491C7F9DFDD /* BrowserHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069F161528BDDD82969C8A93 /* BrowserHistory.swift */; };
+		81BF93952C73E66D83B92B80 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35E4C46FE39AE922435ECBC6 /* Config.swift */; };
+		620D3BAA3CEEAD4D07B35CB7 /* DefaultColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ABA636B6DEB556D52701921 /* DefaultColors.swift */; };
+		05941F5BAF56ACAE47084C41 /* Clipboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F16EDC67D5AB9C37D5CF98 /* Clipboard.swift */; };
+		59FFB4DA50D77F01F69B210E /* KeyBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9281C453364D2EBEAF079612 /* KeyBridge.swift */; };
+		C1440241831CD51C92CF2055 /* UntrustedURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 330A55F0D3341A275BA32CC3 /* UntrustedURL.swift */; };
+		7EC186EBD1A43D38419AC00D /* BrowserExtensionHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37844B66337A3B2C199EB14A /* BrowserExtensionHost.swift */; };
+		2806DFB72C26B5474520CAE9 /* CellInstance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57F9932135547359AB573520 /* CellInstance.swift */; };
+		87985CC6E63D514BCAED6317 /* CellMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CBB623E30829C6B0E750AA3 /* CellMetrics.swift */; };
+		5B4476BA86AA466BB4FBC92A /* CellPaintColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BBF79AD45D2DF9AB52477B /* CellPaintColors.swift */; };
+		82FA8AD90472731C4EA4C8B5 /* ContentLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E98A3EE2182E4DD75926B027 /* ContentLayout.swift */; };
+		628BC304A50B423B9FD362F8 /* EmbeddedBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDF3BCF90A2B46D4286ACB6C /* EmbeddedBrowserView.swift */; };
+		6B28E891EED61748902725E9 /* EmbeddedFonts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BA5D0C65442780A2FE77833 /* EmbeddedFonts.swift */; };
+		AB4E1E12ABB05E8276CF09B4 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1B5C96DD439ABDBF525FFB /* GlyphAtlas.swift */; };
+		5F7E55A9FCD8DED62C77A863 /* KittyGraphicsCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F95C0A47510A048B30C7890 /* KittyGraphicsCache.swift */; };
+		EE75C822CEE317163592547C /* KittyPngDecode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EC8561DCFF8E42C88367FC5 /* KittyPngDecode.swift */; };
+		01E349F65079AB7191E9F3EE /* KittyVirtualUnicode.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9054E94B22C55EF4203E84 /* KittyVirtualUnicode.swift */; };
+		34456565BE3DFBADC921E513 /* MetalTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D6B639A27CA5FBA6363B851 /* MetalTerminalView.swift */; };
+		7CAA0FB977CF25F029A25962 /* ShaperCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 932420256371EAF044E8C8BB /* ShaperCache.swift */; };
+		CC1BE06AE7F8241C630F9DA6 /* Block.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF6A2A6E3E2FE4467B95450F /* Block.swift */; };
+		4F2AA4F962985E6F52E050CA /* Box.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5D0F7A35E7805896AD4AB0B /* Box.swift */; };
+		0B9225915C8CEC7672B6F900 /* Braille.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14204543071907B26B81B0D2 /* Braille.swift */; };
+		E642E7B18366A6182CB3841E /* Branch.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BB9D1F727B4FE16A60924D /* Branch.swift */; };
+		FC04E48695E59F82754404B0 /* Canvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAC706C920BB8A84E291AB04 /* Canvas.swift */; };
+		C1867E86A7A218890C682B52 /* Common.swift in Sources */ = {isa = PBXBuildFile; fileRef = F830C418B152E849BEE1610F /* Common.swift */; };
+		BD1AA4F0A8048A8C15FAA843 /* Geometric.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98E49198EC7F074D459F5093 /* Geometric.swift */; };
+		8917570378BC4AB2AC2D6780 /* Powerline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58AD7829FBD2169A7238CBEC /* Powerline.swift */; };
+		36CA46FDFCA238865DDB8811 /* SpriteFace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69A2CE7C79943D9A13B09813 /* SpriteFace.swift */; };
+		1A3C98F06B58BD80C3013DE4 /* SpriteMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E20DEBD009BA43BA989251 /* SpriteMetrics.swift */; };
+		6A591BB6F29A529E9F3BB1DE /* SystemFontFallback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF02C045289F920C44DA069 /* SystemFontFallback.swift */; };
+		49280E31543539B6881EC49E /* TerminalRenderer+Cursor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 866C8BE085CD92F43ECE90FE /* TerminalRenderer+Cursor.swift */; };
+		C247C1122E05A023EDBB3FD2 /* TerminalRenderer+Grid.swift in Sources */ = {isa = PBXBuildFile; fileRef = F76A64980CBACC4E8F559933 /* TerminalRenderer+Grid.swift */; };
+		3D11C83436C6C65110680179 /* TerminalRenderer+Metal.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6D642D3716D4886B52531A4 /* TerminalRenderer+Metal.swift */; };
+		7E5696297BC4E908D1F3AB53 /* TerminalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D1B0BCECF4F8E9F70636E1A /* TerminalRenderer.swift */; };
+		4C4ACB44C9FA8977D900163C /* ScrollPhysics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EED8BC644456F232F60FF7E /* ScrollPhysics.swift */; };
+		88CA8D8EF0F6DD627A9D2FDF /* LinkResolve.swift in Sources */ = {isa = PBXBuildFile; fileRef = D004B4185A185E440259501B /* LinkResolve.swift */; };
+		2368B03A1526C3FA353BB983 /* PtyPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70F83DC4A5A8F97AACEBAA86 /* PtyPipeline.swift */; };
+		C8C156C2C473F9CEEAC430B2 /* TerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 849861231EB302A176F881E6 /* TerminalSession.swift */; };
+		60308D929E0919EE522E8A01 /* Terminfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1977BB58278998C6DC1DF791 /* Terminfo.swift */; };
+		0FB8F0AD42B7CD82AD3E6ECD /* VtManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DC6CDAB6880C626197D2257 /* VtManager.swift */; };
+		620C3FD9DDB55788F4B4B1A2 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED6C7AE105035B7BC202302 /* main.swift */; };
+		E4C6BFE75BDABAFAC5AAD535 /* pty_spawn.c in Sources */ = {isa = PBXBuildFile; fileRef = 20E5ED3F91BE922B4FE42F36 /* pty_spawn.c */; };
+		C5CACA5955A5E6CFC223889C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 58F02208A1E6A99468703A4E /* Assets.xcassets */; };
+		B5C12AB7F22FF786155A620F /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = DCAFEB5EF23421DEA7414D34 /* Fonts */; };
+		1BAC1028DB10760820AFDC3A /* terminfo in Resources */ = {isa = PBXBuildFile; fileRef = DCCC42E53D5932E0E35BC502 /* terminfo */; };
+		181E92AA0D6F2F05CC178A6B /* libCGhosttyVT.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 36441D9E288A56C6B8180CE1 /* libCGhosttyVT.a */; };
+		AAE5B42433AD88986755BA6A /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8B93F62C2858F81E7AD43C83 /* Metal.framework */; };
+		9908409D90D785D22632AB50 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2A1C917E0C0C0157D603F3F0 /* MetalKit.framework */; };
+		361CBDC235A2DCA9F3920545 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01DD795933460842EABDB99D /* AppKit.framework */; };
+		FB78145BD40506F5DBAF5280 /* CoreText.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 794D387353BA58EECE8F9981 /* CoreText.framework */; };
+		CAC51E63C86D04FFCFEEC054 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D409E7F2BC0A701A617BFBCE /* CoreGraphics.framework */; };
+		5E357ED6F8BB8383224168B9 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 66FE679820520E19235F583E /* QuartzCore.framework */; };
+		3FCD89F030A341BD6F94B5C3 /* ImageIO.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA1E7118940C38D5C9A28B5E /* ImageIO.framework */; };
+		99224BB922BD34BA09511C4A /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F2BE3CC3DE407F7C3D0D4B12 /* WebKit.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		8BEFD367C4AB92E0F59B0B1F /* Ghosvt.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ghosvt.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		36441D9E288A56C6B8180CE1 /* libCGhosttyVT.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libCGhosttyVT.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		D81D8B93ABBF401E0F634E55 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppDelegate.swift"; sourceTree = "<group>"; };
+		069F161528BDDD82969C8A93 /* BrowserHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BrowserHistory.swift"; sourceTree = "<group>"; };
+		35E4C46FE39AE922435ECBC6 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Config.swift"; sourceTree = "<group>"; };
+		5ABA636B6DEB556D52701921 /* DefaultColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DefaultColors.swift"; sourceTree = "<group>"; };
+		E7F16EDC67D5AB9C37D5CF98 /* Clipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Clipboard.swift"; sourceTree = "<group>"; };
+		9281C453364D2EBEAF079612 /* KeyBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KeyBridge.swift"; sourceTree = "<group>"; };
+		330A55F0D3341A275BA32CC3 /* UntrustedURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UntrustedURL.swift"; sourceTree = "<group>"; };
+		37844B66337A3B2C199EB14A /* BrowserExtensionHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BrowserExtensionHost.swift"; sourceTree = "<group>"; };
+		57F9932135547359AB573520 /* CellInstance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CellInstance.swift"; sourceTree = "<group>"; };
+		9CBB623E30829C6B0E750AA3 /* CellMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CellMetrics.swift"; sourceTree = "<group>"; };
+		D8BBF79AD45D2DF9AB52477B /* CellPaintColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CellPaintColors.swift"; sourceTree = "<group>"; };
+		E98A3EE2182E4DD75926B027 /* ContentLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentLayout.swift"; sourceTree = "<group>"; };
+		EDF3BCF90A2B46D4286ACB6C /* EmbeddedBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EmbeddedBrowserView.swift"; sourceTree = "<group>"; };
+		9BA5D0C65442780A2FE77833 /* EmbeddedFonts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EmbeddedFonts.swift"; sourceTree = "<group>"; };
+		3A1B5C96DD439ABDBF525FFB /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GlyphAtlas.swift"; sourceTree = "<group>"; };
+		3F95C0A47510A048B30C7890 /* KittyGraphicsCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KittyGraphicsCache.swift"; sourceTree = "<group>"; };
+		3EC8561DCFF8E42C88367FC5 /* KittyPngDecode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KittyPngDecode.swift"; sourceTree = "<group>"; };
+		DF9054E94B22C55EF4203E84 /* KittyVirtualUnicode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KittyVirtualUnicode.swift"; sourceTree = "<group>"; };
+		9D6B639A27CA5FBA6363B851 /* MetalTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MetalTerminalView.swift"; sourceTree = "<group>"; };
+		932420256371EAF044E8C8BB /* ShaperCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ShaperCache.swift"; sourceTree = "<group>"; };
+		CF6A2A6E3E2FE4467B95450F /* Block.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Block.swift"; sourceTree = "<group>"; };
+		F5D0F7A35E7805896AD4AB0B /* Box.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Box.swift"; sourceTree = "<group>"; };
+		14204543071907B26B81B0D2 /* Braille.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Braille.swift"; sourceTree = "<group>"; };
+		D2BB9D1F727B4FE16A60924D /* Branch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Branch.swift"; sourceTree = "<group>"; };
+		BAC706C920BB8A84E291AB04 /* Canvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Canvas.swift"; sourceTree = "<group>"; };
+		F830C418B152E849BEE1610F /* Common.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Common.swift"; sourceTree = "<group>"; };
+		98E49198EC7F074D459F5093 /* Geometric.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Geometric.swift"; sourceTree = "<group>"; };
+		58AD7829FBD2169A7238CBEC /* Powerline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Powerline.swift"; sourceTree = "<group>"; };
+		69A2CE7C79943D9A13B09813 /* SpriteFace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpriteFace.swift"; sourceTree = "<group>"; };
+		10E20DEBD009BA43BA989251 /* SpriteMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SpriteMetrics.swift"; sourceTree = "<group>"; };
+		9FF02C045289F920C44DA069 /* SystemFontFallback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SystemFontFallback.swift"; sourceTree = "<group>"; };
+		866C8BE085CD92F43ECE90FE /* TerminalRenderer+Cursor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalRenderer+Cursor.swift"; sourceTree = "<group>"; };
+		F76A64980CBACC4E8F559933 /* TerminalRenderer+Grid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalRenderer+Grid.swift"; sourceTree = "<group>"; };
+		C6D642D3716D4886B52531A4 /* TerminalRenderer+Metal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalRenderer+Metal.swift"; sourceTree = "<group>"; };
+		7D1B0BCECF4F8E9F70636E1A /* TerminalRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalRenderer.swift"; sourceTree = "<group>"; };
+		6EED8BC644456F232F60FF7E /* ScrollPhysics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ScrollPhysics.swift"; sourceTree = "<group>"; };
+		D004B4185A185E440259501B /* LinkResolve.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LinkResolve.swift"; sourceTree = "<group>"; };
+		70F83DC4A5A8F97AACEBAA86 /* PtyPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PtyPipeline.swift"; sourceTree = "<group>"; };
+		849861231EB302A176F881E6 /* TerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalSession.swift"; sourceTree = "<group>"; };
+		1977BB58278998C6DC1DF791 /* Terminfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Terminfo.swift"; sourceTree = "<group>"; };
+		4DC6CDAB6880C626197D2257 /* VtManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VtManager.swift"; sourceTree = "<group>"; };
+		6ED6C7AE105035B7BC202302 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "main.swift"; sourceTree = "<group>"; };
+		20E5ED3F91BE922B4FE42F36 /* pty_spawn.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "pty_spawn.c"; sourceTree = "<group>"; };
+		E4B11923AEAC04672DC61827 /* CGhosttyVT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "CGhosttyVT.h"; sourceTree = "<group>"; };
+		41903C197BB8531018C261D4 /* pty_spawn.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "pty_spawn.h"; sourceTree = "<group>"; };
+		EB8471B18BCA514ACD0C955D /* module.modulemap */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.module-map"; path = module.modulemap; sourceTree = "<group>"; };
+		58F02208A1E6A99468703A4E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		5DE24A0370BF41BA5A41E4BE /* Ghosvt-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Ghosvt-Info.plist"; sourceTree = "<group>"; };
+		DCAFEB5EF23421DEA7414D34 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = "../Sources/Ghosvt/Resources/Fonts"; sourceTree = "<group>"; };
+		DCCC42E53D5932E0E35BC502 /* terminfo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = terminfo; path = "../Sources/Ghosvt/Resources/terminfo"; sourceTree = "<group>"; };
+		8B93F62C2858F81E7AD43C83 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		2A1C917E0C0C0157D603F3F0 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		01DD795933460842EABDB99D /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
+		794D387353BA58EECE8F9981 /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
+		D409E7F2BC0A701A617BFBCE /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		66FE679820520E19235F583E /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		FA1E7118940C38D5C9A28B5E /* ImageIO.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ImageIO.framework; path = System/Library/Frameworks/ImageIO.framework; sourceTree = SDKROOT; };
+		F2BE3CC3DE407F7C3D0D4B12 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2B0E06E4CEA746BF09AF22EB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				181E92AA0D6F2F05CC178A6B /* libCGhosttyVT.a in Frameworks */,
+				AAE5B42433AD88986755BA6A /* Metal.framework in Frameworks */,
+				9908409D90D785D22632AB50 /* MetalKit.framework in Frameworks */,
+				361CBDC235A2DCA9F3920545 /* AppKit.framework in Frameworks */,
+				FB78145BD40506F5DBAF5280 /* CoreText.framework in Frameworks */,
+				CAC51E63C86D04FFCFEEC054 /* CoreGraphics.framework in Frameworks */,
+				5E357ED6F8BB8383224168B9 /* QuartzCore.framework in Frameworks */,
+				3FCD89F030A341BD6F94B5C3 /* ImageIO.framework in Frameworks */,
+				99224BB922BD34BA09511C4A /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DCB5A9728D050E049B9CAB63 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		30022D12A4E8082CBB9711C4 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				D81D8B93ABBF401E0F634E55 /* AppDelegate.swift */,
+			);
+			path = "App";
+			name = "App";
+			sourceTree = "<group>";
+		};
+		1179909B7A81D1BC73B36EE9 /* Browser */ = {
+			isa = PBXGroup;
+			children = (
+				069F161528BDDD82969C8A93 /* BrowserHistory.swift */,
+			);
+			path = "Browser";
+			name = "Browser";
+			sourceTree = "<group>";
+		};
+		F945DCEF635DD670D234FC91 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				35E4C46FE39AE922435ECBC6 /* Config.swift */,
+				5ABA636B6DEB556D52701921 /* DefaultColors.swift */,
+			);
+			path = "Config";
+			name = "Config";
+			sourceTree = "<group>";
+		};
+		88F31205128D296672D6944F /* Input */ = {
+			isa = PBXGroup;
+			children = (
+				E7F16EDC67D5AB9C37D5CF98 /* Clipboard.swift */,
+				9281C453364D2EBEAF079612 /* KeyBridge.swift */,
+				330A55F0D3341A275BA32CC3 /* UntrustedURL.swift */,
+			);
+			path = "Input";
+			name = "Input";
+			sourceTree = "<group>";
+		};
+		DB86FF42388F87A01D43E08A /* Sprite */ = {
+			isa = PBXGroup;
+			children = (
+				CF6A2A6E3E2FE4467B95450F /* Block.swift */,
+				F5D0F7A35E7805896AD4AB0B /* Box.swift */,
+				14204543071907B26B81B0D2 /* Braille.swift */,
+				D2BB9D1F727B4FE16A60924D /* Branch.swift */,
+				BAC706C920BB8A84E291AB04 /* Canvas.swift */,
+				F830C418B152E849BEE1610F /* Common.swift */,
+				98E49198EC7F074D459F5093 /* Geometric.swift */,
+				58AD7829FBD2169A7238CBEC /* Powerline.swift */,
+				69A2CE7C79943D9A13B09813 /* SpriteFace.swift */,
+				10E20DEBD009BA43BA989251 /* SpriteMetrics.swift */,
+			);
+			path = "Sprite";
+			name = "Sprite";
+			sourceTree = "<group>";
+		};
+		BF16BC7E5CDD0714A9957947 /* Render */ = {
+			isa = PBXGroup;
+			children = (
+				DB86FF42388F87A01D43E08A /* Sprite */,
+				37844B66337A3B2C199EB14A /* BrowserExtensionHost.swift */,
+				57F9932135547359AB573520 /* CellInstance.swift */,
+				9CBB623E30829C6B0E750AA3 /* CellMetrics.swift */,
+				D8BBF79AD45D2DF9AB52477B /* CellPaintColors.swift */,
+				E98A3EE2182E4DD75926B027 /* ContentLayout.swift */,
+				EDF3BCF90A2B46D4286ACB6C /* EmbeddedBrowserView.swift */,
+				9BA5D0C65442780A2FE77833 /* EmbeddedFonts.swift */,
+				3A1B5C96DD439ABDBF525FFB /* GlyphAtlas.swift */,
+				3F95C0A47510A048B30C7890 /* KittyGraphicsCache.swift */,
+				3EC8561DCFF8E42C88367FC5 /* KittyPngDecode.swift */,
+				DF9054E94B22C55EF4203E84 /* KittyVirtualUnicode.swift */,
+				9D6B639A27CA5FBA6363B851 /* MetalTerminalView.swift */,
+				932420256371EAF044E8C8BB /* ShaperCache.swift */,
+				9FF02C045289F920C44DA069 /* SystemFontFallback.swift */,
+				866C8BE085CD92F43ECE90FE /* TerminalRenderer+Cursor.swift */,
+				F76A64980CBACC4E8F559933 /* TerminalRenderer+Grid.swift */,
+				C6D642D3716D4886B52531A4 /* TerminalRenderer+Metal.swift */,
+				7D1B0BCECF4F8E9F70636E1A /* TerminalRenderer.swift */,
+			);
+			path = "Render";
+			name = "Render";
+			sourceTree = "<group>";
+		};
+		19DC21B8E0FFAEC7FE733CC4 /* Scroll */ = {
+			isa = PBXGroup;
+			children = (
+				6EED8BC644456F232F60FF7E /* ScrollPhysics.swift */,
+			);
+			path = "Scroll";
+			name = "Scroll";
+			sourceTree = "<group>";
+		};
+		F373C1905746DBDF707E74F2 /* Vt */ = {
+			isa = PBXGroup;
+			children = (
+				D004B4185A185E440259501B /* LinkResolve.swift */,
+				70F83DC4A5A8F97AACEBAA86 /* PtyPipeline.swift */,
+				849861231EB302A176F881E6 /* TerminalSession.swift */,
+				1977BB58278998C6DC1DF791 /* Terminfo.swift */,
+				4DC6CDAB6880C626197D2257 /* VtManager.swift */,
+			);
+			path = "Vt";
+			name = "Vt";
+			sourceTree = "<group>";
+		};
+		9BAEFE8730A8970406353D7E /* Ghosvt */ = {
+			isa = PBXGroup;
+			children = (
+				30022D12A4E8082CBB9711C4 /* App */,
+				1179909B7A81D1BC73B36EE9 /* Browser */,
+				F945DCEF635DD670D234FC91 /* Config */,
+				88F31205128D296672D6944F /* Input */,
+				BF16BC7E5CDD0714A9957947 /* Render */,
+				19DC21B8E0FFAEC7FE733CC4 /* Scroll */,
+				F373C1905746DBDF707E74F2 /* Vt */,
+				6ED6C7AE105035B7BC202302 /* main.swift */,
+			);
+			path = "../Sources/Ghosvt";
+			name = "Ghosvt";
+			sourceTree = "<group>";
+		};
+		4EFD1FE9582E9C942DCF0266 /* CGhosttyVT */ = {
+			isa = PBXGroup;
+			children = (
+				20E5ED3F91BE922B4FE42F36 /* pty_spawn.c */,
+				E4B11923AEAC04672DC61827 /* CGhosttyVT.h */,
+				41903C197BB8531018C261D4 /* pty_spawn.h */,
+				EB8471B18BCA514ACD0C955D /* module.modulemap */,
+			);
+			path = "../Sources/CGhosttyVT";
+			sourceTree = "<group>";
+		};
+		D8BD5DD42310CB1693158D7B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				8B93F62C2858F81E7AD43C83 /* Metal.framework */,
+				2A1C917E0C0C0157D603F3F0 /* MetalKit.framework */,
+				01DD795933460842EABDB99D /* AppKit.framework */,
+				794D387353BA58EECE8F9981 /* CoreText.framework */,
+				D409E7F2BC0A701A617BFBCE /* CoreGraphics.framework */,
+				66FE679820520E19235F583E /* QuartzCore.framework */,
+				FA1E7118940C38D5C9A28B5E /* ImageIO.framework */,
+				F2BE3CC3DE407F7C3D0D4B12 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		30772F61AC9BDC8631745269 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8BEFD367C4AB92E0F59B0B1F /* Ghosvt.app */,
+				36441D9E288A56C6B8180CE1 /* libCGhosttyVT.a */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		71D2E56247FE75C3DCE9B609 = {
+			isa = PBXGroup;
+			children = (
+				9BAEFE8730A8970406353D7E /* Ghosvt */,
+				4EFD1FE9582E9C942DCF0266 /* CGhosttyVT */,
+				58F02208A1E6A99468703A4E /* Assets.xcassets */,
+				5DE24A0370BF41BA5A41E4BE /* Ghosvt-Info.plist */,
+				DCAFEB5EF23421DEA7414D34 /* Fonts */,
+				DCCC42E53D5932E0E35BC502 /* terminfo */,
+				D8BD5DD42310CB1693158D7B /* Frameworks */,
+				30772F61AC9BDC8631745269 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E92819776D1D900150F17949 /* Ghosvt */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6711330603A2166F2A10202B /* Build configuration list for PBXNativeTarget "Ghosvt" */;
+			buildPhases = (
+				935381EFEA07FA512FD60325 /* Prebuild libghostty-vt */,
+				ADED5666E3AFC6A59742B894 /* Sources */,
+				2B0E06E4CEA746BF09AF22EB /* Frameworks */,
+				D153AC7A53FD9A54260CB9A7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				ACB9D88EF357B00C5332F4A4 /* PBXTargetDependency */,
+			);
+			name = Ghosvt;
+			productName = Ghosvt;
+			productReference = 8BEFD367C4AB92E0F59B0B1F /* Ghosvt.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E056375E9960411B9793EB75 /* CGhosttyVT */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 81A5AF3E57ADD9649C642615 /* Build configuration list for PBXNativeTarget "CGhosttyVT" */;
+			buildPhases = (
+				EC2C92FD168E551689653548 /* Sources */,
+				DCB5A9728D050E049B9CAB63 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CGhosttyVT;
+			productName = CGhosttyVT;
+			productReference = 36441D9E288A56C6B8180CE1 /* libCGhosttyVT.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 83F74AB4E1F893805B250CC8 /* Build configuration list for PBXProject "Ghosvt" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 71D2E56247FE75C3DCE9B609;
+			productRefGroup = 30772F61AC9BDC8631745269 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E92819776D1D900150F17949 /* Ghosvt */,
+				E056375E9960411B9793EB75 /* CGhosttyVT */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D153AC7A53FD9A54260CB9A7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5CACA5955A5E6CFC223889C /* Assets.xcassets in Resources */,
+				B5C12AB7F22FF786155A620F /* Fonts in Resources */,
+				1BAC1028DB10760820AFDC3A /* terminfo in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		935381EFEA07FA512FD60325 /* Prebuild libghostty-vt */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Prebuild libghostty-vt";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\n\"$SRCROOT/../scripts/build-libghostty.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		ADED5666E3AFC6A59742B894 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1F979CB70F8C06ED52499EDD /* AppDelegate.swift in Sources */,
+				E8F342BC5CC7D491C7F9DFDD /* BrowserHistory.swift in Sources */,
+				81BF93952C73E66D83B92B80 /* Config.swift in Sources */,
+				620D3BAA3CEEAD4D07B35CB7 /* DefaultColors.swift in Sources */,
+				05941F5BAF56ACAE47084C41 /* Clipboard.swift in Sources */,
+				59FFB4DA50D77F01F69B210E /* KeyBridge.swift in Sources */,
+				C1440241831CD51C92CF2055 /* UntrustedURL.swift in Sources */,
+				7EC186EBD1A43D38419AC00D /* BrowserExtensionHost.swift in Sources */,
+				2806DFB72C26B5474520CAE9 /* CellInstance.swift in Sources */,
+				87985CC6E63D514BCAED6317 /* CellMetrics.swift in Sources */,
+				5B4476BA86AA466BB4FBC92A /* CellPaintColors.swift in Sources */,
+				82FA8AD90472731C4EA4C8B5 /* ContentLayout.swift in Sources */,
+				628BC304A50B423B9FD362F8 /* EmbeddedBrowserView.swift in Sources */,
+				6B28E891EED61748902725E9 /* EmbeddedFonts.swift in Sources */,
+				AB4E1E12ABB05E8276CF09B4 /* GlyphAtlas.swift in Sources */,
+				5F7E55A9FCD8DED62C77A863 /* KittyGraphicsCache.swift in Sources */,
+				EE75C822CEE317163592547C /* KittyPngDecode.swift in Sources */,
+				01E349F65079AB7191E9F3EE /* KittyVirtualUnicode.swift in Sources */,
+				34456565BE3DFBADC921E513 /* MetalTerminalView.swift in Sources */,
+				7CAA0FB977CF25F029A25962 /* ShaperCache.swift in Sources */,
+				CC1BE06AE7F8241C630F9DA6 /* Block.swift in Sources */,
+				4F2AA4F962985E6F52E050CA /* Box.swift in Sources */,
+				0B9225915C8CEC7672B6F900 /* Braille.swift in Sources */,
+				E642E7B18366A6182CB3841E /* Branch.swift in Sources */,
+				FC04E48695E59F82754404B0 /* Canvas.swift in Sources */,
+				C1867E86A7A218890C682B52 /* Common.swift in Sources */,
+				BD1AA4F0A8048A8C15FAA843 /* Geometric.swift in Sources */,
+				8917570378BC4AB2AC2D6780 /* Powerline.swift in Sources */,
+				36CA46FDFCA238865DDB8811 /* SpriteFace.swift in Sources */,
+				1A3C98F06B58BD80C3013DE4 /* SpriteMetrics.swift in Sources */,
+				6A591BB6F29A529E9F3BB1DE /* SystemFontFallback.swift in Sources */,
+				49280E31543539B6881EC49E /* TerminalRenderer+Cursor.swift in Sources */,
+				C247C1122E05A023EDBB3FD2 /* TerminalRenderer+Grid.swift in Sources */,
+				3D11C83436C6C65110680179 /* TerminalRenderer+Metal.swift in Sources */,
+				7E5696297BC4E908D1F3AB53 /* TerminalRenderer.swift in Sources */,
+				4C4ACB44C9FA8977D900163C /* ScrollPhysics.swift in Sources */,
+				88CA8D8EF0F6DD627A9D2FDF /* LinkResolve.swift in Sources */,
+				2368B03A1526C3FA353BB983 /* PtyPipeline.swift in Sources */,
+				C8C156C2C473F9CEEAC430B2 /* TerminalSession.swift in Sources */,
+				60308D929E0919EE522E8A01 /* Terminfo.swift in Sources */,
+				0FB8F0AD42B7CD82AD3E6ECD /* VtManager.swift in Sources */,
+				620C3FD9DDB55788F4B4B1A2 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC2C92FD168E551689653548 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E4C6BFE75BDABAFAC5AAD535 /* pty_spawn.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		ACB9D88EF357B00C5332F4A4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E056375E9960411B9793EB75 /* CGhosttyVT */;
+			targetProxy = CA03EBA71444F394E44CBB38 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		CA03EBA71444F394E44CBB38 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E056375E9960411B9793EB75;
+			remoteInfo = CGhosttyVT;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin XCBuildConfiguration section */
+		EFB7015A6DBA9BDD373E83BE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"GHOSTTY_STATIC=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E6ECEAAD007F6AE7CA886652 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_OPTIMIZATION_LEVEL = s;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GHOSTTY_STATIC=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		5FBF61FB8403F6F8DFDF53EB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Ghosvt-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/lib",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-force_load",
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/lib/libghostty-vt.a",
+					"-lutil",
+					"-lsqlite3",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.ghosvt.ghosvt;
+				PRODUCT_NAME = Ghosvt;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/include",
+					"$(SRCROOT)/../Sources/CGhosttyVT",
+				);
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/../Sources/CGhosttyVT";
+			};
+			name = Debug;
+		};
+		DC3F8E4ECAF64F57E3E6D9BC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Ghosvt-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/lib",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-force_load",
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/lib/libghostty-vt.a",
+					"-lutil",
+					"-lsqlite3",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.ghosvt.ghosvt;
+				PRODUCT_NAME = Ghosvt;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/include",
+					"$(SRCROOT)/../Sources/CGhosttyVT",
+				);
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/../Sources/CGhosttyVT";
+			};
+			name = Release;
+		};
+		B24D2CD7EC3DC2C304ADD52C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEFINES_MODULE = YES;
+				EXECUTABLE_PREFIX = lib;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/include",
+					"$(SRCROOT)/../Sources/CGhosttyVT",
+				);
+				MACH_O_TYPE = staticlib;
+				MODULEMAP_FILE = "../Sources/CGhosttyVT/module.modulemap";
+				PRODUCT_MODULE_NAME = CGhosttyVT;
+				PRODUCT_NAME = CGhosttyVT;
+				SKIP_INSTALL = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GHOSTTY_STATIC=1",
+					"$(inherited)",
+				);
+			};
+			name = Debug;
+		};
+		EE4A745440E8FDD8D0F763FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEFINES_MODULE = YES;
+				EXECUTABLE_PREFIX = lib;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../Vendor/ghostty/zig-out/include",
+					"$(SRCROOT)/../Sources/CGhosttyVT",
+				);
+				MACH_O_TYPE = staticlib;
+				MODULEMAP_FILE = "../Sources/CGhosttyVT/module.modulemap";
+				PRODUCT_MODULE_NAME = CGhosttyVT;
+				PRODUCT_NAME = CGhosttyVT;
+				SKIP_INSTALL = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GHOSTTY_STATIC=1",
+					"$(inherited)",
+				);
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		83F74AB4E1F893805B250CC8 /* Build configuration list for PBXProject "Ghosvt" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EFB7015A6DBA9BDD373E83BE /* Debug */,
+				E6ECEAAD007F6AE7CA886652 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6711330603A2166F2A10202B /* Build configuration list for PBXNativeTarget "Ghosvt" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5FBF61FB8403F6F8DFDF53EB /* Debug */,
+				DC3F8E4ECAF64F57E3E6D9BC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		81A5AF3E57ADD9649C642615 /* Build configuration list for PBXNativeTarget "CGhosttyVT" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B24D2CD7EC3DC2C304ADD52C /* Debug */,
+				EE4A745440E8FDD8D0F763FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}

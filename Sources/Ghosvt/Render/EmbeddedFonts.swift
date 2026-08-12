@@ -152,7 +152,18 @@ enum EmbeddedFonts {
         let name = (face.rawValue as NSString).deletingPathExtension
         let ext = (face.rawValue as NSString).pathExtension
 
-        // SPM Bundle.module with `.copy("Resources")` → Resources/Fonts/…
+        // App Resources, SPM resource bundle (when present), then source tree.
+        if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Fonts") {
+            return url
+        }
+        if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Resources/Fonts") {
+            return url
+        }
+        if let url = Bundle.main.url(forResource: face.rawValue, withExtension: nil) {
+            return url
+        }
+
+        #if SWIFT_PACKAGE
         if let url = Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Fonts") {
             return url
         }
@@ -162,8 +173,8 @@ enum EmbeddedFonts {
         if let url = Bundle.module.url(forResource: face.rawValue, withExtension: nil) {
             return url
         }
+        #endif
 
-        // Source-tree fallback (debug without resource bundle).
         let dev = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

@@ -11,7 +11,29 @@ Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-
 - Zig (same major as Ghostty; see [Ghostty build docs](https://ghostty.org/docs/install/build))
 - Non-sandboxed build (`login` needs a non-sandbox environment)
 
-## Build
+## macOS app (canonical)
+
+Ghostty-shaped layout: Xcode owns the Swift app; Zig builds static **libghostty-vt**.
+
+```bash
+./scripts/build-app.sh
+open macos/build/Release/Ghosvt.app
+```
+
+| | |
+|--|--|
+| Project | `macos/Ghosvt.xcodeproj` |
+| Bundle ID | `dev.ghosvt.ghosvt` |
+| Product | `macos/build/Release/Ghosvt.app` |
+| Arch | host only (no universal) |
+| Sign | ad-hoc / Sign to Run Locally |
+| Sandbox | **off** (required for `login`) |
+
+Or open `macos/Ghosvt.xcodeproj` in Xcode and Run. The target pre-builds libghostty-vt when needed.
+
+New Swift or C sources must be added to `macos/Ghosvt.xcodeproj` (explicit file list). Fonts and terminfo are folder references and pick up tree changes automatically. SPM/`swift build` does not update the app target.
+
+## CLI (SPM)
 
 ```bash
 ./scripts/build-libghostty.sh   # pin + patches + libghostty-vt.a
@@ -168,13 +190,16 @@ Refresh embedded fonts:
 
 | Script | Purpose |
 |--------|---------|
+| `scripts/build-app.sh` | libghostty-vt + `xcodebuild` → `macos/build/Release/Ghosvt.app` |
 | `scripts/build-libghostty.sh` | Pin Ghostty @ `Vendor/ghostty.rev`, apply `patches/`, build `libghostty-vt.a` |
-| `scripts/run.sh` | Stamp-aware libghostty build + release run |
+| `scripts/run.sh` | Stamp-aware libghostty build + SPM release run |
 | `scripts/fetch-terminfo.sh` | Refresh bundled terminfo |
 | `scripts/fetch-fonts.sh` | Refresh embedded fonts |
 
 | Path | Purpose |
 |------|---------|
+| `macos/Ghosvt.xcodeproj` | App target (Swift + CGhosttyVT + resources) |
+| `macos/Assets.xcassets` | App icon |
 | `Vendor/ghostty.rev` | Pinned Ghostty commit |
 | `patches/*.patch` | Local libghostty-vt patches (search C shim) |
 | `Vendor/ghostty/` | Working tree (gitignored) |
