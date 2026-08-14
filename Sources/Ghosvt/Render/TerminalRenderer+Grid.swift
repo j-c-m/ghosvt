@@ -187,29 +187,34 @@ extension TerminalRenderer {
                 continue
             }
 
-            let rowCells = collectRowCells(
-                cellsHandle: cellsHandle,
-                layout: layout,
-                defFg: defFg,
-                defBg: defBg
-            )
             let base = rowIndex * layout.cols
-            let n = min(rowCells.count, layout.cols)
-            if n > 0, base + n <= rowCellCache.count {
-                rowCellCache.replaceSubrange(base..<(base + n), with: rowCells[0..<n])
-            }
+            let n = layout.cols
+            guard base + n <= rowCellCache.count else { continue }
             let rowCursor: Int? = (cursorInViewport && Int(curY) == rowIndex) ? Int(curX) : nil
-            paintRow(
-                rowCells: rowCells,
-                rowIndex: rowIndex,
-                metrics: metrics,
-                layout: layout,
-                defBg: defBg,
-                cellWInt: cellWInt,
-                cellHInt: cellHInt,
-                rowIter: iter,
-                cursorCol: rowCursor
-            )
+            rowCellCache.withUnsafeMutableBufferPointer { buf in
+                let dest = UnsafeMutableBufferPointer(
+                    start: buf.baseAddress.unsafelyUnwrapped + base,
+                    count: n
+                )
+                collectRowCells(
+                    cellsHandle: cellsHandle,
+                    layout: layout,
+                    defFg: defFg,
+                    defBg: defBg,
+                    dest: dest
+                )
+                paintRow(
+                    rowCells: UnsafeBufferPointer(start: dest.baseAddress, count: dest.count),
+                    rowIndex: rowIndex,
+                    metrics: metrics,
+                    layout: layout,
+                    defBg: defBg,
+                    cellWInt: cellWInt,
+                    cellHInt: cellHInt,
+                    rowIter: iter,
+                    cursorCol: rowCursor
+                )
+            }
 
             var clean = false
             _ = ghostty_render_state_row_set(iter, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
@@ -224,16 +229,14 @@ extension TerminalRenderer {
         cellsHandle: GhosttyRenderStateRowCells,
         layout: LayoutKey,
         defFg: GhosttyColorRgb,
-        defBg: GhosttyColorRgb
-    ) -> [TerminalRowCell] {
+        defBg: GhosttyColorRgb,
+        dest: UnsafeMutableBufferPointer<TerminalRowCell>
+    ) {
         let empty = TerminalRowCell(
             text: "", isWideHead: false, isWideTail: false,
             fg: defFg, bg: defBg,
             bold: false, italic: false, faint: false, inverse: false, underline: false
         )
-        if collectScratch.count != layout.cols {
-            collectScratch = Array(repeating: empty, count: layout.cols)
-        }
 
         var skipTail = false
         var col = 0
@@ -318,7 +321,7 @@ extension TerminalRenderer {
                 cp = packed.cp
             }
 
-            collectScratch[col] = TerminalRowCell(
+            dest[col] = TerminalRowCell(
                 text: text,
                 cp: cp,
                 isWideHead: isWideHead,
@@ -332,15 +335,14 @@ extension TerminalRenderer {
                 underline: underline
             )
         }
-        while col < layout.cols {
-            collectScratch[col] = empty
+        while col < dest.count {
+            dest[col] = empty
             col += 1
         }
-        return collectScratch
     }
 
     func paintRow(
-        rowCells: [TerminalRowCell],
+        rowCells: UnsafeBufferPointer<TerminalRowCell>,
         rowIndex: Int,
         metrics: CellMetrics,
         layout: LayoutKey,
@@ -406,11 +408,11 @@ extension TerminalRenderer {
         let originX = layout.originX + layout.padPx
         let cellW = layout.cellW
         let cellH = layout.cellH
-        rowCells.withUnsafeBufferPointer { cellsBuf in
-            gridCells.withUnsafeMutableBufferPointer { gridBuf in
-                var col = 0
-                while col < layout.cols {
-                    let cell = cellsBuf.baseAddress.unsafelyUnwrapped + col
+        gridCells.withUnsafeMutableBufferPointer { gridBuf in
+            let cellBase = rowCells.baseAddress.unsafelyUnwrapped
+            var col = 0
+            while col < layout.cols {
+                let cell = cellBase + col
                     let x = (originX + Float(col) * cellW)
                         .rounded(.toNearestOrAwayFromZero)
                     let hl = hasHighlight ? highlight(for: col) : .none
@@ -444,7 +446,6 @@ extension TerminalRenderer {
                     }
                     col += 1
                 }
-            }
         }
 
         // 2) Shape text runs and stamp glyphs.
@@ -458,7 +459,7 @@ extension TerminalRenderer {
             breakCols.append(h.startX)
             breakCols.append(h.endX + 1)
         }
-        let segments = segmentRuns(
+        segmentRuns(
             rowCells,
             selectionLo: nil,
             selectionHi: nil,
@@ -467,7 +468,7 @@ extension TerminalRenderer {
             metrics: metrics,
             layout: layout
         )
-        for seg in segments {
+        for seg in runSegScratch {
             switch seg {
             case .wide(let col):
                 paintWideOrFallback(
@@ -488,29 +489,21 @@ extension TerminalRenderer {
         }
     }
 
-    enum RunSeg {
-        case run(
-            start: Int, end: Int, style: TextStyleKey,
-            contentHash: UInt64, face: CodepointCache.FaceKind
-        )
-        case wide(col: Int)
-    }
-
     /// Segment a row into shape runs (Ghostty `RunIterator`).
     ///
     /// Breaks on: text style (not bg), wide heads, font index (Ghostty
     /// `getIndex`), selection / search, cursor, and `fi`/`fl`/`st`.
     /// Spaces and empty cells stay in the run. Trailing empty cells are trimmed.
     func segmentRuns(
-        _ cells: [TerminalRowCell],
+        _ cells: UnsafeBufferPointer<TerminalRowCell>,
         selectionLo: Int?,
         selectionHi: Int?,
         highlightBreaks: [Int] = [],
         cursorCol: Int?,
         metrics: CellMetrics,
         layout: LayoutKey
-    ) -> [RunSeg] {
-        var segs: [RunSeg] = []
+    ) {
+        runSegScratch.removeAll(keepingCapacity: true)
         var i = 0
         var runStart: Int?
         var runStyle: TextStyleKey?
@@ -553,7 +546,7 @@ extension TerminalRenderer {
                 return
             }
             ShaperCache.mix(&runHash, UInt64(end - s))
-            segs.append(.run(
+            runSegScratch.append(.run(
                 start: s, end: end, style: st,
                 contentHash: runHash, face: runFace ?? .primary
             ))
@@ -594,7 +587,7 @@ extension TerminalRenderer {
             }
             if c.isWideHead {
                 flushRun(upTo: i)
-                segs.append(.wide(col: i))
+                runSegScratch.append(.wide(col: i))
                 i += 1
                 continue
             }
@@ -616,7 +609,6 @@ extension TerminalRenderer {
             i += 1
         }
         flushRun(upTo: maxCol)
-        return segs
     }
 
     /// Featured primary faces + ASCII glyph tables for this metrics / atlas gen.
@@ -676,7 +668,7 @@ extension TerminalRenderer {
     func paintSinglePrimaryCell(
         col: Int,
         style: TextStyleKey,
-        rowCells: [TerminalRowCell],
+        rowCells: UnsafeBufferPointer<TerminalRowCell>,
         rowIndex: Int,
         metrics: CellMetrics,
         layout: LayoutKey,
@@ -780,7 +772,7 @@ extension TerminalRenderer {
         style: TextStyleKey,
         contentHash: UInt64,
         face: CodepointCache.FaceKind,
-        rowCells: [TerminalRowCell],
+        rowCells: UnsafeBufferPointer<TerminalRowCell>,
         rowIndex: Int,
         metrics: CellMetrics,
         layout: LayoutKey,
@@ -793,8 +785,8 @@ extension TerminalRenderer {
 
         // Ghostty: a run is one font index. Primary face is shaped; else cell-by-cell.
         if face == .primary {
-            // One cell cannot ligate. Combining clusters still go through the shaper.
-            if end - start == 1, rowCells[start].text.unicodeScalars.count <= 1 {
+            // One cell cannot ligate. Combining clusters store text and still shape.
+            if end - start == 1, rowCells[start].text.isEmpty {
                 paintSinglePrimaryCell(
                     col: start, style: style, rowCells: rowCells,
                     rowIndex: rowIndex, metrics: metrics, layout: layout,
@@ -825,7 +817,7 @@ extension TerminalRenderer {
         end: Int,
         style: TextStyleKey,
         contentHash: UInt64,
-        rowCells: [TerminalRowCell],
+        rowCells: UnsafeBufferPointer<TerminalRowCell>,
         rowIndex: Int,
         metrics: CellMetrics,
         layout: LayoutKey,
@@ -882,7 +874,7 @@ extension TerminalRenderer {
         start: Int,
         end: Int,
         style: TextStyleKey,
-        rowCells: [TerminalRowCell],
+        rowCells: UnsafeBufferPointer<TerminalRowCell>,
         rowIndex: Int,
         metrics: CellMetrics,
         layout: LayoutKey,
@@ -900,11 +892,12 @@ extension TerminalRenderer {
 
         for col in start..<end {
             guard col < layout.cols else { continue }
+            let cp = rowCells[col].cp
             let cellText = rowCells[col].text
-            if cellText.isEmpty { continue }
+            if cp == 0, cellText.isEmpty { continue }
 
             let entry: GlyphAtlas.Entry
-            if cellText.unicodeScalars.count == 1, rowCells[col].cp != 0 {
+            if cellText.isEmpty, cp != 0 {
                 switch codepoints.resolve(
                     cp: rowCells[col].cp,
                     bold: style.bold,
@@ -1045,7 +1038,7 @@ extension TerminalRenderer {
     func paintWideOrFallback(
         col: Int,
         rowIndex: Int,
-        rowCells: [TerminalRowCell],
+        rowCells: UnsafeBufferPointer<TerminalRowCell>,
         metrics: CellMetrics,
         layout: LayoutKey,
         cellWInt: Int,
@@ -1054,7 +1047,7 @@ extension TerminalRenderer {
     ) {
         guard col < rowCells.count else { return }
         let c = rowCells[col]
-        let text = c.text
+        let text = c.text.isEmpty && c.cp != 0 ? internCodepoint(c.cp) : c.text
         guard !text.isEmpty else { return }
         let font = metrics.font(bold: c.bold, italic: c.italic)
         let span = c.isWideHead ? 2 : 1

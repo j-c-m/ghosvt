@@ -24,7 +24,6 @@ final class TerminalRenderer {
     var uniformBuffer: MTLBuffer?
     var instanceCapacity = 0
     var imageInstanceCapacity = 0
-    var floatScratch = [Float]()
     var imageFloatScratch = [Float]()
     var fontLigatures = true
 
@@ -44,8 +43,12 @@ final class TerminalRenderer {
     var codepointStrings: [UInt32: String] = [:]
     /// Reused GRAPHEMES_UTF8 dest; grown on OUT_OF_SPACE.
     var utf8Scratch = [UInt8](repeating: 0, count: 128)
-    /// Reused collect dest so a dirty row does not allocate a new `[TerminalRowCell]`.
-    var collectScratch: [TerminalRowCell] = []
+    /// Cursor / hover / HUD instances composed after the grid (not dy-shifted twice).
+    var overlayScratch: [CellInstance] = []
+    /// Link-hover underline; shifted with the grid when search steals a row.
+    var dyOverlayScratch: [CellInstance] = []
+    /// Reused run list for the current dirty row.
+    var runSegScratch: [RunSeg] = []
     /// Featured primary faces for the current metrics + ligature flag (one create, then reuse).
     var paintFeat: (regular: CTFont, bold: CTFont, italic: CTFont, boldItalic: CTFont)?
     var paintFeatPx = 0
@@ -125,6 +128,14 @@ final class TerminalRenderer {
     final class GPUTimeEMA: @unchecked Sendable {
         var value: CFTimeInterval
         init(_ value: CFTimeInterval) { self.value = value }
+    }
+
+    enum RunSeg {
+        case run(
+            start: Int, end: Int, style: TextStyleKey,
+            contentHash: UInt64, face: CodepointCache.FaceKind
+        )
+        case wide(col: Int)
     }
 
     struct LayoutKey: Equatable {
@@ -226,6 +237,9 @@ final class TerminalRenderer {
         rowCellCache.removeAll(keepingCapacity: true)
         glyphExtras.removeAll(keepingCapacity: true)
         underlineExtras.removeAll(keepingCapacity: true)
+        overlayScratch.removeAll(keepingCapacity: true)
+        dyOverlayScratch.removeAll(keepingCapacity: true)
+        runSegScratch.removeAll(keepingCapacity: true)
         glyphExtrasByRow.removeAll(keepingCapacity: true)
         underlineExtrasByRow.removeAll(keepingCapacity: true)
         gridCols = 0
@@ -580,28 +594,22 @@ final class TerminalRenderer {
             return
         }
 
-        // Compose cell layers separately so Kitty z-layers can interleave:
+        // Compose overlays without copying gridCells / glyphExtras.
         // below_bg → cell bg → below_text → glyphs → above_text → overlays.
-        var bgInstances = gridCells
-        var fgInstances = glyphExtras
-        fgInstances.append(contentsOf: underlineExtras)
-        // ⌘-hover link underline (text color, font underline metrics).
+        dyOverlayScratch.removeAll(keepingCapacity: true)
+        overlayScratch.removeAll(keepingCapacity: true)
         if let hover = linkHover {
             appendLinkHoverUnderline(
-                to: &fgInstances,
+                to: &dyOverlayScratch,
                 hover: hover,
                 layout: layout,
                 metrics: metrics,
                 defFg: defFg
             )
         }
-        if abs(shellY) > 0.001 {
-            for i in 0..<bgInstances.count { bgInstances[i].oy += shellY }
-            for i in 0..<fgInstances.count { fgInstances[i].oy += shellY }
-        }
 
         appendCursor(
-            to: &fgInstances,
+            to: &overlayScratch,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -618,7 +626,7 @@ final class TerminalRenderer {
 
         if let indicator, !indicator.isEmpty {
             appendIndicator(
-                to: &fgInstances,
+                to: &overlayScratch,
                 text: indicator,
                 metrics: metrics,
                 layout: layout,
@@ -630,7 +638,7 @@ final class TerminalRenderer {
 
         if let searchHUD {
             appendSearchHUD(
-                to: &fgInstances,
+                to: &overlayScratch,
                 line: searchHUD,
                 caretCol: searchCaretCol,
                 showCaret: blinkOn,
@@ -646,7 +654,7 @@ final class TerminalRenderer {
 
         if quitConfirm {
             appendQuitDialog(
-                to: &fgInstances,
+                to: &overlayScratch,
                 metrics: metrics,
                 layout: layout,
                 cellWInt: cellWInt,
@@ -657,13 +665,14 @@ final class TerminalRenderer {
         var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         _ = ghostty_render_state_set(renderState, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
 
-        // Pack [bg | fg] into one buffer; present draws ranges around Kitty layers.
-        var packed = bgInstances
-        packed.append(contentsOf: fgInstances)
-        uploadInstances(packed)
-        lastBgCount = bgInstances.count
-        lastFgCount = fgInstances.count
-        lastDrawnCount = packed.count
+        uploadGridLayers(
+            bg: gridCells,
+            ink: glyphExtras,
+            underlines: underlineExtras,
+            dyOverlay: dyOverlayScratch,
+            overlay: overlayScratch,
+            dy: shellY
+        )
         present(
             bgCount: lastBgCount,
             fgCount: lastFgCount,

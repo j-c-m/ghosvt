@@ -7,29 +7,69 @@ import QuartzCore
 // MARK: - GPU
 extension TerminalRenderer {
     func uploadInstances(_ instances: [CellInstance]) {
-        // Merge underlines that were collected into underlineExtras already appended by caller.
-        let count = instances.count
-        ensureInstanceCapacity(max(count, 1))
-        guard count > 0, let buf = instanceBuffer else {
+        ensureInstanceCapacity(max(instances.count, 1))
+        guard let raw = instanceBuffer?.contents() else {
             lastDrawnCount = 0
             lastBgCount = 0
             lastFgCount = 0
             return
         }
-        let floatsNeeded = count * CellInstance.floatCount
-        if floatScratch.count < floatsNeeded {
-            floatScratch = [Float](repeating: 0, count: floatsNeeded)
+        var off = 0
+        blitInstances(instances, to: raw, at: &off, dy: 0)
+        lastDrawnCount = off
+    }
+
+    /// Pack `[bg | ink | underlines | dyOverlay | overlay]` without copying the grid.
+    func uploadGridLayers(
+        bg: [CellInstance],
+        ink: [CellInstance],
+        underlines: [CellInstance],
+        dyOverlay: [CellInstance],
+        overlay: [CellInstance],
+        dy: Float
+    ) {
+        let total = bg.count + ink.count + underlines.count + dyOverlay.count + overlay.count
+        ensureInstanceCapacity(max(total, 1))
+        guard let raw = instanceBuffer?.contents() else {
+            lastDrawnCount = 0
+            lastBgCount = 0
+            lastFgCount = 0
+            return
         }
-        floatScratch.withUnsafeMutableBufferPointer { dest in
-            guard let base = dest.baseAddress else { return }
-            for i in 0..<count {
-                instances[i].write(to: base, at: i)
+        var off = 0
+        blitInstances(bg, to: raw, at: &off, dy: dy)
+        lastBgCount = off
+        blitInstances(ink, to: raw, at: &off, dy: dy)
+        blitInstances(underlines, to: raw, at: &off, dy: dy)
+        blitInstances(dyOverlay, to: raw, at: &off, dy: dy)
+        blitInstances(overlay, to: raw, at: &off, dy: 0)
+        lastFgCount = off - lastBgCount
+        lastDrawnCount = off
+    }
+
+    private func blitInstances(
+        _ src: [CellInstance],
+        to dest: UnsafeMutableRawPointer,
+        at offset: inout Int,
+        dy: Float
+    ) {
+        guard !src.isEmpty else { return }
+        let stride = MemoryLayout<CellInstance>.stride
+        let dst = dest.advanced(by: offset * stride)
+        if dy == 0, stride == CellInstance.floatCount * MemoryLayout<Float>.size {
+            src.withUnsafeBytes { raw in
+                guard let p = raw.baseAddress else { return }
+                dst.copyMemory(from: p, byteCount: src.count * stride)
             }
-            buf.contents().copyMemory(
-                from: base,
-                byteCount: floatsNeeded * MemoryLayout<Float>.size
-            )
+        } else {
+            let floats = dst.assumingMemoryBound(to: Float.self)
+            for i in 0..<src.count {
+                var c = src[i]
+                c.oy += dy
+                c.write(to: floats, at: i)
+            }
         }
+        offset += src.count
     }
 
     /// Minimum on-screen time for this frame within the display’s Adaptive-Sync range.
@@ -224,7 +264,8 @@ extension TerminalRenderer {
                     if cp == 0 || cp == KittyVirtualUnicode.placeholder {
                         return ("", 0)
                     }
-                    return (internCodepoint(cp), cp)
+                    // Single scalar: keep cp only. Intern on shaper miss / wide paint.
+                    return ("", cp)
                 }
             }
         }

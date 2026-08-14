@@ -70,7 +70,7 @@ final class ShaperCache {
 
     /// Lookup by precomputed content hash. Builds the Core Text string on miss only.
     func shape(
-        cells: [TerminalRowCell],
+        cells: UnsafeBufferPointer<TerminalRowCell>,
         start: Int,
         end: Int,
         contentHash: UInt64,
@@ -97,8 +97,16 @@ final class ShaperCache {
         utf16Starts.reserveCapacity(end - start + 1)
         text.reserveCapacity(end - start)
         for col in start..<end {
-            let raw = cells[col].text
-            text += raw.isEmpty ? " " : raw
+            let c = cells[col]
+            if !c.text.isEmpty {
+                text += c.text
+            } else if c.cp == 0 {
+                text += " "
+            } else if let scalar = UnicodeScalar(c.cp) {
+                text += String(scalar)
+            } else {
+                text += " "
+            }
             utf16Starts.append(text.utf16.count)
         }
         guard !text.isEmpty else { return [] }

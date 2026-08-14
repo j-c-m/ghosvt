@@ -135,22 +135,21 @@ extension TerminalRenderer {
         let idx = row * layout.cols + col
         guard idx < rowCellCache.count else { return }
         let rc = rowCellCache[idx]
-        if rc.isWideTail || rc.text.isEmpty { return }
+        if rc.isWideTail || (rc.cp == 0 && rc.text.isEmpty) { return }
         let span = rc.isWideHead ? 2 : 1
         let entry: GlyphAtlas.Entry
-        if let cp = rc.text.unicodeScalars.first?.value,
-           rc.text.unicodeScalars.count == 1,
-           SpriteFace.covers(cp) {
+        if rc.text.isEmpty, SpriteFace.covers(rc.cp) {
             entry = atlas.entrySprite(
-                codepoint: cp,
+                codepoint: rc.cp,
                 cellWidthPx: cellWInt * span,
                 cellHeightPx: cellHInt,
                 cellBaselinePx: metrics.cellBaselinePx
             )
         } else {
             let font = metrics.font(bold: rc.bold, italic: rc.italic)
+            let text = rc.text.isEmpty ? internCodepoint(rc.cp) : rc.text
             entry = atlas.entry(
-                text: rc.text,
+                text: text,
                 bold: rc.bold,
                 italic: rc.italic,
                 font: font,

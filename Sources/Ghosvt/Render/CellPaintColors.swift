@@ -121,7 +121,8 @@ struct TerminalRowCell {
 
     var isSpaceOrEmpty: Bool {
         if isWideHead || isWideTail { return false }
-        if text.isEmpty { return true }
+        if cp == 0 && text.isEmpty { return true }
+        if cp == 32 || cp == 0xA0 { return true }
         return text == " " || text == "\u{00A0}"
     }
 
