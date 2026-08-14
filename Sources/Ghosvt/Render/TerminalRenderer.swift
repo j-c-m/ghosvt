@@ -46,6 +46,15 @@ final class TerminalRenderer {
     var utf8Scratch = [UInt8](repeating: 0, count: 128)
     /// Reused collect dest so a dirty row does not allocate a new `[TerminalRowCell]`.
     var collectScratch: [TerminalRowCell] = []
+    /// Featured primary faces for the current metrics + ligature flag (one create, then reuse).
+    var paintFeat: (regular: CTFont, bold: CTFont, italic: CTFont, boldItalic: CTFont)?
+    var paintFeatPx = 0
+    var paintFeatLiga = false
+    var paintFeatGen = -1
+    /// ASCII glyph IDs on the featured faces (U+0000…U+007F).
+    var paintAsciiGlyphs: (regular: [CGGlyph], bold: [CGGlyph], italic: [CGGlyph], boldItalic: [CGGlyph])?
+    /// Atlas hits for printable ASCII × (regular/bold/italic/boldItalic). Stale after pack.
+    var paintAsciiEntries: [GlyphAtlas.Entry?] = []
     var gridCols = 0
     var gridRows = 0
     /// Packed instance count last uploaded (`bg + fg`).
@@ -207,6 +216,10 @@ final class TerminalRenderer {
         atlas.clear()
         shaper.clear()
         codepoints.clear()
+        paintFeat = nil
+        paintAsciiGlyphs = nil
+        paintAsciiEntries.removeAll(keepingCapacity: false)
+        paintFeatGen = -1
         prewarmedKey = nil
         lastLayoutKey = nil
         gridCells.removeAll(keepingCapacity: true)

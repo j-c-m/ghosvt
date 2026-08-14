@@ -75,6 +75,7 @@ extension TerminalRenderer {
             let gen = atlas.packGeneration
             // Atlas eviction invalidates UVs already stored on clean rows.
             let skipClean = dirtyOnly && attempt == 0
+            preparePaintFonts(metrics: metrics)
             ensureGridLayers(layout: layout, defFg: defFg, defBg: defBg)
             rebuildRows(
                 dirtyOnly: skipClean,
@@ -157,6 +158,17 @@ extension TerminalRenderer {
         var iter = rowIter
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iter)
 
+        var cursorInViewport = false
+        var curX: UInt16 = 0
+        var curY: UInt16 = 0
+        _ = ghostty_render_state_get(
+            renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewport
+        )
+        if cursorInViewport {
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &curX)
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &curY)
+        }
+
         var rowIndex = 0
         while ghostty_render_state_row_iterator_next(iter) {
             defer { rowIndex += 1 }
@@ -182,9 +194,11 @@ extension TerminalRenderer {
                 defBg: defBg
             )
             let base = rowIndex * layout.cols
-            for (c, cell) in rowCells.enumerated() where c < layout.cols {
-                rowCellCache[base + c] = cell
+            let n = min(rowCells.count, layout.cols)
+            if n > 0, base + n <= rowCellCache.count {
+                rowCellCache.replaceSubrange(base..<(base + n), with: rowCells[0..<n])
             }
+            let rowCursor: Int? = (cursorInViewport && Int(curY) == rowIndex) ? Int(curX) : nil
             paintRow(
                 rowCells: rowCells,
                 rowIndex: rowIndex,
@@ -193,8 +207,8 @@ extension TerminalRenderer {
                 defBg: defBg,
                 cellWInt: cellWInt,
                 cellHInt: cellHInt,
-                renderState: renderState,
-                rowIter: iter
+                rowIter: iter,
+                cursorCol: rowCursor
             )
 
             var clean = false
@@ -333,8 +347,8 @@ extension TerminalRenderer {
         defBg: GhosttyColorRgb,
         cellWInt: Int,
         cellHInt: Int,
-        renderState: GhosttyRenderState,
-        rowIter: GhosttyRenderStateRowIterator
+        rowIter: GhosttyRenderStateRowIterator,
+        cursorCol: Int?
     ) {
         if rowIndex < glyphExtrasByRow.count {
             glyphExtrasByRow[rowIndex].removeAll(keepingCapacity: true)
@@ -356,7 +370,12 @@ extension TerminalRenderer {
         }
 
         // Search highlights for this viewport row (screen coords already mapped).
-        let rowSearch = searchHighlights.filter { $0.row == rowIndex }
+        let rowSearch: [SearchHighlightRange]
+        if searchHighlights.isEmpty {
+            rowSearch = []
+        } else {
+            rowSearch = searchHighlights.filter { $0.row == rowIndex }
+        }
 
         func highlight(for col: Int) -> CellPaintColors.Highlight {
             // Ghostty precedence: mouse selection > current search match > other matches.
@@ -372,10 +391,6 @@ extension TerminalRenderer {
                 }
             }
             return kind
-        }
-
-        func selected(_ col: Int) -> Bool {
-            highlight(for: col) != .none
         }
 
         // 1) Background for every cell (selection invert / search gold / current peach).
@@ -432,20 +447,6 @@ extension TerminalRenderer {
             }
         }
 
-        // Cursor on this row → break runs around that column (Ghostty).
-        var cursorCol: Int?
-        var inViewport = false
-        var cy: UInt16 = 0
-        var cx: UInt16 = 0
-        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
-        if inViewport {
-            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx)
-            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy)
-            if Int(cy) == rowIndex {
-                cursorCol = Int(cx)
-            }
-        }
-
         // 2) Shape text runs and stamp glyphs.
         // Break runs at selection and search boundaries so highlight ink stays cell-local.
         var breakCols: [Int] = []
@@ -481,8 +482,7 @@ extension TerminalRenderer {
                     contentHash: contentHash, face: face,
                     rowCells: rowCells, rowIndex: rowIndex,
                     metrics: metrics, layout: layout,
-                    cellWInt: cellWInt, cellHInt: cellHInt,
-                    selected: selected
+                    cellWInt: cellWInt, cellHInt: cellHInt
                 )
             }
         }
@@ -516,19 +516,6 @@ extension TerminalRenderer {
         var runStyle: TextStyleKey?
         var runFace: CodepointCache.FaceKind?
         var runHash = ShaperCache.fnvOffset
-        let breakSet = Set(highlightBreaks)
-        var featuredByStyle: [UInt8: CTFont] = [:]
-
-        func featured(bold: Bool, italic: Bool) -> CTFont {
-            let k: UInt8 = (bold ? 1 : 0) | (italic ? 2 : 0)
-            if let hit = featuredByStyle[k] { return hit }
-            let font = shaper.featuredFont(
-                metrics.font(bold: bold, italic: italic),
-                ligatures: fontLigatures
-            )
-            featuredByStyle[k] = font
-            return font
-        }
 
         func faceKind(of c: TerminalRowCell) -> CodepointCache.FaceKind {
             if c.cp == 0 || (c.cp >= 0x20 && c.cp <= 0x7E) { return .primary }
@@ -537,7 +524,7 @@ extension TerminalRenderer {
                 bold: c.bold,
                 italic: c.italic,
                 fontPx: layout.fontPx,
-                primary: featured(bold: c.bold, italic: c.italic),
+                primary: primaryFont(bold: c.bold, italic: c.italic, metrics: metrics),
                 nerdFaces: metrics.nerdFaces
             )
         }
@@ -584,7 +571,7 @@ extension TerminalRenderer {
                 if i == lo { return true }
                 if i == hi + 1 { return true }
             }
-            if breakSet.contains(i) { return true }
+            if !highlightBreaks.isEmpty, highlightBreaks.contains(i) { return true }
 
             // Cursor: run before cursor stops at cursor; cursor cell is its own run.
             if let cx = cursorCol {
@@ -632,6 +619,149 @@ extension TerminalRenderer {
         return segs
     }
 
+    /// Featured primary faces + ASCII glyph tables for this metrics / atlas gen.
+    func preparePaintFonts(metrics: CellMetrics) {
+        let gen = atlas.packGeneration
+        let fontsFresh = paintFeat == nil
+            || paintFeatPx != metrics.fontPx
+            || paintFeatLiga != fontLigatures
+        if fontsFresh {
+            let regular = shaper.featuredFont(metrics.font, ligatures: fontLigatures)
+            let bold = shaper.featuredFont(metrics.fontBold, ligatures: fontLigatures)
+            let italic = shaper.featuredFont(metrics.fontItalic, ligatures: fontLigatures)
+            let boldItalic = shaper.featuredFont(metrics.fontBoldItalic, ligatures: fontLigatures)
+            paintFeat = (regular, bold, italic, boldItalic)
+            paintAsciiGlyphs = (
+                Self.asciiGlyphTable(regular),
+                Self.asciiGlyphTable(bold),
+                Self.asciiGlyphTable(italic),
+                Self.asciiGlyphTable(boldItalic)
+            )
+            paintFeatPx = metrics.fontPx
+            paintFeatLiga = fontLigatures
+            paintFeatGen = gen
+            paintAsciiEntries = Array(repeating: nil, count: 512)
+            return
+        }
+        if paintFeatGen != gen {
+            paintFeatGen = gen
+            paintAsciiEntries = Array(repeating: nil, count: 512)
+        }
+    }
+
+    func primaryFont(bold: Bool, italic: Bool, metrics: CellMetrics) -> CTFont {
+        if let feat = paintFeat {
+            switch (bold, italic) {
+            case (true, true): return feat.boldItalic
+            case (true, false): return feat.bold
+            case (false, true): return feat.italic
+            case (false, false): return feat.regular
+            }
+        }
+        return shaper.featuredFont(metrics.font(bold: bold, italic: italic), ligatures: fontLigatures)
+    }
+
+    private static func asciiGlyphTable(_ font: CTFont) -> [CGGlyph] {
+        var chars = [UniChar](32...126)
+        var glyphs = [CGGlyph](repeating: 0, count: chars.count)
+        _ = CTFontGetGlyphsForCharacters(font, &chars, &glyphs, chars.count)
+        var table = [CGGlyph](repeating: 0, count: 128)
+        for (i, code) in (32...126).enumerated() {
+            table[code] = glyphs[i]
+        }
+        return table
+    }
+
+    /// One primary-face cell: glyph + atlas, no shaper.
+    func paintSinglePrimaryCell(
+        col: Int,
+        style: TextStyleKey,
+        rowCells: [TerminalRowCell],
+        rowIndex: Int,
+        metrics: CellMetrics,
+        layout: LayoutKey,
+        cellWInt: Int,
+        cellHInt: Int,
+        shapedFont: CTFont
+    ) {
+        guard col < rowCells.count, col < layout.cols else { return }
+        let cp = rowCells[col].cp
+        if cp == 0 { return }
+
+        let entry: GlyphAtlas.Entry
+        if cp < 128 {
+            let slot = Int(cp) + (style.bold ? 128 : 0) + (style.italic ? 256 : 0)
+            if slot < paintAsciiEntries.count, let hit = paintAsciiEntries[slot] {
+                entry = hit
+            } else {
+                let g: CGGlyph
+                if let tables = paintAsciiGlyphs {
+                    switch (style.bold, style.italic) {
+                    case (true, true): g = tables.boldItalic[Int(cp)]
+                    case (true, false): g = tables.bold[Int(cp)]
+                    case (false, true): g = tables.italic[Int(cp)]
+                    case (false, false): g = tables.regular[Int(cp)]
+                    }
+                } else {
+                    g = 0
+                }
+                if g == 0 {
+                    entry = GlyphAtlas.Entry(uv: atlas.emptyUV)
+                } else {
+                    entry = atlas.entry(
+                        glyph: g,
+                        bold: style.bold,
+                        italic: style.italic,
+                        font: shapedFont,
+                        fontPx: layout.fontPx,
+                        cellHeightPx: cellHInt,
+                        cellBaselinePx: metrics.cellBaselinePx,
+                        cellWidthPx: cellWInt,
+                        faceWidthPx: metrics.faceWidthPx
+                    )
+                }
+                if slot < paintAsciiEntries.count {
+                    paintAsciiEntries[slot] = entry
+                }
+            }
+        } else {
+            var g = CGGlyph()
+            if cp <= 0xFFFF {
+                var ch = UniChar(cp)
+                if !CTFontGetGlyphsForCharacters(shapedFont, &ch, &g, 1) {
+                    g = 0
+                }
+            }
+            if g == 0 { return }
+            entry = atlas.entry(
+                glyph: g,
+                bold: style.bold,
+                italic: style.italic,
+                font: shapedFont,
+                fontPx: layout.fontPx,
+                cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                cellWidthPx: cellWInt,
+                faceWidthPx: metrics.faceWidthPx
+            )
+        }
+        if entry.pixelW < 0.5 || entry.pixelH < 0.5 { return }
+
+        let rowTop = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
+            .rounded(.toNearestOrAwayFromZero)
+        var fr = Float(style.fr) / 255
+        var fgG = Float(style.fg) / 255
+        var fb = Float(style.fb) / 255
+        if style.faint { fr *= 0.5; fgG *= 0.5; fb *= 0.5 }
+        appendGlyphExtra(
+            entry: entry,
+            col: col, rowIndex: rowIndex, rowTop: rowTop,
+            xOffset: 0, yOffset: 0,
+            fr: fr, fg: fgG, fb: fb,
+            layout: layout
+        )
+    }
+
     /// Ghostty: split `fi` / `fl` / `st` (plain lowercase codepoints only).
     private static func isBadLigaturePair(prev: TerminalRowCell, next: TerminalRowCell) -> Bool {
         switch prev.cp {
@@ -655,20 +785,27 @@ extension TerminalRenderer {
         metrics: CellMetrics,
         layout: LayoutKey,
         cellWInt: Int,
-        cellHInt: Int,
-        selected: (Int) -> Bool
+        cellHInt: Int
     ) {
         guard start < end else { return }
 
-        let font = metrics.font(bold: style.bold, italic: style.italic)
-        let shapedFont = shaper.featuredFont(font, ligatures: fontLigatures)
+        let shapedFont = primaryFont(bold: style.bold, italic: style.italic, metrics: metrics)
 
         // Ghostty: a run is one font index. Primary face is shaped; else cell-by-cell.
         if face == .primary {
+            // One cell cannot ligate. Combining clusters still go through the shaper.
+            if end - start == 1, rowCells[start].text.unicodeScalars.count <= 1 {
+                paintSinglePrimaryCell(
+                    col: start, style: style, rowCells: rowCells,
+                    rowIndex: rowIndex, metrics: metrics, layout: layout,
+                    cellWInt: cellWInt, cellHInt: cellHInt, shapedFont: shapedFont
+                )
+                return
+            }
             paintLigatureRun(
                 start: start, end: end, style: style, contentHash: contentHash,
                 rowCells: rowCells, rowIndex: rowIndex, metrics: metrics, layout: layout,
-                cellWInt: cellWInt, cellHInt: cellHInt, selected: selected,
+                cellWInt: cellWInt, cellHInt: cellHInt,
                 shapedFont: shapedFont
             )
             return
@@ -677,7 +814,7 @@ extension TerminalRenderer {
         paintCellsIndividually(
             start: start, end: end, style: style, rowCells: rowCells,
             rowIndex: rowIndex, metrics: metrics, layout: layout,
-            cellWInt: cellWInt, cellHInt: cellHInt, selected: selected,
+            cellWInt: cellWInt, cellHInt: cellHInt,
             primary: shapedFont, nerdFaces: metrics.nerdFaces
         )
     }
@@ -694,7 +831,6 @@ extension TerminalRenderer {
         layout: LayoutKey,
         cellWInt: Int,
         cellHInt: Int,
-        selected: (Int) -> Bool,
         shapedFont: CTFont
     ) {
         let placements = shaper.shape(
@@ -736,7 +872,7 @@ extension TerminalRenderer {
                 col: col, rowIndex: rowIndex, rowTop: rowTop,
                 xOffset: Float(p.xOffset), yOffset: Float(p.yOffset),
                 fr: fr, fg: fgG, fb: fb,
-                layout: layout, selected: selected
+                layout: layout
             )
         }
     }
@@ -752,7 +888,6 @@ extension TerminalRenderer {
         layout: LayoutKey,
         cellWInt: Int,
         cellHInt: Int,
-        selected: (Int) -> Bool,
         primary: CTFont,
         nerdFaces: [CTFont]
     ) {
@@ -834,7 +969,7 @@ extension TerminalRenderer {
                 col: col, rowIndex: rowIndex, rowTop: rowTop,
                 xOffset: 0, yOffset: 0,
                 fr: fr, fg: fgG, fb: fb,
-                layout: layout, selected: selected
+                layout: layout
             )
         }
     }
@@ -847,8 +982,7 @@ extension TerminalRenderer {
         xOffset: Float,
         yOffset: Float,
         fr: Float, fg: Float, fb: Float,
-        layout: LayoutKey,
-        selected: (Int) -> Bool
+        layout: LayoutKey
     ) {
         // Ghostty: grid origin is integer; bearings/x_offset are whole pixels.
         // Do not re-round the sum (that shifts ink vs Ghostty by up to 1 px).
@@ -866,7 +1000,6 @@ extension TerminalRenderer {
             let cell = gridCells[idx]
             ifr = cell.fr; ifg = cell.fg; ifb = cell.fb
         }
-        _ = selected
 
         if rowIndex < glyphExtrasByRow.count {
             glyphExtrasByRow[rowIndex].append(.make(
