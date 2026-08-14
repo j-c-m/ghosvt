@@ -1305,50 +1305,95 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         super.otherMouseDragged(with: event)
     }
 
-    override func keyDown(with event: NSEvent) {
-        guard let manager else {
-            super.keyDown(with: event)
-            return
-        }
-        // Browser owns this VT: never PTY. Address bar when editing; else WebView.
-        if activeBrowser != nil {
-            if handleBrowserKeys(event) { return }
-            if isBrowserAddressEditing {
-                // Unhandled while editing (rare): keep metal focus, do not feed PTY.
-                return
-            }
-            if handleBrowserPageScrollKeys(event) { return }
-            // Page owns input — refocus WebView and deliver this key (do not swallow).
-            activeBrowser?.forwardKeyDown(event)
-            return
-        }
-        if handleSearchKeys(event) {
-            return
-        }
-        if isSearchOpen, handleSearchTyping(event) {
-            return
-        }
-        if handleVtSwitch(event, manager: manager) {
-            return
-        }
-        if handleScrollPage(event, manager: manager) {
-            return
-        }
-        if handleTerminalChords(event, manager: manager) {
-            return
-        }
-        // Do not feed Command chords into the PTY (except we already handled VT switch).
+    /// Single key policy for the local monitor, `keyDown`, and `performKeyEquivalent`.
+    enum KeyDisposition {
+        /// Handled here; swallow the event.
+        case consumed
+        /// Let the embedded page / WebView see the event.
+        case toWebView
+        /// Leave to the menu / system equivalent.
+        case toMenu
+        /// Fed to the PTY (not a Command leftover).
+        case toPty
+    }
+
+    /// One priority list for every key-down entry. Performs host side effects.
+    @discardableResult
+    func routeKey(_ event: NSEvent) -> KeyDisposition {
+        guard event.type == .keyDown else { return .toMenu }
+        if handleQuitConfirmKey(event) { return .consumed }
+
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.command) {
-            return
+        let command = flags.contains(.command)
+        if command, event.charactersIgnoringModifiers?.lowercased() == "q" {
+            NSApp.terminate(nil)
+            return .consumed
         }
-        // Typing clears the active selection (macOS terminal convention).
+
+        if isBrowserActive {
+            if command {
+                if handleFontSizeKeys(event) { return .consumed }
+                if handleBrowserKeys(event) { return .consumed }
+                if let manager, handleVtSwitch(event, manager: manager) { return .consumed }
+                if handleBrowserPageEditKeys(event) { return .consumed }
+                if handleBrowserPageScrollKeys(event) { return .consumed }
+                // Do not claim leftover ⌘ — WebKit / the Edit menu may want it.
+                return .toWebView
+            }
+            if handleBrowserKeys(event) { return .consumed }
+            if isBrowserAddressEditing { return .consumed }
+            if handleBrowserPageScrollKeys(event) { return .consumed }
+            return .toWebView
+        }
+
+        if handleBrowserKeys(event) { return .consumed }
+        if handleFontSizeKeys(event) { return .consumed }
+        if handleSearchKeys(event) { return .consumed }
+        if isSearchOpen, handleSearchTyping(event) { return .consumed }
+        if let manager, handleVtSwitch(event, manager: manager) { return .consumed }
+        if let manager, handleScrollPage(event, manager: manager) { return .consumed }
+        if let manager, handleTerminalChords(event, manager: manager) { return .consumed }
+
+        if command {
+            if !flags.contains(.control), !flags.contains(.option) {
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "c":
+                    _ = manager?.active.copySelectionToPasteboard()
+                    return .consumed
+                case "v":
+                    if let manager, let text = Clipboard.pasteString() {
+                        manager.active.pasteText(text)
+                    }
+                    return .consumed
+                default:
+                    break
+                }
+            }
+            return .toMenu
+        }
+
+        feedPty(event)
+        return .toPty
+    }
+
+    private func feedPty(_ event: NSEvent) {
+        guard let manager else { return }
         if manager.active.selectionActive {
             manager.active.clearSelection()
             requestFrame()
         }
         KeyBridge.handleKeyDown(event, session: manager.active)
         requestFrame()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard manager != nil else {
+            super.keyDown(with: event)
+            return
+        }
+        if routeKey(event) == .toWebView {
+            activeBrowser?.forwardKeyDown(event)
+        }
     }
 
     @discardableResult
@@ -2899,78 +2944,20 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         done?(confirmed)
     }
 
-    /// Claim ⌘1… / ⌘F1… / ⌘C / ⌘V / ⌘F before the menu; leave ⌘Q to the system.
+    /// Claim host chords before the menu. Leftover ⌘ goes to `super` (terminal) or
+    /// is declined (browser) so WebKit can still see Edit equivalents.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown else {
             return super.performKeyEquivalent(with: event)
         }
-        if handleQuitConfirmKey(event) {
+        switch routeKey(event) {
+        case .consumed, .toPty:
             return true
+        case .toWebView:
+            return false
+        case .toMenu:
+            return super.performKeyEquivalent(with: event)
         }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.command) {
-            if event.charactersIgnoringModifiers?.lowercased() == "q" {
-                NSApp.terminate(nil)
-                return true
-            }
-            // Browser owns the VT: address chords + VT switch; never PTY paste/search.
-            if isBrowserActive {
-                if handleBrowserKeys(event) {
-                    return true
-                }
-                if let manager, handleVtSwitch(event, manager: manager) {
-                    return true
-                }
-                // Page Edit chords when address bar is idle.
-                if !isBrowserAddressEditing, handleBrowserPageEditKeys(event) {
-                    return true
-                }
-                // ⌘PgUp/PgDn scroll the page (not terminal history).
-                if !isBrowserAddressEditing, handleBrowserPageScrollKeys(event) {
-                    return true
-                }
-                // Do not fall through to the PTY paste path below.
-                return false
-            }
-            if handleBrowserKeys(event) {
-                return true
-            }
-            if handleSearchKeys(event) {
-                return true
-            }
-            if let manager, handleVtSwitch(event, manager: manager) {
-                return true
-            }
-            if let manager, handleScrollPage(event, manager: manager) {
-                return true
-            }
-            if let manager, handleTerminalChords(event, manager: manager) {
-                return true
-            }
-            // Copy / paste (ignore other modifiers like Shift for basic chords).
-            if !flags.contains(.control), !flags.contains(.option) {
-                switch event.charactersIgnoringModifiers?.lowercased() {
-                case "c":
-                    if let manager, manager.active.copySelectionToPasteboard() {
-                        return true
-                    }
-                    // No selection: do not swallow (allow system beep / no-op).
-                    return true
-                case "v":
-                    if let manager, let text = Clipboard.pasteString() {
-                        manager.active.pasteText(text)
-                    }
-                    return true
-                default:
-                    break
-                }
-            }
-        }
-        if !flags.contains(.command) {
-            keyDown(with: event)
-            return true
-        }
-        return super.performKeyEquivalent(with: event)
     }
 
     // MARK: - Scrollback search (⌘F, stolen bottom VT row)

@@ -71,104 +71,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.window?.makeFirstResponder(view)
         }
 
-        // Local monitor: route keys to the metal view (login + VT switch).
+        // Local monitor runs before WebKit and menu equivalents. Swallow host
+        // chords here; pass the rest so the page / Edit menu can see them.
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let view = self.metalView, let manager = self.manager else {
+            guard let view = self?.metalView else { return event }
+            switch view.routeKey(event) {
+            case .consumed, .toPty:
+                return nil
+            case .toWebView, .toMenu:
                 return event
             }
-            // Quit panel eats all keys while open.
-            if view.handleQuitConfirmKey(event) {
-                return nil
-            }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-            // Embedded browser owns the active VT: no PTY keys.
-            if view.isBrowserActive {
-                if flags.contains(.command) {
-                    if event.charactersIgnoringModifiers?.lowercased() == "q" {
-                        NSApp.terminate(nil)
-                        return nil
-                    }
-                    // Host chrome: font zoom applies to terminal + browser chrome rows.
-                    if view.handleFontSizeKeys(event) {
-                        return nil
-                    }
-                    // Address bar (when editing) or app chords (Esc path is non-cmd).
-                    if view.handleBrowserKeys(event) {
-                        return nil
-                    }
-                    // Allow VT switch while browsing (browser stays on its VT).
-                    if view.handleVtSwitch(event, manager: manager) {
-                        return nil
-                    }
-                    // Page focus: drive WebKit Edit actions ourselves (monitor runs before
-                    // the menu/responder path; without this ⌘V/⌘A never reach WKWebView).
-                    if !view.isBrowserAddressEditing, view.handleBrowserPageEditKeys(event) {
-                        return nil
-                    }
-                    // ⌘PgUp/PgDn → scroll page (not terminal history).
-                    if !view.isBrowserAddressEditing, view.handleBrowserPageScrollKeys(event) {
-                        return nil
-                    }
-                    return event
-                }
-                if view.handleBrowserKeys(event) {
-                    return nil
-                }
-                // Address-bar edit is handled above; otherwise let WebView receive keys.
-                if view.isBrowserAddressEditing {
-                    return nil
-                }
-                // Bare PgUp/PgDn scroll the page.
-                if view.handleBrowserPageScrollKeys(event) {
-                    return nil
-                }
-                return event
-            }
-
-            // ⌘1…⌘9 / ⌘F1… / ⇧⌘[ ] → VT switch; ⌘PgUp/PgDn/Home/End → scroll; ⌘F search; ⌘B browser.
-            if flags.contains(.command) {
-                // Local monitor claims ⌘Q before the menu.
-                if event.charactersIgnoringModifiers?.lowercased() == "q" {
-                    NSApp.terminate(nil)
-                    return nil
-                }
-                // ⌘B before search so it always opens the embed on this VT.
-                if view.handleOpenBrowserChord(event) {
-                    return nil
-                }
-                if view.handleBrowserKeys(event) {
-                    return nil
-                }
-                if view.handleFontSizeKeys(event) {
-                    return nil
-                }
-                if view.handleSearchKeys(event) {
-                    return nil
-                }
-                if view.handleVtSwitch(event, manager: manager) {
-                    return nil
-                }
-                if view.handleScrollPage(event, manager: manager) {
-                    return nil
-                }
-                if view.handleTerminalChords(event, manager: manager) {
-                    return nil
-                }
-                // Other ⌘ chords: leave to the system/menu.
-                return event
-            }
-
-            // Esc closes browser or search before PTY.
-            if view.handleBrowserKeys(event) {
-                return nil
-            }
-            if view.handleSearchKeys(event) {
-                return nil
-            }
-
-            view.keyDown(with: event)
-            return nil
         }
     }
 
