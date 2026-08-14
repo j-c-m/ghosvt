@@ -148,6 +148,10 @@ if ((${#PATCHES[@]} > 0)) && command -v nm >/dev/null 2>&1; then
     echo "ghosvt: warning: ghostty_screen_search_new not found in ${ARTIFACT}" >&2
     echo "  search patches may not have linked; check exports" >&2
   fi
+  if ! printf '%s\n' "${_nm_out}" | grep -F 'ghostty_render_state_row_cells_collect' >/dev/null; then
+    echo "ghosvt: warning: ghostty_render_state_row_cells_collect not found in ${ARTIFACT}" >&2
+    echo "  row-collect patch may not have linked; check exports" >&2
+  fi
   unset _nm_out
 fi
 

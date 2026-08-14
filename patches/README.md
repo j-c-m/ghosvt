@@ -6,6 +6,7 @@ Applied in sorted order by `scripts/build-libghostty.sh` onto the commit in
 | Patch | Purpose |
 |-------|---------|
 | `0001-libghostty-vt-search-c-shim.patch` | Temporary C ABI for `ScreenSearch` until Ghostty ~1.4.0 |
+| `0002-libghostty-vt-row-collect.patch` | One-call packed row collect (`ghostty_render_state_row_cells_collect`) |
 
 ## Refresh after a pin bump
 
@@ -18,4 +19,4 @@ git diff --cached > ../../patches/0001-libghostty-vt-search-c-shim.patch
 git reset HEAD
 ```
 
-When upstream ships the official search C API, delete the patch and rebuild.
+`0002` is generated against pin + `0001` (not the clean pin). When upstream ships a row-collect C API, delete that patch and rebuild.

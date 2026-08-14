@@ -1,0 +1,228 @@
+diff --git a/include/ghostty/vt/render.h b/include/ghostty/vt/render.h
+--- a/include/ghostty/vt/render.h
++++ b/include/ghostty/vt/render.h
+@@ -778,6 +778,67 @@
+     size_t* out_written);
+ 
+ /**
++ * One packed viewport cell from ghostty_render_state_row_cells_collect.
++ *
++ * Layout is 16 bytes. flags bits:
++ *   0 wide head, 1 wide tail, 2 bold, 3 italic, 4 faint,
++ *   5 inverse, 6 underline, 7 multi-codepoint grapheme.
++ *
++ * @ingroup render
++ */
++typedef struct {
++  uint32_t cp;
++  uint32_t flags;
++  uint8_t fg_r;
++  uint8_t fg_g;
++  uint8_t fg_b;
++  uint8_t _pad0;
++  uint8_t bg_r;
++  uint8_t bg_g;
++  uint8_t bg_b;
++  uint8_t _pad1;
++} GhosttyRenderStatePackedCell;
++
++#define GHOSTTY_PACKED_CELL_WIDE_HEAD ((uint32_t)1u << 0)
++#define GHOSTTY_PACKED_CELL_WIDE_TAIL ((uint32_t)1u << 1)
++#define GHOSTTY_PACKED_CELL_BOLD ((uint32_t)1u << 2)
++#define GHOSTTY_PACKED_CELL_ITALIC ((uint32_t)1u << 3)
++#define GHOSTTY_PACKED_CELL_FAINT ((uint32_t)1u << 4)
++#define GHOSTTY_PACKED_CELL_INVERSE ((uint32_t)1u << 5)
++#define GHOSTTY_PACKED_CELL_UNDERLINE ((uint32_t)1u << 6)
++#define GHOSTTY_PACKED_CELL_HAS_GRAPHEME ((uint32_t)1u << 7)
++
++/**
++ * Collect every cell in the current row into a packed buffer.
++ *
++ * One C crossing for the row. The row cells handle must already be bound
++ * with GHOSTTY_RENDER_STATE_ROW_DATA_CELLS. The iterator position is unused.
++ *
++ * Writes min(row_cols, cap) cells, then zero-fills the rest of cap.
++ * *out_len is the number of real cells (not including padding).
++ *
++ * Inverse is already applied to fg/bg. Kitty U+10EEEE is stored as cp=0.
++ * Multi-codepoint graphemes set HAS_GRAPHEME; fetch UTF-8 separately.
++ *
++ * @param cells Bound row cells handle (NULL → GHOSTTY_INVALID_VALUE)
++ * @param def_fg Default foreground when the cell has none (NULL → 0,0,0)
++ * @param def_bg Default background when the cell has none (NULL → 0,0,0)
++ * @param out Packed dest (NULL → GHOSTTY_INVALID_VALUE)
++ * @param cap Number of dest slots
++ * @param[out] out_len Real cell count (may be NULL)
++ * @return GHOSTTY_SUCCESS on success
++ *
++ * @ingroup render
++ */
++GHOSTTY_API GhosttyResult ghostty_render_state_row_cells_collect(
++    GhosttyRenderStateRowCells cells,
++    const GhosttyColorRgb* def_fg,
++    const GhosttyColorRgb* def_bg,
++    GhosttyRenderStatePackedCell* out,
++    size_t cap,
++    size_t* out_len);
++
++/**
+  * Free a row cells instance.
+  *
+  * @param cells The row cells handle to free (may be NULL)
+diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
+--- a/src/terminal/c/render.zig
++++ b/src/terminal/c/render.zig
+@@ -544,7 +544,131 @@
+         }
+     }
+     if (out_written) |w| w.* = count;
++    return .success;
++}
++
++/// C: GhosttyRenderStatePackedCell
++pub const PackedCell = extern struct {
++    cp: u32 = 0,
++    flags: u32 = 0,
++    fg_r: u8 = 0,
++    fg_g: u8 = 0,
++    fg_b: u8 = 0,
++    _pad0: u8 = 0,
++    bg_r: u8 = 0,
++    bg_g: u8 = 0,
++    bg_b: u8 = 0,
++    _pad1: u8 = 0,
++
++    pub const flag_wide_head: u32 = 1 << 0;
++    pub const flag_wide_tail: u32 = 1 << 1;
++    pub const flag_bold: u32 = 1 << 2;
++    pub const flag_italic: u32 = 1 << 3;
++    pub const flag_faint: u32 = 1 << 4;
++    pub const flag_inverse: u32 = 1 << 5;
++    pub const flag_underline: u32 = 1 << 6;
++    pub const flag_has_grapheme: u32 = 1 << 7;
++};
++
++/// Kitty unicode placeholder (U+10EEEE). Hosts treat this as no text.
++const kitty_placeholder: u21 = 0x10EEEE;
++
++/// Fill `out[0..cap]` from the current row in one C crossing.
++pub fn row_cells_collect(
++    cells_: RowCells,
++    def_fg: ?*const colorpkg.RGB.C,
++    def_bg: ?*const colorpkg.RGB.C,
++    out: ?[*]PackedCell,
++    cap: usize,
++    out_len: ?*usize,
++) callconv(lib.calling_conv) Result {
++    const cells = cells_ orelse return .invalid_value;
++    const dest = out orelse return .invalid_value;
++    const fg0 = if (def_fg) |p| p.* else colorpkg.RGB.C{ .r = 0, .g = 0, .b = 0 };
++    const bg0 = if (def_bg) |p| p.* else colorpkg.RGB.C{ .r = 0, .g = 0, .b = 0 };
++
++    const n = @min(cells.raws.len, cap);
++    var skip_tail = false;
++    var i: usize = 0;
++    while (i < n) : (i += 1) {
++        dest[i] = packCell(cells, i, fg0, bg0, &skip_tail);
++    }
++    const empty = PackedCell{};
++    while (i < cap) : (i += 1) {
++        dest[i] = empty;
++    }
++    if (out_len) |p| p.* = n;
+     return .success;
++}
++
++fn packCell(
++    cells: *const RowCellsWrapper,
++    x: usize,
++    def_fg: colorpkg.RGB.C,
++    def_bg: colorpkg.RGB.C,
++    skip_tail: *bool,
++) PackedCell {
++    const cell = cells.raws[x];
++    var out = PackedCell{};
++
++    if (skip_tail.*) {
++        out.flags |= PackedCell.flag_wide_tail;
++        skip_tail.* = false;
++    } else switch (cell.wide) {
++        .wide => {
++            out.flags |= PackedCell.flag_wide_head;
++            skip_tail.* = true;
++        },
++        .spacer_tail => out.flags |= PackedCell.flag_wide_tail,
++        else => {},
++    }
++
++    const bg_only = cell.content_tag == .bg_color_palette or
++        cell.content_tag == .bg_color_rgb;
++    const cp = cell.codepoint();
++    const has_text = cell.hasText() and cp != kitty_placeholder;
++    if (has_text) {
++        out.cp = cp;
++        if (cell.hasGrapheme()) out.flags |= PackedCell.flag_has_grapheme;
++    }
++
++    var fg = def_fg;
++    var bg_cell = def_bg;
++    var has_bg = false;
++    var inverse = false;
++    if (cell.hasStyling() or bg_only) {
++        const s: Style = if (cell.hasStyling()) cells.styles[x] else .{};
++        if (s.fg_color != .none) {
++            fg = s.fg(.{ .default = .{}, .palette = cells.palette }).cval();
++        }
++        if (s.bg(&cell, cells.palette)) |rgb| {
++            bg_cell = rgb.cval();
++            has_bg = true;
++        }
++        if (s.flags.bold) out.flags |= PackedCell.flag_bold;
++        if (s.flags.italic) out.flags |= PackedCell.flag_italic;
++        if (s.flags.faint) out.flags |= PackedCell.flag_faint;
++        if (s.flags.inverse) {
++            inverse = true;
++            out.flags |= PackedCell.flag_inverse;
++        }
++        if (@intFromEnum(s.flags.underline) != 0) {
++            out.flags |= PackedCell.flag_underline;
++        }
++        if (inverse) {
++            const tmp = fg;
++            fg = bg_cell;
++            bg_cell = tmp;
++        }
++    }
++    const bg = if (has_bg or inverse) bg_cell else def_bg;
++    out.fg_r = fg.r;
++    out.fg_g = fg.g;
++    out.fg_b = fg.b;
++    out.bg_r = bg.r;
++    out.bg_g = bg.g;
++    out.bg_b = bg.b;
++    return out;
+ }
+ 
+ fn rowCellsGetTyped(
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -291,6 +291,7 @@
+         @export(&c.render_state_row_cells_select, .{ .name = "ghostty_render_state_row_cells_select" });
+         @export(&c.render_state_row_cells_get, .{ .name = "ghostty_render_state_row_cells_get" });
+         @export(&c.render_state_row_cells_get_multi, .{ .name = "ghostty_render_state_row_cells_get_multi" });
++        @export(&c.render_state_row_cells_collect, .{ .name = "ghostty_render_state_row_cells_collect" });
+         @export(&c.render_state_row_cells_free, .{ .name = "ghostty_render_state_row_cells_free" });
+         @export(&c.render_state_free, .{ .name = "ghostty_render_state_free" });
+         @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -109,6 +109,7 @@
+ pub const render_state_row_cells_select = render.row_cells_select;
+ pub const render_state_row_cells_get = render.row_cells_get;
+ pub const render_state_row_cells_get_multi = render.row_cells_get_multi;
++pub const render_state_row_cells_collect = render.row_cells_collect;
+ pub const render_state_row_cells_free = render.row_cells_free;
+ 
+ pub const sgr_new = sgr.new;

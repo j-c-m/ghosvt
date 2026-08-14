@@ -49,6 +49,8 @@ final class TerminalRenderer {
     var dyOverlayScratch: [CellInstance] = []
     /// Reused run list for the current dirty row.
     var runSegScratch: [RunSeg] = []
+    /// Packed row from `ghostty_render_state_row_cells_collect`.
+    var packedRowScratch: [GhosttyRenderStatePackedCell] = []
     /// Featured primary faces for the current metrics + ligature flag (one create, then reuse).
     var paintFeat: (regular: CTFont, bold: CTFont, italic: CTFont, boldItalic: CTFont)?
     var paintFeatPx = 0
@@ -240,6 +242,7 @@ final class TerminalRenderer {
         overlayScratch.removeAll(keepingCapacity: true)
         dyOverlayScratch.removeAll(keepingCapacity: true)
         runSegScratch.removeAll(keepingCapacity: true)
+        packedRowScratch.removeAll(keepingCapacity: true)
         glyphExtrasByRow.removeAll(keepingCapacity: true)
         underlineExtrasByRow.removeAll(keepingCapacity: true)
         gridCols = 0

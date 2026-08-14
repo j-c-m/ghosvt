@@ -232,111 +232,64 @@ extension TerminalRenderer {
         defBg: GhosttyColorRgb,
         dest: UnsafeMutableBufferPointer<TerminalRowCell>
     ) {
+        let n = min(dest.count, layout.cols)
+        if packedRowScratch.count < dest.count {
+            packedRowScratch = Array(
+                repeating: GhosttyRenderStatePackedCell(),
+                count: dest.count
+            )
+        }
+        var defFgVar = defFg
+        var defBgVar = defBg
+        var written = 0
+        let ok = packedRowScratch.withUnsafeMutableBufferPointer { buf -> Bool in
+            guard let base = buf.baseAddress else { return false }
+            var len = 0
+            let r = ghostty_render_state_row_cells_collect(
+                cellsHandle,
+                &defFgVar,
+                &defBgVar,
+                base,
+                n,
+                &len
+            )
+            written = len
+            return r == GHOSTTY_SUCCESS
+        }
+        guard ok else { return }
+
         let empty = TerminalRowCell(
             text: "", isWideHead: false, isWideTail: false,
             fg: defFg, bg: defBg,
             bold: false, italic: false, faint: false, inverse: false, underline: false
         )
-
-        var skipTail = false
         var col = 0
-        while ghostty_render_state_row_cells_next(cellsHandle) {
-            defer { col += 1 }
-            guard col < layout.cols else { break }
-
-            var rawCell: GhosttyCell = 0
-            let hasRaw = ghostty_render_state_row_cells_get(
-                cellsHandle,
-                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
-                &rawCell
-            ) == GHOSTTY_SUCCESS
-
-            var isWideHead = false
-            var isWideTail = false
-            var hasText = false
-            var hasStyling = false
-            var contentTag = GHOSTTY_CELL_CONTENT_CODEPOINT
-            if skipTail {
-                isWideTail = true
-                skipTail = false
+        while col < dest.count {
+            if col >= written {
+                dest[col] = empty
+                col += 1
+                continue
             }
-            if hasRaw {
-                if !isWideTail {
-                    var wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW
-                    if ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_WIDE, &wide) == GHOSTTY_SUCCESS {
-                        if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL {
-                            isWideTail = true
-                        } else if wide == GHOSTTY_CELL_WIDE_WIDE {
-                            isWideHead = true
-                            skipTail = true
-                        }
-                    }
-                }
-                _ = ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText)
-                _ = ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_HAS_STYLING, &hasStyling)
-                _ = ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_CONTENT_TAG, &contentTag)
-            }
-
-            let bgOnly =
-                contentTag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE
-                || contentTag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB
-
-            var fg = defFg
-            var bgCell = defBg
-            var hasBg = false
-            var bold = false
-            var italic = false
-            var faint = false
-            var inverse = false
-            var underline = false
-            if hasStyling || bgOnly {
-                _ = ghostty_render_state_row_cells_get(
-                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg
-                )
-                hasBg = ghostty_render_state_row_cells_get(
-                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bgCell
-                ) == GHOSTTY_SUCCESS
-                var style = GhosttyStyle()
-                style.size = MemoryLayout<GhosttyStyle>.size
-                ghostty_style_default(&style)
-                _ = ghostty_render_state_row_cells_get(
-                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style
-                )
-                bold = style.bold
-                italic = style.italic
-                faint = style.faint
-                inverse = style.inverse
-                underline = style.underline != 0
-                if inverse {
-                    swap(&fg, &bgCell)
-                }
-            }
-            let bg = (hasBg || inverse) ? bgCell : defBg
-
+            let p = packedRowScratch[col]
+            let flags = p.flags
             var text = ""
-            var cp: UInt32 = 0
-            if hasText {
-                let packed = packedCellText(cellsHandle, raw: hasRaw ? rawCell : nil)
-                text = packed.text
-                cp = packed.cp
+            if flags & GHOSTTY_PACKED_CELL_HAS_GRAPHEME != 0,
+               ghostty_render_state_row_cells_select(cellsHandle, UInt16(col)) == GHOSTTY_SUCCESS {
+                text = cellTextUTF8(cellsHandle) ?? ""
             }
-
             dest[col] = TerminalRowCell(
                 text: text,
-                cp: cp,
-                isWideHead: isWideHead,
-                isWideTail: isWideTail,
-                fg: fg,
-                bg: bg,
-                bold: bold,
-                italic: italic,
-                faint: faint,
-                inverse: inverse,
-                underline: underline
+                cp: p.cp,
+                isWideHead: flags & GHOSTTY_PACKED_CELL_WIDE_HEAD != 0,
+                isWideTail: flags & GHOSTTY_PACKED_CELL_WIDE_TAIL != 0,
+                fg: GhosttyColorRgb(r: p.fg_r, g: p.fg_g, b: p.fg_b),
+                bg: GhosttyColorRgb(r: p.bg_r, g: p.bg_g, b: p.bg_b),
+                bold: flags & GHOSTTY_PACKED_CELL_BOLD != 0,
+                italic: flags & GHOSTTY_PACKED_CELL_ITALIC != 0,
+                faint: flags & GHOSTTY_PACKED_CELL_FAINT != 0,
+                inverse: flags & GHOSTTY_PACKED_CELL_INVERSE != 0,
+                underline: flags & GHOSTTY_PACKED_CELL_UNDERLINE != 0
             )
-        }
-        while col < dest.count {
-            dest[col] = empty
             col += 1
         }
     }
