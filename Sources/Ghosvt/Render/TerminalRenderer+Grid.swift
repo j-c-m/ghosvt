@@ -387,7 +387,9 @@ extension TerminalRenderer {
             selectionLo: nil,
             selectionHi: nil,
             highlightBreaks: breakCols,
-            cursorCol: cursorCol
+            cursorCol: cursorCol,
+            metrics: metrics,
+            layout: layout
         )
         for seg in segments {
             switch seg {
@@ -398,10 +400,10 @@ extension TerminalRenderer {
                     cellWInt: cellWInt, cellHInt: cellHInt,
                     highlight: highlight(for: col)
                 )
-            case .run(let start, let end, let style, let contentHash):
+            case .run(let start, let end, let style, let contentHash, let face):
                 paintShapedRun(
                     start: start, end: end, style: style,
-                    contentHash: contentHash,
+                    contentHash: contentHash, face: face,
                     rowCells: rowCells, rowIndex: rowIndex,
                     metrics: metrics, layout: layout,
                     cellWInt: cellWInt, cellHInt: cellHInt,
@@ -412,28 +414,58 @@ extension TerminalRenderer {
     }
 
     enum RunSeg {
-        case run(start: Int, end: Int, style: TextStyleKey, contentHash: UInt64)
+        case run(
+            start: Int, end: Int, style: TextStyleKey,
+            contentHash: UInt64, face: CodepointCache.FaceKind
+        )
         case wide(col: Int)
     }
 
     /// Segment a row into shape runs (Ghostty `RunIterator`).
     ///
-    /// Breaks on: text style (not bg), wide heads, selection / search
-    /// boundaries, cursor column, and Ghostty bad ligatures (`fi`/`fl`/`st`).
+    /// Breaks on: text style (not bg), wide heads, font index (Ghostty
+    /// `getIndex`), selection / search, cursor, and `fi`/`fl`/`st`.
     /// Spaces and empty cells stay in the run. Trailing empty cells are trimmed.
     func segmentRuns(
         _ cells: [TerminalRowCell],
         selectionLo: Int?,
         selectionHi: Int?,
         highlightBreaks: [Int] = [],
-        cursorCol: Int?
+        cursorCol: Int?,
+        metrics: CellMetrics,
+        layout: LayoutKey
     ) -> [RunSeg] {
         var segs: [RunSeg] = []
         var i = 0
         var runStart: Int?
         var runStyle: TextStyleKey?
+        var runFace: CodepointCache.FaceKind?
         var runHash = ShaperCache.fnvOffset
         let breakSet = Set(highlightBreaks)
+        let nerdFaces = EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
+        var featuredByStyle: [UInt8: CTFont] = [:]
+
+        func featured(bold: Bool, italic: Bool) -> CTFont {
+            let k: UInt8 = (bold ? 1 : 0) | (italic ? 2 : 0)
+            if let hit = featuredByStyle[k] { return hit }
+            let font = shaper.featuredFont(
+                metrics.font(bold: bold, italic: italic),
+                ligatures: fontLigatures
+            )
+            featuredByStyle[k] = font
+            return font
+        }
+
+        func faceKind(of c: TerminalRowCell) -> CodepointCache.FaceKind {
+            codepoints.faceKind(
+                cp: c.cp,
+                bold: c.bold,
+                italic: c.italic,
+                fontPx: layout.fontPx,
+                primary: featured(bold: c.bold, italic: c.italic),
+                nerdFaces: nerdFaces
+            )
+        }
 
         // Ghostty: trim the right edge of empty cells before forming runs.
         var maxCol = cells.count
@@ -443,9 +475,10 @@ extension TerminalRenderer {
             maxCol -= 1
         }
 
-        func beginRun(at col: Int, style: TextStyleKey, cp: UInt32) {
+        func beginRun(at col: Int, style: TextStyleKey, cp: UInt32, face: CodepointCache.FaceKind) {
             runStart = col
             runStyle = style
+            runFace = face
             runHash = ShaperCache.fnvOffset
             ShaperCache.mixCell(&runHash, cp: cp, cluster: 0)
         }
@@ -454,12 +487,17 @@ extension TerminalRenderer {
             guard let s = runStart, let st = runStyle, s < end else {
                 runStart = nil
                 runStyle = nil
+                runFace = nil
                 return
             }
             ShaperCache.mix(&runHash, UInt64(end - s))
-            segs.append(.run(start: s, end: end, style: st, contentHash: runHash))
+            segs.append(.run(
+                start: s, end: end, style: st,
+                contentHash: runHash, face: runFace ?? .primary
+            ))
             runStart = nil
             runStyle = nil
+            runFace = nil
         }
 
         /// True if we must end the current run before absorbing column `i`.
@@ -504,11 +542,12 @@ extension TerminalRenderer {
             }
 
             let st = c.textStyle
+            let face = faceKind(of: c)
             if runStart == nil {
-                beginRun(at: i, style: st, cp: c.cp)
-            } else if st != runStyle {
+                beginRun(at: i, style: st, cp: c.cp, face: face)
+            } else if st != runStyle || face != runFace {
                 flushRun(upTo: i)
-                beginRun(at: i, style: st, cp: c.cp)
+                beginRun(at: i, style: st, cp: c.cp, face: face)
             } else if let s = runStart {
                 ShaperCache.mixCell(&runHash, cp: c.cp, cluster: i - s)
             }
@@ -535,6 +574,7 @@ extension TerminalRenderer {
         end: Int,
         style: TextStyleKey,
         contentHash: UInt64,
+        face: CodepointCache.FaceKind,
         rowCells: [TerminalRowCell],
         rowIndex: Int,
         metrics: CellMetrics,
@@ -549,26 +589,8 @@ extension TerminalRenderer {
         let shapedFont = shaper.featuredFont(font, ligatures: fontLigatures)
         let nerdFaces = EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
 
-        // Ligatures only when every cell is a normal primary-face glyph.
-        // ASCII/empty is the primary face — no Core Text coverage walk.
-        let allPrimary = rowCells.withUnsafeBufferPointer { buf -> Bool in
-            var col = start
-            while col < end {
-                let cp = buf[col].cp
-                if cp == 0 || (cp >= 0x20 && cp <= 0x7E) {
-                    col += 1
-                    continue
-                }
-                let t = buf[col].text
-                if SpriteFace.covers(text: t) { return false }
-                if GlyphAtlas.isPrivateUse(t) { return false }
-                if !GlyphAtlas.fontCovers(shapedFont, text: t) { return false }
-                col += 1
-            }
-            return true
-        }
-
-        if allPrimary {
+        // Ghostty: a run is one font index. Primary face is shaped; else cell-by-cell.
+        if face == .primary {
             paintLigatureRun(
                 start: start, end: end, style: style, contentHash: contentHash,
                 rowCells: rowCells, rowIndex: rowIndex, metrics: metrics, layout: layout,
@@ -673,16 +695,37 @@ extension TerminalRenderer {
             if cellText.isEmpty { continue }
 
             let entry: GlyphAtlas.Entry
-            if let cp = cellText.unicodeScalars.first?.value,
-               cellText.unicodeScalars.count == 1,
-               SpriteFace.covers(cp) {
-                // Ghostty sprite face: braille, box drawing, blocks, powerline, …
-                entry = atlas.entrySprite(
-                    codepoint: cp,
-                    cellWidthPx: cellWInt,
-                    cellHeightPx: cellHInt,
-                    cellBaselinePx: metrics.cellBaselinePx
-                )
+            if cellText.unicodeScalars.count == 1, rowCells[col].cp != 0 {
+                switch codepoints.resolve(
+                    cp: rowCells[col].cp,
+                    bold: style.bold,
+                    italic: style.italic,
+                    fontPx: layout.fontPx,
+                    primary: primary,
+                    nerdFaces: nerdFaces
+                ) {
+                case .sprite:
+                    entry = atlas.entrySprite(
+                        codepoint: rowCells[col].cp,
+                        cellWidthPx: cellWInt,
+                        cellHeightPx: cellHInt,
+                        cellBaselinePx: metrics.cellBaselinePx
+                    )
+                case .glyph(let font, let glyph, _):
+                    entry = atlas.entry(
+                        glyph: glyph,
+                        bold: style.bold,
+                        italic: style.italic,
+                        font: font,
+                        fontPx: layout.fontPx,
+                        cellHeightPx: cellHInt,
+                        cellBaselinePx: metrics.cellBaselinePx,
+                        cellWidthPx: cellWInt,
+                        faceWidthPx: metrics.faceWidthPx
+                    )
+                case .missing:
+                    continue
+                }
             } else if let resolved = resolveGlyphFace(
                 text: cellText, primary: primary, nerdFaces: nerdFaces
             ) {

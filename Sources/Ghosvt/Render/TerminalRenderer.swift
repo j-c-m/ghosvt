@@ -17,6 +17,8 @@ final class TerminalRenderer {
     var imageSampler: MTLSamplerState?
     var atlas: GlyphAtlas
     var shaper = ShaperCache()
+    /// Ghostty `SharedGrid.codepoints` (face lookup, including misses).
+    var codepoints = CodepointCache()
     var instanceBuffer: MTLBuffer?
     var imageInstanceBuffer: MTLBuffer?
     var uniformBuffer: MTLBuffer?
@@ -194,6 +196,7 @@ final class TerminalRenderer {
     func resetAtlas() {
         atlas.clear()
         shaper.clear()
+        codepoints.clear()
         prewarmedKey = nil
         lastLayoutKey = nil
         gridCells.removeAll(keepingCapacity: true)
