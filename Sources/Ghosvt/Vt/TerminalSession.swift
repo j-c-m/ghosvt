@@ -56,6 +56,12 @@ final class TerminalSession {
     private(set) var alternateScreen = false
     /// VT bytes arrived (or the child died). Must be `@Sendable` (parse thread).
     var onNeedsRedraw: (@Sendable () -> Void)?
+    /// One main hop per burst so echo does not queue a draw per gather batch.
+    private final class RedrawState: @unchecked Sendable {
+        let lock = NSLock()
+        var scheduled = false
+    }
+    private let redrawState = RedrawState()
 
     /// Persistent bytes for GHOSTTY_TERMINAL_OPT_TERMINFO_NAME.
     private let terminfoNameBytes: [UInt8] = Array("xterm-ghostty".utf8)
@@ -205,8 +211,26 @@ final class TerminalSession {
             pendingScrollToBottom = true
             scrollToBottomLock.unlock()
         }
+        scheduleRedraw()
+    }
+
+    /// Parse thread: coalesce to a single main-queue redraw.
+    private func scheduleRedraw() {
+        let state = redrawState
+        state.lock.lock()
+        if state.scheduled {
+            state.lock.unlock()
+            return
+        }
+        state.scheduled = true
+        state.lock.unlock()
         let redraw = onNeedsRedraw
-        DispatchQueue.main.async { redraw?() }
+        DispatchQueue.main.async {
+            state.lock.lock()
+            state.scheduled = false
+            state.lock.unlock()
+            redraw?()
+        }
     }
 
     /// Stop gather/parse, respawn login, start a new pipeline.
@@ -233,8 +257,7 @@ final class TerminalSession {
             },
             onDeath: { [weak self] in
                 // `recoverReady` is set on the pipeline; main `pollIO` recovers.
-                let redraw = self?.onNeedsRedraw
-                DispatchQueue.main.async { redraw?() }
+                self?.scheduleRedraw()
             }
         )
         guard p.start() else {

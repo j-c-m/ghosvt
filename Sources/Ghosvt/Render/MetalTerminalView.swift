@@ -105,6 +105,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var workspaceObserversInstalled = false
     /// Last logged display range (minInterval, maxInterval, maxFps); skip repeat logs.
     private var lastLoggedDisplay: (minI: CFTimeInterval, maxI: CFTimeInterval, fps: Int)?
+    /// True while `draw(_:)` is on the stack; `requestFrame` must not recurse.
+    private var inDraw = false
 
     // Scrollback search (⌘F): per-VT state; steals one row while that VT is active.
     private struct VTSearchState {
@@ -222,6 +224,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         isPaused = true
         enableSetNeedsDisplay = true
         autoResizeDrawable = true
+        // Triple-buffer adds a frame of present latency vs Ghostty's tighter queue.
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
         let bg = DefaultColors.background
         clearColor = MTLClearColor(
             red: Double(bg.r) / 255,
@@ -535,11 +539,22 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     /// Coalesced present. Idle frames do not acquire a drawable.
+    /// On main, draw this turn (Ghostty wakeup → draw now). Do not wait for MTKView vsync.
     nonisolated func requestFrame() {
-        Task { @MainActor [weak self] in
-            guard let self, !self.screensAsleep else { return }
-            self.needsDisplay = true
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { self.flushFrameRequest() }
+            return
         }
+        DispatchQueue.main.async { [weak self] in
+            self?.flushFrameRequest()
+        }
+    }
+
+    private func flushFrameRequest() {
+        guard !screensAsleep else { return }
+        needsDisplay = true
+        guard !inDraw else { return }
+        draw()
     }
 
     private func bindSessionRedraws() {
@@ -652,6 +667,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        inDraw = true
+        defer { inDraw = false }
         guard let renderer,
               let manager,
               let metrics
@@ -1321,6 +1338,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         // Typing clears the active selection (macOS terminal convention).
         if manager.active.selectionActive {
             manager.active.clearSelection()
+            requestFrame()
         }
         KeyBridge.handleKeyDown(event, session: manager.active)
     }

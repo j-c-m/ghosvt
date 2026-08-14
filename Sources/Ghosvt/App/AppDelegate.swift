@@ -74,7 +74,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let view = self.metalView, let manager = self.manager else {
                 return event
             }
-            view.requestFrame()
             // Quit panel eats all keys while open.
             if view.handleQuitConfirmKey(event) {
                 return nil
