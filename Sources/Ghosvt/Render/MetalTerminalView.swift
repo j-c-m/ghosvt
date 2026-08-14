@@ -1330,6 +1330,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if handleScrollPage(event, manager: manager) {
             return
         }
+        if handleTerminalChords(event, manager: manager) {
+            return
+        }
         // Do not feed Command chords into the PTY (except we already handled VT switch).
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
@@ -1341,6 +1344,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             requestFrame()
         }
         KeyBridge.handleKeyDown(event, session: manager.active)
+        requestFrame()
     }
 
     @discardableResult
@@ -2673,7 +2677,37 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     func handleScrollPage(_ event: NSEvent, manager: VtManager) -> Bool {
         guard let dir = KeyBridge.scrollPageDirection(from: event) else { return false }
         manager.active.scrollPageSmooth(direction: dir, isRepeat: event.isARepeat)
+        requestFrame()
         return true
+    }
+
+    /// Ghostty macOS: ⌘A / ⌘K / ⌘Home / ⌘End / ⌘←→⌫.
+    @discardableResult
+    func handleTerminalChords(_ event: NSEvent, manager: VtManager) -> Bool {
+        if let dir = KeyBridge.scrollExtremeDirection(from: event) {
+            manager.active.scrollExtremeSmooth(direction: dir, isRepeat: event.isARepeat)
+            requestFrame()
+            return true
+        }
+        if KeyBridge.isSelectAll(event) {
+            _ = manager.active.selectAll()
+            requestFrame()
+            return true
+        }
+        if KeyBridge.isClearScreen(event) {
+            guard manager.active.clearScreen() else { return false }
+            requestFrame()
+            return true
+        }
+        if let bytes = KeyBridge.lineEditBytes(from: event) {
+            manager.active.writeToPty(bytes)
+            if manager.active.scrollToBottomKeystroke {
+                manager.active.scrollViewportToBottom(isRepeat: event.isARepeat)
+            }
+            requestFrame()
+            return true
+        }
+        return false
     }
 
     /// Ghostty macOS defaults: ⌘+/⌘= increase, ⌘- decrease (1pt), ⌘0 reset.
@@ -2904,6 +2938,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             if let manager, handleScrollPage(event, manager: manager) {
                 return true
             }
+            if let manager, handleTerminalChords(event, manager: manager) {
+                return true
+            }
             // Copy / paste (ignore other modifiers like Shift for basic chords).
             if !flags.contains(.control), !flags.contains(.option) {
                 switch event.charactersIgnoringModifiers?.lowercased() {
@@ -3108,6 +3145,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         session.scrollToSearchMatch(match)
     }
 
+    @objc override func selectAll(_ sender: Any?) {
+        _ = manager?.active.selectAll()
+        requestFrame()
+    }
+
     @objc func copy(_ sender: Any?) {
         _ = manager?.active.copySelectionToPasteboard()
     }
@@ -3118,6 +3160,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(selectAll(_:)) {
+            return manager?.active.isLive == true
+        }
         if menuItem.action == #selector(copy(_:)) {
             return manager?.active.selectionActive == true
         }

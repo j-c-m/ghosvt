@@ -107,8 +107,9 @@ final class TerminalSession {
         scrollToBottomOutput = config.scrollToBottomOutput
     }
 
-    /// Jump to the live bottom (Ghostty scroll-to-bottom on keystroke / output).
-    func scrollViewportToBottom() {
+    /// Return to the live bottom. Same smooth seek as ⌘End (Ghostty
+    /// `scroll-to-bottom = keystroke`). Alternate screen stays pinned.
+    func scrollViewportToBottom(isRepeat: Bool = false) {
         if alternateScreen {
             scrollPhysics.pinBottom(maxOffset: 0)
             scrollMaxOffset = 0
@@ -116,9 +117,13 @@ final class TerminalSession {
         }
         let snap = queryScrollbar()
         let maxO = snap?.maxOffset ?? scrollMaxOffset
-        scrollPhysics.pinBottom(maxOffset: maxO)
         scrollMaxOffset = maxO
-        syncIntegerViewport()
+        // Already coasting, or truly on/past the live edge: do not re-kick.
+        // Pinned-but-lagging (Ctrl+C during output) still seeks to the live bottom.
+        if scrollPhysics.isSeekingBottom || scrollPhysics.isAtLiveBottom(maxOffset: maxO) {
+            return
+        }
+        scrollExtremeSmooth(direction: -1, isRepeat: isRepeat)
     }
 
     /// Ghostty ⌘PageUp / ⌘PageDown: smooth fling one page; accelerate while held.
@@ -141,6 +146,29 @@ final class TerminalSession {
             direction: direction,
             holdCount: pageScrollHoldCount,
             viewportRows: vp
+        )
+    }
+
+    /// ⌘Home / ⌘End: same hold acceleration as page keys, longer coast to the extreme.
+    func scrollExtremeSmooth(direction: Double, isRepeat: Bool) {
+        if alternateScreen { return }
+        if !isRepeat || direction != pageScrollLastDir {
+            pageScrollHoldCount = 1
+        } else {
+            pageScrollHoldCount += 1
+        }
+        pageScrollLastDir = direction
+
+        let snap = queryScrollbar()
+        let maxO = snap?.maxOffset ?? scrollMaxOffset
+        let vp = max(1, Double(snap?.len ?? UInt64(rows)))
+        scrollMaxOffset = maxO
+        scrollViewportRows = vp
+        scrollPhysics.seekExtreme(
+            direction: direction,
+            holdCount: pageScrollHoldCount,
+            viewportRows: vp,
+            maxOffset: maxO
         )
     }
 
@@ -446,6 +474,10 @@ final class TerminalSession {
     private func refreshActiveScreen() {
         lock.lock()
         defer { lock.unlock() }
+        refreshActiveScreenLocked()
+    }
+
+    private func refreshActiveScreenLocked() {
         guard isLive, let terminal else {
             alternateScreen = false
             return
@@ -751,8 +783,11 @@ final class TerminalSession {
         // New output grows history: stay glued when pinned.
         scrollPhysics.followBottomIfPinned(maxOffset: maxO)
 
-        // Clamp if scrollback was trimmed under us.
-        if !scrollPhysics.pinnedToBottom, scrollPhysics.position > maxO {
+        // Clamp only after a trim (idle past the new bottom). Do not kill
+        // overscroll bounce while velocity is still carrying past maxO.
+        if !scrollPhysics.pinnedToBottom,
+           scrollPhysics.position > maxO,
+           abs(scrollPhysics.velocity) < 0.15 {
             scrollPhysics.syncFromScrollbar(offset: maxO, maxOffset: maxO, forcePinIfActive: false)
         }
 
@@ -1231,6 +1266,49 @@ final class TerminalSession {
         guard r == GHOSTTY_SUCCESS, let ptr, len > 0 else { return nil }
         defer { ghostty_free(nil, ptr, len) }
         return String(bytes: UnsafeBufferPointer(start: ptr, count: len), encoding: .utf8)
+    }
+
+    /// Ghostty `select_all`. Returns false when there is no selectable content.
+    @discardableResult
+    func selectAll() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return false }
+        var sel = GhosttySelection()
+        sel.size = MemoryLayout<GhosttySelection>.size
+        let r = ghostty_terminal_select_all(terminal, &sel)
+        guard r == GHOSTTY_SUCCESS else { return false }
+        installSelectionLocked(&sel)
+        return true
+    }
+
+    /// Ghostty `clear_screen`. False on the alternate screen (do not consume the key).
+    @discardableResult
+    func clearScreen() -> Bool {
+        lock.lock()
+        refreshActiveScreenLocked()
+        guard !alternateScreen, isLive, let terminal else {
+            lock.unlock()
+            return false
+        }
+        installSelectionLocked(nil)
+        if let gesture = selectionGesture {
+            ghostty_selection_gesture_reset(gesture, terminal)
+        }
+        // CSI 3J (scrollback) + CSI 2J CSI H (active display). Ghostty
+        // gates the display wipe + PTY FF on cursor-at-prompt; the pin
+        // has no CURSOR_AT_PROMPT yet, so always wipe and send FF.
+        let erase: [UInt8] = [
+            0x1B, 0x5B, 0x33, 0x4A,
+            0x1B, 0x5B, 0x32, 0x4A,
+            0x1B, 0x5B, 0x48,
+        ]
+        ghostty_terminal_vt_write(terminal, erase, erase.count)
+        lock.unlock()
+        writeToPty([0x0C])
+        scrollViewportToBottom()
+        scheduleRedraw()
+        return true
     }
 
     @discardableResult

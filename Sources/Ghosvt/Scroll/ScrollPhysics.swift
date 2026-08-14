@@ -25,6 +25,8 @@ final class ScrollPhysics {
     private let settleVel: Double = 0.15
     /// Absolute row offset to ease toward (search / programmatic scroll). Nil = free physics.
     private var seekTarget: Double?
+    /// ⌘End / keystroke: `seekTarget` tracks the live bottom as output grows.
+    private var seekFollowsBottom = false
 
     /// Integer row for `GHOSTTY_SCROLL_VIEWPORT_ROW` (clamped into range).
     func integerRow(maxOffset: Double) -> UInt64 {
@@ -56,6 +58,7 @@ final class ScrollPhysics {
     func applyImpulse(deltaRows: Double) {
         if abs(deltaRows) < 1e-9 { return }
         seekTarget = nil
+        seekFollowsBottom = false
         pinnedToBottom = false
         // +impulse → older history → lower position → negative velocity.
         velocity -= deltaRows * impulseScale
@@ -66,6 +69,7 @@ final class ScrollPhysics {
     func applyPageImpulse(direction: Double, holdCount: Int, viewportRows: Double) {
         if abs(direction) < 1e-9 { return }
         seekTarget = nil
+        seekFollowsBottom = false
         let vp = max(1, viewportRows)
         pinnedToBottom = false
         // Initial kick ~ coasts about a page; repeats multiply (capped).
@@ -77,10 +81,34 @@ final class ScrollPhysics {
         velocity = min(max(velocity, -cap), cap)
     }
 
+    /// Coast to the top (`direction` +1) or bottom (−1), then overscroll-bounce
+    /// like page / wheel. Always reaches the extreme; repeats accelerate.
+    func seekExtreme(
+        direction: Double,
+        holdCount: Int,
+        viewportRows: Double,
+        maxOffset: Double
+    ) {
+        if abs(direction) < 1e-9 { return }
+        seekTarget = nil
+        let maxO = max(0, maxOffset)
+        let vp = max(1, viewportRows)
+        let mult = min(1.0 + Double(max(0, holdCount - 1)) * 0.45, 7.0)
+        pinnedToBottom = false
+        seekFollowsBottom = direction < 0
+        // Coast ≈ |v|/friction. Size to arrive, plus a page-edge leftover for bounce.
+        let travel = direction > 0 ? max(0, position) : max(0, maxO - position)
+        let speed = (travel * friction + vp * 1.5) * mult
+        velocity = -direction * speed
+        let cap = max(vp * 48, speed)
+        velocity = min(max(velocity, -cap), cap)
+    }
+
     /// Jump to top of scrollback.
     func pinTop(maxOffset: Double) {
         _ = maxOffset
         seekTarget = nil
+        seekFollowsBottom = false
         position = 0
         velocity = 0
         pinnedToBottom = false
@@ -90,6 +118,7 @@ final class ScrollPhysics {
     func pinBottom(maxOffset: Double) {
         let maxO = max(0, maxOffset)
         seekTarget = nil
+        seekFollowsBottom = false
         position = maxO
         velocity = 0
         pinnedToBottom = true
@@ -100,6 +129,7 @@ final class ScrollPhysics {
         let maxO = max(0, maxOffset)
         let goal = min(max(offset, 0), maxO)
         pinnedToBottom = false
+        seekFollowsBottom = false
         let err = goal - position
         if abs(err) < 0.35 {
             seekTarget = nil
@@ -111,6 +141,17 @@ final class ScrollPhysics {
         seekTarget = goal
         // Seed so the first frame moves; step() springs the rest of the way.
         velocity = err * 6
+    }
+
+    /// Already coasting toward the live bottom (do not start another kick).
+    var isSeekingBottom: Bool { seekFollowsBottom }
+
+    /// True when a keystroke should not start another bottom seek / bounce.
+    func isAtLiveBottom(maxOffset: Double) -> Bool {
+        let maxO = max(0, maxOffset)
+        if position > maxO { return true }
+        if pinnedToBottom, abs(position - maxO) < 0.35 { return true }
+        return false
     }
 
     /// Keep pinned bottom glued when scrollback grows.
@@ -130,12 +171,23 @@ final class ScrollPhysics {
 
         if pinnedToBottom {
             seekTarget = nil
+            seekFollowsBottom = false
             position = maxO
             velocity = 0
             return false
         }
 
-        // Programmatic ease (search match, etc.).
+        // Live bottom grows while we coast toward it (Ctrl+C during output).
+        if seekFollowsBottom {
+            if position >= maxO {
+                seekFollowsBottom = false
+            } else {
+                let minV = (maxO - position) * friction + viewportRows * 1.5
+                if velocity < minV { velocity = minV }
+            }
+        }
+
+        // Programmatic ease (search match). Extremes use free physics + bounce.
         if let target = seekTarget {
             return stepSeek(dt: dt, target: target, maxOffset: maxO, viewportRows: viewportRows)
         }
@@ -154,14 +206,18 @@ final class ScrollPhysics {
 
         // Forces
         if position < 0 {
-            // Spring toward 0
-            let x = position
-            let a = -springK * x - springC * velocity
-            velocity += a * dt
+            applyOverscrollSpring(offset: position, dt: dt)
+            if velocity > 0, position + velocity * dt >= 0 {
+                position = 0
+                velocity = 0
+            }
         } else if position > maxO {
-            let x = position - maxO
-            let a = -springK * x - springC * velocity
-            velocity += a * dt
+            applyOverscrollSpring(offset: position - maxO, dt: dt)
+            if velocity < 0, position + velocity * dt <= maxO {
+                position = maxO
+                velocity = 0
+                pinnedToBottom = true
+            }
         } else {
             // Friction / coast inside the range
             velocity *= exp(-friction * dt)
@@ -182,7 +238,6 @@ final class ScrollPhysics {
             }
         } else if abs(velocity) < settleVel {
             velocity = 0
-            // Snap fractional settle toward nearest integer? Keep continuous until idle pin.
             if abs(position - maxO) < settlePos {
                 pinnedToBottom = true
                 position = maxO
@@ -192,6 +247,12 @@ final class ScrollPhysics {
         return abs(velocity) > settleVel
             || position < -settlePos
             || position > maxO + settlePos
+    }
+
+    /// Overdamped rubber band. `springC` is a floor so config can damp more, not less.
+    private func applyOverscrollSpring(offset: Double, dt: Double) {
+        let c = max(springC, 2.4 * sqrt(springK))
+        velocity += (-springK * offset - c * velocity) * dt
     }
 
     /// Spring toward `seekTarget` (critically-ish damped).

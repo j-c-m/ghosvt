@@ -46,18 +46,24 @@ enum KeyBridge {
         return nil
     }
 
-    /// ⌘← / ⌘→ → -1 / +1, else nil.
+    /// ⇧⌘[ / ⇧⌘] → -1 / +1 (Ghostty prev/next tab). Else nil.
     static func vtSwitchDelta(from event: NSEvent) -> Int? {
         guard event.type == .keyDown else { return nil }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.command),
-              !flags.contains(.shift),
+              flags.contains(.shift),
               !flags.contains(.control),
               !flags.contains(.option)
         else { return nil }
+        // US: 33 = `[`, 30 = `]`. Ignore Shift so `{`/`}` still match.
         switch event.keyCode {
-        case 123: return -1 // left
-        case 124: return 1  // right
+        case 33: return -1
+        case 30: return 1
+        default: break
+        }
+        switch event.charactersIgnoringModifiers {
+        case "[": return -1
+        case "]": return 1
         default: return nil
         }
     }
@@ -77,6 +83,61 @@ enum KeyBridge {
         case 121: return -1  // Page Down → newer / toward bottom
         default: return nil
         }
+    }
+
+    /// Ghostty macOS: super+home / super+end → scroll extremes.
+    /// Returns +1 for top (Home), −1 for bottom (End), else nil.
+    static func scrollExtremeDirection(from event: NSEvent) -> Double? {
+        guard event.type == .keyDown else { return nil }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              !flags.contains(.shift)
+        else { return nil }
+        switch event.keyCode {
+        case 115: return 1   // Home → top
+        case 119: return -1  // End → bottom
+        default: return nil
+        }
+    }
+
+    /// Ghostty natural text editing: ⌘← `C-a`, ⌘→ `C-e`, ⌘⌫ `C-u`.
+    static func lineEditBytes(from event: NSEvent) -> [UInt8]? {
+        guard event.type == .keyDown else { return nil }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              !flags.contains(.shift)
+        else { return nil }
+        switch event.keyCode {
+        case 123: return [0x01] // left → beginning of line
+        case 124: return [0x05] // right → end of line
+        case 51: return [0x15]  // delete → kill to start of line
+        default: return nil
+        }
+    }
+
+    /// ⌘A select all.
+    static func isSelectAll(_ event: NSEvent) -> Bool {
+        commandLetter(event, "a")
+    }
+
+    /// ⌘K clear screen (Ghostty `clear_screen`, performable).
+    static func isClearScreen(_ event: NSEvent) -> Bool {
+        commandLetter(event, "k")
+    }
+
+    private static func commandLetter(_ event: NSEvent, _ letter: String) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              !flags.contains(.shift)
+        else { return false }
+        return event.charactersIgnoringModifiers?.lowercased() == letter
     }
 
     /// ⌘F → open/focus scrollback search.
@@ -111,7 +172,7 @@ enum KeyBridge {
             session.writeToPty(payload)
             // Ghostty `scroll-to-bottom = keystroke` (default on).
             if session.scrollToBottomKeystroke {
-                session.scrollViewportToBottom()
+                session.scrollViewportToBottom(isRepeat: event.isARepeat)
             }
         }
     }

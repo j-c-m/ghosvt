@@ -124,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return event
             }
 
-            // ⌘1…⌘9 / ⌘F1… / ⌘←→ → VT switch; ⌘PgUp/PgDn → scroll; ⌘F search; ⌘B browser.
+            // ⌘1…⌘9 / ⌘F1… / ⇧⌘[ ] → VT switch; ⌘PgUp/PgDn/Home/End → scroll; ⌘F search; ⌘B browser.
             if flags.contains(.command) {
                 // No main menu — handle quit ourselves.
                 if event.charactersIgnoringModifiers?.lowercased() == "q" {
@@ -148,6 +148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return nil
                 }
                 if view.handleScrollPage(event, manager: manager) {
+                    return nil
+                }
+                if view.handleTerminalChords(event, manager: manager) {
                     return nil
                 }
                 // Other ⌘ chords: leave to the system/menu.
