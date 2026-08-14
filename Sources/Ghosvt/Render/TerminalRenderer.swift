@@ -19,12 +19,27 @@ final class TerminalRenderer {
     var shaper = ShaperCache()
     /// Ghostty `SharedGrid.codepoints` (face lookup, including misses).
     var codepoints = CodepointCache()
-    var instanceBuffer: MTLBuffer?
-    var imageInstanceBuffer: MTLBuffer?
-    var uniformBuffer: MTLBuffer?
-    var instanceCapacity = 0
-    var imageInstanceCapacity = 0
+    /// Triple-buffered GPU writes (Ghostty Metal `swap_chain_count = 3`).
+    let frames: GPUFrameRing
     var imageFloatScratch = [Float]()
+
+    var instanceBuffer: MTLBuffer? {
+        get { frames.current.instance }
+        set { frames.current.instance = newValue }
+    }
+    var instanceCapacity: Int {
+        get { frames.current.instanceCap }
+        set { frames.current.instanceCap = newValue }
+    }
+    var imageInstanceBuffer: MTLBuffer? {
+        get { frames.current.image }
+        set { frames.current.image = newValue }
+    }
+    var imageInstanceCapacity: Int {
+        get { frames.current.imageCap }
+        set { frames.current.imageCap = newValue }
+    }
+    var uniformBuffer: MTLBuffer? { frames.current.uniform }
     var fontLigatures = true
 
     let padPoints: CGFloat
@@ -132,6 +147,59 @@ final class TerminalRenderer {
         init(_ value: CFTimeInterval) { self.value = value }
     }
 
+    /// One in-flight GPU write set. CPU waits for a free slot before filling.
+    final class GPUFrameRing: @unchecked Sendable {
+        static let count = 3
+
+        final class Slot {
+            var instance: MTLBuffer?
+            var instanceCap = 0
+            var uniform: MTLBuffer
+            var image: MTLBuffer?
+            var imageCap = 0
+            init(uniform: MTLBuffer) { self.uniform = uniform }
+        }
+
+        private var slots: [Slot]
+        /// Last acquired slot; first `acquire` lands on 0.
+        private var index = GPUFrameRing.count - 1
+        private let sema = DispatchSemaphore(value: GPUFrameRing.count)
+        /// True between `acquire` and the matching command-buffer completion.
+        private(set) var pendingRelease = false
+
+        init?(device: MTLDevice) {
+            var built: [Slot] = []
+            built.reserveCapacity(Self.count)
+            for _ in 0..<Self.count {
+                guard let uniform = device.makeBuffer(
+                    length: FrameUniforms.stride,
+                    options: .storageModeShared
+                ) else { return nil }
+                built.append(Slot(uniform: uniform))
+            }
+            slots = built
+        }
+
+        var current: Slot { slots[index] }
+
+        func acquire() {
+            if pendingRelease { return }
+            sema.wait()
+            index = (index + 1) % Self.count
+            pendingRelease = true
+        }
+
+        func takePendingRelease() -> Bool {
+            let pending = pendingRelease
+            pendingRelease = false
+            return pending
+        }
+
+        func signal() {
+            sema.signal()
+        }
+    }
+
     enum RunSeg {
         case run(
             start: Int, end: Int, style: TextStyleKey,
@@ -156,6 +224,9 @@ final class TerminalRenderer {
         self.padPoints = padPoints
         guard let queue = device.makeCommandQueue() else { return nil }
         self.queue = queue
+
+        guard let frames = GPUFrameRing(device: device) else { return nil }
+        self.frames = frames
 
         guard let atlas = GlyphAtlas(device: device) else { return nil }
         self.atlas = atlas
@@ -221,8 +292,6 @@ final class TerminalRenderer {
         isamp.sAddressMode = .clampToEdge
         isamp.tAddressMode = .clampToEdge
         self.imageSampler = device.makeSamplerState(descriptor: isamp)
-
-        self.uniformBuffer = device.makeBuffer(length: FrameUniforms.stride, options: .storageModeShared)
     }
 
     func resetAtlas() {
@@ -578,11 +647,14 @@ final class TerminalRenderer {
         let quitChanged = quitConfirm != lastQuitConfirm
         lastQuitConfirm = quitConfirm
 
+        // Kitty rewrites the image instance buffer; stay on the upload path
+        // so that write lands in a free ring slot with the cells.
         let cellsStable = !needGridRebuild && !blinkChanged && !indicatorChanged
             && !cursorChanged && !searchHUDChanged && !visualChanged
             && !linkHoverChanged
             && !quitChanged
             && lastBgCount + lastFgCount > 0
+            && !hasKitty
         if cellsStable {
             present(
                 bgCount: lastBgCount,

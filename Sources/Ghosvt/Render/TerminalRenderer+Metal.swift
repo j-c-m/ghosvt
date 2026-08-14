@@ -7,8 +7,10 @@ import QuartzCore
 // MARK: - GPU
 extension TerminalRenderer {
     func uploadInstances(_ instances: [CellInstance]) {
+        frames.acquire()
         ensureInstanceCapacity(max(instances.count, 1))
         guard let raw = instanceBuffer?.contents() else {
+            abortFrameSlot()
             lastDrawnCount = 0
             lastBgCount = 0
             lastFgCount = 0
@@ -29,8 +31,10 @@ extension TerminalRenderer {
         dy: Float
     ) {
         let total = bg.count + ink.count + underlines.count + dyOverlay.count + overlay.count
+        frames.acquire()
         ensureInstanceCapacity(max(total, 1))
         guard let raw = instanceBuffer?.contents() else {
+            abortFrameSlot()
             lastDrawnCount = 0
             lastBgCount = 0
             lastFgCount = 0
@@ -104,7 +108,8 @@ extension TerminalRenderer {
         letterboxBg: GhosttyColorRgb,
         contentActive: Bool = true
     ) {
-        if let ub = uniformBuffer {
+        // Only write uniforms on an acquired slot. cellsStable re-reads last slot.
+        if frames.pendingRelease, let ub = uniformBuffer {
             var uni = FrameUniforms(viewportX: pw, viewportY: ph)
             withUnsafeBytes(of: &uni) { raw in
                 ub.contents().copyMemory(from: raw.baseAddress!, byteCount: FrameUniforms.stride)
@@ -123,7 +128,10 @@ extension TerminalRenderer {
 
         guard let cmd = queue.makeCommandBuffer(),
               let enc = cmd.makeRenderCommandEncoder(descriptor: rpd)
-        else { return }
+        else {
+            abortFrameSlot()
+            return
+        }
 
         enc.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
 
@@ -240,13 +248,22 @@ extension TerminalRenderer {
     ) {
         let duration = presentDuration(contentActive: contentActive)
         cmd.present(drawable, afterMinimumDuration: duration)
-        // WWDC21: EMA of GPU time drives the next active frame’s minimum duration.
         let ema = gpuTimeEMA
+        let release = frames.takePendingRelease()
+        let ring = frames
         cmd.addCompletedHandler { buffer in
+            if release { ring.signal() }
             let gpu = buffer.gpuEndTime - buffer.gpuStartTime
             guard gpu > 0, gpu.isFinite else { return }
             let alpha = 0.25
             ema.value = gpu * alpha + ema.value * (1.0 - alpha)
+        }
+    }
+
+    /// Drop an acquired slot when encode fails before commit.
+    func abortFrameSlot() {
+        if frames.takePendingRelease() {
+            frames.signal()
         }
     }
 
@@ -360,7 +377,10 @@ extension TerminalRenderer {
         rpd.colorAttachments[0].clearColor = clearColor
         guard let cmd = queue.makeCommandBuffer(),
               let enc = cmd.makeRenderCommandEncoder(descriptor: rpd)
-        else { return }
+        else {
+            abortFrameSlot()
+            return
+        }
         enc.endEncoding()
         presentPaced(cmd, drawable: drawable, contentActive: false)
         cmd.commit()
