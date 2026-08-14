@@ -384,44 +384,50 @@ extension TerminalRenderer {
         let defBr = Float(defBg.r) / 255
         let defBgG = Float(defBg.g) / 255
         let defBb = Float(defBg.b) / 255
-        for col in 0..<layout.cols {
-            let c = rowCells[col]
-            let x = (layout.originX + layout.padPx + Float(col) * layout.cellW)
-                .rounded(.toNearestOrAwayFromZero)
-            let yPx = y
-            let hl = highlight(for: col)
-            let colors = CellPaintColors.pair(
-                fg: c.fg, bg: c.bg, faint: c.faint, highlight: hl
-            )
-            let fr = colors.ink.r, fgG = colors.ink.g, fb = colors.ink.b
-            let br = colors.fill.r, bgG = colors.fill.g, bb = colors.fill.b
-            let isDefaultBg = hl == .none
-                && abs(br - defBr) < 1e-4
-                && abs(bgG - defBgG) < 1e-4
-                && abs(bb - defBb) < 1e-4
-            let ba: Float = isDefaultBg ? 0 : 1
-            let idx = rowIndex * layout.cols + col
-            if idx < gridCells.count {
-                gridCells[idx] = CellInstance.make(
-                    originX: x, originY: yPx,
-                    width: layout.cellW, height: layout.cellH,
-                    u0: 0, v0: 0, u1: 0, v1: 0,
-                    fr: fr, fg: fgG, fb: fb, fa: 1,
-                    br: br, bg: bgG, bb: bb, ba: ba
-                )
-            }
-            if c.underline {
-                // Font underline metrics (same path as ⌘-hover links).
-                let th = Float(max(1, metrics.underlineThicknessPx))
-                let uy = y + Float(metrics.underlineTopPx)
-                if rowIndex < underlineExtrasByRow.count {
-                    underlineExtrasByRow[rowIndex].append(.make(
-                        originX: x, originY: uy,
-                        width: layout.cellW, height: th,
-                        u0: 0, v0: 0, u1: 0, v1: 0,
-                        fr: fr, fg: fgG, fb: fb, fa: 1,
-                        br: fr, bg: fgG, bb: fb, ba: 1
-                    ))
+        let ulTh = Float(max(1, metrics.underlineThicknessPx))
+        let ulY = y + Float(metrics.underlineTopPx)
+        let hasHighlight = selStart != nil || !rowSearch.isEmpty
+        let rowBase = rowIndex * layout.cols
+        let originX = layout.originX + layout.padPx
+        let cellW = layout.cellW
+        let cellH = layout.cellH
+        rowCells.withUnsafeBufferPointer { cellsBuf in
+            gridCells.withUnsafeMutableBufferPointer { gridBuf in
+                var col = 0
+                while col < layout.cols {
+                    let cell = cellsBuf.baseAddress.unsafelyUnwrapped + col
+                    let x = (originX + Float(col) * cellW)
+                        .rounded(.toNearestOrAwayFromZero)
+                    let hl = hasHighlight ? highlight(for: col) : .none
+                    let colors = CellPaintColors.pair(
+                        fg: cell.pointee.fg, bg: cell.pointee.bg,
+                        faint: cell.pointee.faint, highlight: hl
+                    )
+                    let fr = colors.ink.r, fgG = colors.ink.g, fb = colors.ink.b
+                    let br = colors.fill.r, bgG = colors.fill.g, bb = colors.fill.b
+                    let isDefaultBg = hl == .none
+                        && abs(br - defBr) < 1e-4
+                        && abs(bgG - defBgG) < 1e-4
+                        && abs(bb - defBb) < 1e-4
+                    let idx = rowBase + col
+                    if idx < gridBuf.count {
+                        gridBuf[idx] = CellInstance(
+                            ox: x, oy: y, sx: cellW, sy: cellH,
+                            u0: 0, v0: 0, u1: 0, v1: 0,
+                            fr: fr, fg: fgG, fb: fb, fa: 1,
+                            br: br, bg: bgG, bb: bb, ba: isDefaultBg ? 0 : 1
+                        )
+                    }
+                    if cell.pointee.underline, rowIndex < underlineExtrasByRow.count {
+                        underlineExtrasByRow[rowIndex].append(.make(
+                            originX: x, originY: ulY,
+                            width: cellW, height: ulTh,
+                            u0: 0, v0: 0, u1: 0, v1: 0,
+                            fr: fr, fg: fgG, fb: fb, fa: 1,
+                            br: fr, bg: fgG, bb: fb, ba: 1
+                        ))
+                    }
+                    col += 1
                 }
             }
         }
