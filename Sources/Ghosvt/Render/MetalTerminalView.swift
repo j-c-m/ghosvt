@@ -2364,7 +2364,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return true
     }
 
-    /// Esc / ⌘W / ⌘T / address typing while a browser is active on this VT.
+    /// ⌘W / ⌘T / address typing while a browser is active on this VT.
     @discardableResult
     func handleBrowserKeys(_ event: NSEvent) -> Bool {
         // ⌘B works even before a browser exists on this VT.
@@ -2393,8 +2393,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 endBrowserAddressEdit(focusWeb: true)
                 return true
             }
-            dismissBrowser(onVT: i)
-            return true
+            return false
         }
         if isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
             // Close active tab; last tab dismisses the session.
