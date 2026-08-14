@@ -943,6 +943,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         // Positive scrollingDeltaY = content moves down = older history.
         let deltaRows = Double(dy) / Double(max(metrics.cellHeight, 1))
+        if session.encodeAlternateScroll(deltaRows: deltaRows) { return }
         session.applyScrollImpulse(deltaRows: deltaRows)
     }
 

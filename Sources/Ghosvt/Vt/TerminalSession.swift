@@ -52,6 +52,8 @@ final class TerminalSession {
     /// Cached scrollbar max offset (rows from top).
     private(set) var scrollMaxOffset: Double = 0
     private(set) var scrollViewportRows: Double = 24
+    /// Alternate screen never keeps history (Ghostty / cmatrix / fullscreen TUIs).
+    private(set) var alternateScreen = false
 
     /// Persistent bytes for GHOSTTY_TERMINAL_OPT_TERMINFO_NAME.
     private let terminfoNameBytes: [UInt8] = Array("xterm-ghostty".utf8)
@@ -99,6 +101,11 @@ final class TerminalSession {
 
     /// Jump to the live bottom (Ghostty scroll-to-bottom on keystroke / output).
     func scrollViewportToBottom() {
+        if alternateScreen {
+            scrollPhysics.pinBottom(maxOffset: 0)
+            scrollMaxOffset = 0
+            return
+        }
         let snap = queryScrollbar()
         let maxO = snap?.maxOffset ?? scrollMaxOffset
         scrollPhysics.pinBottom(maxOffset: maxO)
@@ -109,6 +116,7 @@ final class TerminalSession {
     /// Ghostty ⌘PageUp / ⌘PageDown: smooth fling one page; accelerate while held.
     /// `direction` +1 = older (Page Up); −1 = toward bottom (Page Down).
     func scrollPageSmooth(direction: Double, isRepeat: Bool) {
+        if alternateScreen { return }
         if !isRepeat || direction != pageScrollLastDir {
             pageScrollHoldCount = 1
         } else {
@@ -405,6 +413,19 @@ final class TerminalSession {
         }
     }
 
+    /// Refresh `alternateScreen` from libghostty-vt.
+    private func refreshActiveScreen() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else {
+            alternateScreen = false
+            return
+        }
+        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+        let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        alternateScreen = r == GHOSTTY_SUCCESS && screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+    }
+
     /// Poll scrollbar geometry from libghostty-vt (amortized O(1)).
     func queryScrollbar() -> ScrollbarSnapshot? {
         lock.lock()
@@ -609,14 +630,62 @@ final class TerminalSession {
         }
     }
 
+    /// Ghostty `mouse_alternate_scroll` (DEC 1007, default on): on the
+    /// alternate screen with no mouse tracking, the wheel is cursor keys.
+    /// Positive `deltaRows` is older history → up. Returns true if consumed.
+    func encodeAlternateScroll(deltaRows: Double) -> Bool {
+        let count = Int(deltaRows.rounded(.towardZero))
+        guard count != 0 else { return false }
+
+        lock.lock()
+        let seq: [UInt8]? = {
+            guard isLive, let terminal else { return nil }
+            var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+            let sr = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+            alternateScreen = sr == GHOSTTY_SUCCESS && screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+            guard alternateScreen else { return nil }
+            if isMouseTrackingLocked() { return nil }
+            guard decModeLocked(1007, fallback: true) else { return nil }
+            let app = decModeLocked(1, fallback: false)
+            let up = count > 0
+            if app {
+                return Array((up ? "\u{1b}OA" : "\u{1b}OB").utf8)
+            }
+            return Array((up ? "\u{1b}[A" : "\u{1b}[B").utf8)
+        }()
+        lock.unlock()
+
+        guard let seq else { return false }
+        clearSelection()
+        var out: [UInt8] = []
+        out.reserveCapacity(seq.count * abs(count))
+        for _ in 0..<abs(count) {
+            out.append(contentsOf: seq)
+        }
+        writeToPty(out)
+        return true
+    }
+
+    /// DEC private mode (`?N`). `fallback` is used when get fails (Ghostty defaults).
+    private func decModeLocked(_ number: UInt16, fallback: Bool) -> Bool {
+        guard let terminal else { return fallback }
+        var cfg = GhosttyTerminalModeConfig()
+        cfg.mode = ghostty_mode_new(number, false)
+        cfg.value = fallback
+        let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &cfg)
+        return r == GHOSTTY_SUCCESS ? cfg.value : fallback
+    }
+
     /// Wheel/trackpad impulse. Positive `deltaRows` moves toward older history (lower offset).
     func applyScrollImpulse(deltaRows: Double) {
+        if alternateScreen { return }
         scrollPhysics.applyImpulse(deltaRows: deltaRows)
     }
 
     /// Fractional pixel shift in row units for the renderer.
     func visualOffsetRows() -> Double {
-        scrollPhysics.visualOffsetRows(maxOffset: scrollMaxOffset)
+        if alternateScreen { return 0 }
+        return scrollPhysics.visualOffsetRows(maxOffset: scrollMaxOffset)
     }
 
     /// Integrate physics, pin-follow, and push integer viewport to ghostty.
@@ -624,6 +693,16 @@ final class TerminalSession {
     @discardableResult
     func stepScroll(dt: Double) -> Bool {
         guard isLive else { return false }
+
+        refreshActiveScreen()
+        if alternateScreen {
+            // Same as Ghostty: no history, no spring, no viewport seek.
+            if !scrollPhysics.pinnedToBottom || scrollMaxOffset != 0 || scrollPhysics.position != 0 {
+                scrollPhysics.pinBottom(maxOffset: 0)
+            }
+            scrollMaxOffset = 0
+            return false
+        }
 
         let snap = queryScrollbar()
         let maxO = snap?.maxOffset ?? 0
@@ -835,6 +914,7 @@ final class TerminalSession {
         }
         lastSyncedIntegerRow = nil
         scrollMaxOffset = 0
+        alternateScreen = false
         scrollPhysics.pinBottom(maxOffset: 0)
         spawnLoginLocked()
         startPipelineLocked()
