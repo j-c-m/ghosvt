@@ -54,6 +54,8 @@ final class TerminalSession {
     private(set) var scrollViewportRows: Double = 24
     /// Alternate screen never keeps history (Ghostty / cmatrix / fullscreen TUIs).
     private(set) var alternateScreen = false
+    /// VT bytes arrived (or the child died). Must be `@Sendable` (parse thread).
+    var onNeedsRedraw: (@Sendable () -> Void)?
 
     /// Persistent bytes for GHOSTTY_TERMINAL_OPT_TERMINFO_NAME.
     private let terminfoNameBytes: [UInt8] = Array("xterm-ghostty".utf8)
@@ -203,6 +205,8 @@ final class TerminalSession {
             pendingScrollToBottom = true
             scrollToBottomLock.unlock()
         }
+        let redraw = onNeedsRedraw
+        DispatchQueue.main.async { redraw?() }
     }
 
     /// Stop gather/parse, respawn login, start a new pipeline.
@@ -227,8 +231,10 @@ final class TerminalSession {
             onParse: { [weak self] ptr, len in
                 self?.parsePipelineBatch(ptr, len)
             },
-            onDeath: {
+            onDeath: { [weak self] in
                 // `recoverReady` is set on the pipeline; main `pollIO` recovers.
+                let redraw = self?.onNeedsRedraw
+                DispatchQueue.main.async { redraw?() }
             }
         )
         guard p.start() else {

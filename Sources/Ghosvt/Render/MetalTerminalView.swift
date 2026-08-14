@@ -6,8 +6,13 @@ import QuartzCore
 import WebKit
 
 final class MetalTerminalView: MTKView, NSMenuItemValidation {
-    var manager: VtManager?
+    var manager: VtManager? {
+        didSet { bindSessionRedraws() }
+    }
     var config: Config = Config()
+    /// Display sleep: do not request frames until wake.
+    private var screensAsleep = false
+    private var blinkWork: DispatchWorkItem?
 
     private var metrics: CellMetrics?
     private var renderer: TerminalRenderer?
@@ -211,8 +216,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard let device else { return }
         colorPixelFormat = .bgra8Unorm
         framebufferOnly = true
-        isPaused = false
-        enableSetNeedsDisplay = false
+        isPaused = true
+        enableSetNeedsDisplay = true
         autoResizeDrawable = true
         let bg = DefaultColors.background
         clearColor = MTLClearColor(
@@ -359,6 +364,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             installFocusObservers()
             installWorkspaceObservers()
         }
+        bindSessionRedraws()
+        requestFrame()
     }
 
     /// Browser open + address idle → WebView; address editing → metal; else metal (PTY).
@@ -487,6 +494,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     @objc private func handleScreensDidSleep(_ note: Notification) {
+        screensAsleep = true
         isPaused = true
     }
 
@@ -507,9 +515,43 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     /// Idempotent: second wake notification is a no-op if already resumed.
     private func resumeAfterSleep() {
-        guard isPaused else { return }
-        isPaused = false
+        guard screensAsleep else { return }
+        screensAsleep = false
         rebindDisplay()
+        requestFrame()
+    }
+
+    /// Coalesced present. Idle frames do not acquire a drawable.
+    func requestFrame() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.screensAsleep else { return }
+            self.needsDisplay = true
+        }
+    }
+
+    private func bindSessionRedraws() {
+        guard let manager else { return }
+        for s in manager.sessions {
+            s.onNeedsRedraw = { [weak self] in
+                self?.requestFrame()
+            }
+        }
+    }
+
+    private func scheduleBlinkIfNeeded() {
+        blinkWork?.cancel()
+        guard let renderer, let rs = manager?.active.renderState else { return }
+        var blinking = false
+        _ = ghostty_render_state_get(rs, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinking)
+        var visible = false
+        _ = ghostty_render_state_get(rs, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible)
+        guard blinking, visible else { return }
+        let period = max(renderer.blinkPeriod, 0.05)
+        let t = CACurrentMediaTime()
+        let delay = max(0.001, (floor(t / period) + 1) * period - t)
+        let work = DispatchWorkItem { [weak self] in self?.requestFrame() }
+        blinkWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -517,6 +559,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         refreshMetrics(force: false)
         spawnIfNeeded()
         applyResize()
+        requestFrame()
     }
 
     private func refreshMetrics(force: Bool) {
@@ -592,12 +635,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             lastCellW = g.cellW
             lastCellH = g.cellH
         }
+        requestFrame()
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let renderer,
-              let drawable = currentDrawable,
-              let rpd = currentRenderPassDescriptor,
               let manager,
               let metrics
         else { return }
@@ -619,9 +661,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         let browserVT = manager.activeIndex
         let browserSleepsActive = activeBrowser != nil
+        var scrollLive = false
         for (i, s) in manager.sessions.enumerated() where s.isLive {
             if browserSleepsActive, i == browserVT { continue }
-            s.stepScroll(dt: dt)
+            if s.stepScroll(dt: dt) { scrollLive = true }
         }
 
         let indicator = browserSleepsActive ? nil : manager.tickIndicator()
@@ -637,6 +680,30 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         let searchHL = viewportSearchHighlights(session: manager.active)
         let hudLayout = isSearchOpen ? searchHUDLayout(cols: Int(lastCols)) : nil
+
+        if activeBrowser == nil,
+           !renderer.needsRedraw(
+            session: manager.active,
+            metrics: metrics,
+            drawableSize: drawableSize,
+            contentRect: contentPx,
+            scale: scale,
+            indicator: indicator,
+            visualOffsetRows: visualOffset,
+            searchHighlights: searchHL,
+            searchHUD: hudLayout?.line,
+            linkHover: linkHover,
+            quitConfirm: isQuitConfirmOpen
+           ) {
+            if scrollLive { requestFrame() }
+            scheduleBlinkIfNeeded()
+            return
+        }
+
+        guard let drawable = currentDrawable,
+              let rpd = currentRenderPassDescriptor
+        else { return }
+
         if activeBrowser != nil {
             // Stolen top row(s): address bar (+ tab strip when multi-tab).
             // Do not reuse the previous VT's FS-TUI letterbox / edge sample — browser
@@ -707,6 +774,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if activeBrowser != nil {
             layoutActiveBrowser()
         }
+        if scrollLive { requestFrame() }
+        scheduleBlinkIfNeeded()
     }
 
     /// Stolen-row layout: `/needle` left; count + ↑ ↓ right (Ghostty chevron order).
@@ -898,6 +967,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     // MARK: - Input
 
     override func scrollWheel(with event: NSEvent) {
+        requestFrame()
         // Browser owns scroll (WebView) while open.
         if activeBrowser != nil {
             super.scrollWheel(with: event)
@@ -945,6 +1015,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let deltaRows = Double(dy) / Double(max(metrics.cellHeight, 1))
         if session.encodeAlternateScroll(deltaRows: deltaRows) { return }
         session.applyScrollImpulse(deltaRows: deltaRows)
+        requestFrame()
     }
 
     // MARK: - Selection / mouse
@@ -1021,6 +1092,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseDown(with event: NSEvent) {
+        requestFrame()
         noteMouseDown(event)
         // Browser mode: only address-bar HUD; WebView receives the rest via hit-test.
         if activeBrowser != nil {
@@ -1057,6 +1129,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        requestFrame()
         if activeBrowser != nil {
             if browserAddressDragging {
                 handleBrowserAddressDrag(event)
@@ -1839,9 +1912,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         // Terminal path must paint this turn (not wait for next key/mouse).
         // Async avoids re-entering draw from inside a key handler mid-frame.
-        DispatchQueue.main.async { [weak self] in
-            self?.draw()
-        }
+        requestFrame()
     }
 
     private func showBrowserForActiveVT() {

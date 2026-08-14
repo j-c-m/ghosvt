@@ -230,6 +230,74 @@ final class TerminalRenderer {
         gpuTimeEMA.value = lo
     }
 
+    /// True when a Metal present would change pixels. Does not update last-*.
+    func needsRedraw(
+        session: TerminalSession,
+        metrics: CellMetrics,
+        drawableSize: CGSize,
+        contentRect: CGRect,
+        scale: CGFloat,
+        indicator: String?,
+        visualOffsetRows: Double,
+        searchHighlights: [SearchHighlightRange],
+        searchHUD: String?,
+        linkHover: LinkHoverRange?,
+        quitConfirm: Bool
+    ) -> Bool {
+        session.updateRenderState()
+        guard session.renderState != nil else { return true }
+        if lastBgCount + lastFgCount == 0 { return true }
+
+        _ = drawableSize
+        guard let renderState = session.renderState else { return true }
+        var colsU: UInt16 = 0
+        var rowsU: UInt16 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLS, &colsU)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROWS, &rowsU)
+        let cellH = Float(max(1, metrics.cellHeightPx))
+        let layout = LayoutKey(
+            originX: Float(contentRect.minX.rounded(.toNearestOrAwayFromZero)),
+            originY: Float(contentRect.minY.rounded(.toNearestOrAwayFromZero)),
+            cellW: Float(max(1, metrics.cellWidthPx)),
+            cellH: cellH,
+            padPx: Float((padPoints * scale).rounded(.toNearestOrAwayFromZero)),
+            cols: Int(colsU), rows: Int(rowsU), fontPx: metrics.fontPx
+        )
+        if lastLayoutKey != layout { return true }
+
+        var dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
+        if dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE { return true }
+
+        if cursorBlinkOn(renderState: renderState) != lastBlinkOn { return true }
+        if indicator != lastIndicator { return true }
+        if searchHUD != lastSearchHUD { return true }
+        let visualY = (Float(visualOffsetRows) * cellH).rounded(.toNearestOrAwayFromZero)
+        if abs(visualY - lastVisualY) > 0.05 { return true }
+        if session.index != lastDrawnSessionIndex { return true }
+        if searchHighlights != lastSearchHighlights { return true }
+        if linkHover != lastLinkHover { return true }
+        if quitConfirm != lastQuitConfirm { return true }
+
+        var cursorVisible = false
+        var cursorInViewport = false
+        var curX: UInt16 = 0
+        var curY: UInt16 = 0
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursorInViewport)
+        if cursorInViewport {
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &curX)
+            _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &curY)
+        }
+        let cursorVis = cursorVisible && cursorInViewport
+        let cursorX = cursorVis ? Int(curX) : -1
+        let cursorY = cursorVis ? Int(curY) : -1
+        if cursorX != lastCursorX || cursorY != lastCursorY || cursorVis != lastCursorVisible {
+            return true
+        }
+        return false
+    }
+
     func draw(
         session: TerminalSession,
         metrics: CellMetrics,
