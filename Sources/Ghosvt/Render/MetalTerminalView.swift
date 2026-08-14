@@ -2804,6 +2804,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         isQuitConfirmOpen = true
         quitConfirmCompletion = completion
+        requestFrame()
     }
 
     /// Keys while quit panel is open. Returns true if consumed.
@@ -2854,6 +2855,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         quitConfirmCompletion = nil
         // Drop packed GPU instances so the next frame cannot re-present the panel.
         renderer?.invalidatePackedInstances()
+        requestFrame()
         done?(confirmed)
     }
 
