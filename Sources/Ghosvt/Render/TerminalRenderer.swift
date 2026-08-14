@@ -426,9 +426,11 @@ final class TerminalRenderer {
         let letterboxBg: GhosttyColorRgb
         if freezeLetterbox {
             letterboxBg = lastLetterboxBg
+        } else if let sampled = letterboxBackground(defBg: defBg) {
+            letterboxBg = sampled
+            lastLetterboxBg = sampled
         } else {
-            letterboxBg = letterboxBackground(defBg: defBg)
-            lastLetterboxBg = letterboxBg
+            letterboxBg = lastLetterboxBg
         }
 
         let shellShiftY: Float = (searchHUD != nil && searchHUDAtTop) ? layout.cellH : 0
@@ -752,15 +754,25 @@ final class TerminalRenderer {
     }
 
     /// Full-drawable clear color for max-aspect letterbox bars.
-    /// Prefer painted edge cells (FS TUI) when the grid exists; else terminal default bg.
+    /// Painted edge color only when every row's left and right edge cells match.
     /// Samples `rowCellCache` (pre-selection), never post-invert `gridCells` fill.
-    func letterboxBackground(defBg: GhosttyColorRgb) -> GhosttyColorRgb {
+    /// No grid: terminal default bg. Mixed edges: `nil` (keep last).
+    func letterboxBackground(defBg: GhosttyColorRgb) -> GhosttyColorRgb? {
         guard gridCols > 0, gridRows > 0, rowCellCache.count >= gridCols * gridRows else {
             return defBg
         }
-        // Mid-row left edge sits against the side letterbox on ultra-wide layouts.
-        let idx = (gridRows / 2) * gridCols
-        return rowCellCache[idx].bg
+        let first = rowCellCache[0].bg
+        for row in 0..<gridRows {
+            let left = row * gridCols
+            let right = left + gridCols - 1
+            let l = rowCellCache[left].bg
+            let r = rowCellCache[right].bg
+            if l.r != first.r || l.g != first.g || l.b != first.b
+                || r.r != first.r || r.g != first.g || r.b != first.b {
+                return nil
+            }
+        }
+        return first
     }
 
     /// Underline for ⌘-hover clickable URL (shell viewport row/cols).
