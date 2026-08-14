@@ -37,6 +37,9 @@ final class TerminalRenderer {
     var underlineExtras: [CellInstance] = []
     /// Multi-cell ligature / per-cell ink drawn after backgrounds.
     var glyphExtras: [CellInstance] = []
+    /// Per-viewport-row ink so a partial dirty pass can replace one row.
+    var glyphExtrasByRow: [[CellInstance]] = []
+    var underlineExtrasByRow: [[CellInstance]] = []
     var gridCols = 0
     var gridRows = 0
     /// Packed instance count last uploaded (`bg + fg`).
@@ -203,6 +206,8 @@ final class TerminalRenderer {
         rowCellCache.removeAll(keepingCapacity: true)
         glyphExtras.removeAll(keepingCapacity: true)
         underlineExtras.removeAll(keepingCapacity: true)
+        glyphExtrasByRow.removeAll(keepingCapacity: true)
+        underlineExtrasByRow.removeAll(keepingCapacity: true)
         gridCols = 0
         gridRows = 0
     }

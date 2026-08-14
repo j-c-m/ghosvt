@@ -19,10 +19,8 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int
     ) {
-        gridCols = layout.cols
-        gridRows = layout.rows
         paintGridWithAtlasRetry(
-            resetGridCells: true,
+            dirtyOnly: false,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -46,9 +44,8 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int
     ) {
-        // Ink is global in glyphExtras — always repaint every row.
         paintGridWithAtlasRetry(
-            resetGridCells: false,
+            dirtyOnly: true,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -61,9 +58,9 @@ extension TerminalRenderer {
         )
     }
 
-    /// Clears ink extras and repaints; retries if `atlas.packGeneration` changes mid-pass.
+    /// Repaint dirty (or all) rows; retry the full grid if the atlas resets mid-pass.
     private func paintGridWithAtlasRetry(
-        resetGridCells: Bool,
+        dirtyOnly: Bool,
         renderState: GhosttyRenderState,
         rowIter: GhosttyRenderStateRowIterator,
         cells: GhosttyRenderStateRowCells,
@@ -74,22 +71,13 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int
     ) {
-        for _ in 0..<Self.atlasPaintAttempts {
+        for attempt in 0..<Self.atlasPaintAttempts {
             let gen = atlas.packGeneration
-            if resetGridCells {
-                gridCells = Array(
-                    repeating: CellInstance.make(
-                        originX: 0, originY: 0, width: layout.cellW, height: layout.cellH,
-                        u0: 0, v0: 0, u1: 0, v1: 0,
-                        fr: 0, fg: 0, fb: 0, fa: 1,
-                        br: Float(defBg.r) / 255, bg: Float(defBg.g) / 255, bb: Float(defBg.b) / 255, ba: 1
-                    ),
-                    count: layout.cols * layout.rows
-                )
-            }
-            underlineExtras = []
-            glyphExtras = []
+            // Atlas eviction invalidates UVs already stored on clean rows.
+            let skipClean = dirtyOnly && attempt == 0
+            ensureGridLayers(layout: layout, defFg: defFg, defBg: defBg)
             rebuildRows(
+                dirtyOnly: skipClean,
                 renderState: renderState,
                 rowIter: rowIter,
                 cells: cells,
@@ -100,11 +88,61 @@ extension TerminalRenderer {
                 cellWInt: cellWInt,
                 cellHInt: cellHInt
             )
+            flattenInkExtras()
             if atlas.packGeneration == gen { break }
         }
     }
 
+    func ensureGridLayers(layout: LayoutKey, defFg: GhosttyColorRgb, defBg: GhosttyColorRgb) {
+        gridCols = layout.cols
+        gridRows = layout.rows
+        let n = layout.cols * layout.rows
+        if gridCells.count != n {
+            gridCells = Array(
+                repeating: CellInstance.make(
+                    originX: 0, originY: 0, width: layout.cellW, height: layout.cellH,
+                    u0: 0, v0: 0, u1: 0, v1: 0,
+                    fr: 0, fg: 0, fb: 0, fa: 1,
+                    br: Float(defBg.r) / 255, bg: Float(defBg.g) / 255, bb: Float(defBg.b) / 255, ba: 1
+                ),
+                count: n
+            )
+        }
+        if rowCellCache.count != n {
+            rowCellCache = Array(
+                repeating: TerminalRowCell(
+                    text: "", isWideHead: false, isWideTail: false,
+                    fg: defFg, bg: defBg,
+                    bold: false, italic: false, faint: false, inverse: false, underline: false
+                ),
+                count: n
+            )
+        }
+        if glyphExtrasByRow.count != layout.rows {
+            glyphExtrasByRow = Array(repeating: [], count: layout.rows)
+            underlineExtrasByRow = Array(repeating: [], count: layout.rows)
+        }
+    }
+
+    func flattenInkExtras() {
+        var glyphN = 0
+        var ulN = 0
+        for i in 0..<glyphExtrasByRow.count {
+            glyphN += glyphExtrasByRow[i].count
+            ulN += underlineExtrasByRow[i].count
+        }
+        glyphExtras.removeAll(keepingCapacity: true)
+        underlineExtras.removeAll(keepingCapacity: true)
+        glyphExtras.reserveCapacity(glyphN)
+        underlineExtras.reserveCapacity(ulN)
+        for i in 0..<glyphExtrasByRow.count {
+            glyphExtras.append(contentsOf: glyphExtrasByRow[i])
+            underlineExtras.append(contentsOf: underlineExtrasByRow[i])
+        }
+    }
+
     func rebuildRows(
+        dirtyOnly: Bool,
         renderState: GhosttyRenderState,
         rowIter: GhosttyRenderStateRowIterator,
         cells: GhosttyRenderStateRowCells,
@@ -124,6 +162,14 @@ extension TerminalRenderer {
             defer { rowIndex += 1 }
             guard rowIndex < layout.rows else { break }
 
+            if dirtyOnly {
+                var isDirty = false
+                _ = ghostty_render_state_row_get(
+                    iter, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &isDirty
+                )
+                if !isDirty { continue }
+            }
+
             var cellsHandle = cells
             if ghostty_render_state_row_get(iter, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cellsHandle) != GHOSTTY_SUCCESS {
                 continue
@@ -136,16 +182,6 @@ extension TerminalRenderer {
                 defBg: defBg
             )
             let base = rowIndex * layout.cols
-            if rowCellCache.count < layout.cols * layout.rows {
-                rowCellCache = Array(
-                    repeating: TerminalRowCell(
-                        text: "", isWideHead: false, isWideTail: false,
-                        fg: defFg, bg: defBg,
-                        bold: false, italic: false, faint: false, inverse: false, underline: false
-                    ),
-                    count: layout.cols * layout.rows
-                )
-            }
             for (c, cell) in rowCells.enumerated() where c < layout.cols {
                 rowCellCache[base + c] = cell
             }
@@ -273,6 +309,10 @@ extension TerminalRenderer {
         renderState: GhosttyRenderState,
         rowIter: GhosttyRenderStateRowIterator
     ) {
+        if rowIndex < glyphExtrasByRow.count {
+            glyphExtrasByRow[rowIndex].removeAll(keepingCapacity: true)
+            underlineExtrasByRow[rowIndex].removeAll(keepingCapacity: true)
+        }
         let y = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)
             .rounded(.toNearestOrAwayFromZero)
         var selStart: Int?
@@ -347,13 +387,15 @@ extension TerminalRenderer {
                 // Font underline metrics (same path as ⌘-hover links).
                 let th = Float(max(1, metrics.underlineThicknessPx))
                 let uy = y + Float(metrics.underlineTopPx)
-                underlineExtras.append(.make(
-                    originX: x, originY: uy,
-                    width: layout.cellW, height: th,
-                    u0: 0, v0: 0, u1: 0, v1: 0,
-                    fr: fr, fg: fgG, fb: fb, fa: 1,
-                    br: fr, bg: fgG, bb: fb, ba: 1
-                ))
+                if rowIndex < underlineExtrasByRow.count {
+                    underlineExtrasByRow[rowIndex].append(.make(
+                        originX: x, originY: uy,
+                        width: layout.cellW, height: th,
+                        u0: 0, v0: 0, u1: 0, v1: 0,
+                        fr: fr, fg: fgG, fb: fb, fa: 1,
+                        br: fr, bg: fgG, bb: fb, ba: 1
+                    ))
+                }
             }
         }
 
@@ -794,13 +836,15 @@ extension TerminalRenderer {
         }
         _ = selected
 
-        glyphExtras.append(.make(
-            originX: ox, originY: oy,
-            width: max(1, pwG), height: max(1, phG),
-            u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
-            fr: ifr, fg: ifg, fb: ifb, fa: 1,
-            br: 0, bg: 0, bb: 0, ba: 0
-        ))
+        if rowIndex < glyphExtrasByRow.count {
+            glyphExtrasByRow[rowIndex].append(.make(
+                originX: ox, originY: oy,
+                width: max(1, pwG), height: max(1, phG),
+                u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+                fr: ifr, fg: ifg, fb: ifb, fa: 1,
+                br: 0, bg: 0, bb: 0, ba: 0
+            ))
+        }
     }
 
     /// Best face + single glyph: primary / Nerd, then Ghostty-style system discovery.
@@ -878,15 +922,17 @@ extension TerminalRenderer {
             let cell = gridCells[idx]
             ifr = cell.fr; ifg = cell.fg; ifb = cell.fb
         }
-        glyphExtras.append(.make(
-            originX: cellX + entry.bearingX,
-            originY: rowTop + entry.bearingY,
-            width: max(1, entry.pixelW),
-            height: max(1, entry.pixelH),
-            u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
-            fr: ifr, fg: ifg, fb: ifb, fa: 1,
-            br: 0, bg: 0, bb: 0, ba: 0
-        ))
+        if rowIndex < glyphExtrasByRow.count {
+            glyphExtrasByRow[rowIndex].append(.make(
+                originX: cellX + entry.bearingX,
+                originY: rowTop + entry.bearingY,
+                width: max(1, entry.pixelW),
+                height: max(1, entry.pixelH),
+                u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
+                fr: ifr, fg: ifg, fb: ifb, fa: 1,
+                br: 0, bg: 0, bb: 0, ba: 0
+            ))
+        }
     }
 
 
