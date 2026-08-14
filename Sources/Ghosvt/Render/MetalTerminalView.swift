@@ -529,8 +529,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     /// Coalesced present. Idle frames do not acquire a drawable.
-    func requestFrame() {
-        DispatchQueue.main.async { [weak self] in
+    nonisolated func requestFrame() {
+        Task { @MainActor [weak self] in
             guard let self, !self.screensAsleep else { return }
             self.needsDisplay = true
         }
