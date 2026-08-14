@@ -483,10 +483,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     @objc private func handleWindowDidBecomeKey(_ note: Notification) {
         manager?.active.encodeFocus(gained: true)
+        requestFrame()
     }
 
     @objc private func handleWindowDidResignKey(_ note: Notification) {
         manager?.active.encodeFocus(gained: false)
+        blinkWork?.cancel()
+        requestFrame()
     }
 
     @objc private func handleWindowDidChangeScreen(_ note: Notification) {
@@ -680,6 +683,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         let searchHL = viewportSearchHighlights(session: manager.active)
         let hudLayout = isSearchOpen ? searchHUDLayout(cols: Int(lastCols)) : nil
+        let focused = window?.isKeyWindow == true
 
         if activeBrowser == nil,
            !renderer.needsRedraw(
@@ -693,10 +697,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             searchHighlights: searchHL,
             searchHUD: hudLayout?.line,
             linkHover: linkHover,
-            quitConfirm: isQuitConfirmOpen
+            quitConfirm: isQuitConfirmOpen,
+            windowFocused: focused
            ) {
             if scrollLive { requestFrame() }
-            scheduleBlinkIfNeeded()
+            if focused { scheduleBlinkIfNeeded() }
             return
         }
 
@@ -766,7 +771,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 searchHUDAtTop: config.searchPosition == .top,
                 freezeLetterbox: !mouseButtonsHeld.isEmpty || selecting,
                 linkHover: linkHover,
-                quitConfirm: isQuitConfirmOpen
+                quitConfirm: isQuitConfirmOpen,
+                windowFocused: focused
             )
             syncLetterboxChrome(bg: renderer.lastLetterboxBg)
         }
@@ -775,7 +781,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             layoutActiveBrowser()
         }
         if scrollLive { requestFrame() }
-        scheduleBlinkIfNeeded()
+        if focused { scheduleBlinkIfNeeded() }
     }
 
     /// Stolen-row layout: `/needle` left; count + ↑ ↓ right (Ghostty chevron order).

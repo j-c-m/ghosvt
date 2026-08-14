@@ -26,13 +26,16 @@ extension TerminalRenderer {
         cellWInt: Int,
         cellHInt: Int,
         blinkOn: Bool,
-        visualY: Float = 0
+        visualY: Float = 0,
+        windowFocused: Bool = true
     ) {
         var cursorVisible = false
         var inViewport = false
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursorVisible)
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &inViewport)
-        guard cursorVisible, inViewport, blinkOn else { return }
+        // Unfocused: always show a hollow box. Focused: honor blink hide.
+        guard cursorVisible, inViewport else { return }
+        if windowFocused, !blinkOn { return }
 
         var cx: UInt16 = 0
         var cy: UInt16 = 0
@@ -41,6 +44,9 @@ extension TerminalRenderer {
 
         var style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &style)
+        if !windowFocused {
+            style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW
+        }
 
         // cursor-color = cell-foreground, cursor-text = cell-background (OSC 12 → fill only).
         var cellInk = CellPaintColors.RGB(defFg)

@@ -62,6 +62,7 @@ final class TerminalRenderer {
     private(set) var lastLetterboxBg = DefaultColors.background
     var lastIndicator: String?
     var lastBlinkOn = true
+    var lastWindowFocused = true
     var lastVisualY: Float = 0
     var lastCursorX: Int = -1
     var lastCursorY: Int = -1
@@ -242,11 +243,13 @@ final class TerminalRenderer {
         searchHighlights: [SearchHighlightRange],
         searchHUD: String?,
         linkHover: LinkHoverRange?,
-        quitConfirm: Bool
+        quitConfirm: Bool,
+        windowFocused: Bool
     ) -> Bool {
         session.updateRenderState()
         guard session.renderState != nil else { return true }
         if lastBgCount + lastFgCount == 0 { return true }
+        if windowFocused != lastWindowFocused { return true }
 
         _ = drawableSize
         guard let renderState = session.renderState else { return true }
@@ -269,7 +272,7 @@ final class TerminalRenderer {
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         if dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE { return true }
 
-        if cursorBlinkOn(renderState: renderState) != lastBlinkOn { return true }
+        if windowFocused, cursorBlinkOn(renderState: renderState) != lastBlinkOn { return true }
         if indicator != lastIndicator { return true }
         if searchHUD != lastSearchHUD { return true }
         let visualY = (Float(visualOffsetRows) * cellH).rounded(.toNearestOrAwayFromZero)
@@ -316,7 +319,8 @@ final class TerminalRenderer {
         searchHUDAtTop: Bool = false,
         freezeLetterbox: Bool = false,
         linkHover: LinkHoverRange? = nil,
-        quitConfirm: Bool = false
+        quitConfirm: Bool = false,
+        windowFocused: Bool = true
     ) {
         self.fontLigatures = fontLigatures
         self.searchHighlights = searchHighlights
@@ -413,9 +417,10 @@ final class TerminalRenderer {
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
 
-        let blinkOn = cursorBlinkOn(renderState: renderState)
-        let blinkChanged = blinkOn != lastBlinkOn
+        let blinkOn = windowFocused && cursorBlinkOn(renderState: renderState)
+        let blinkChanged = blinkOn != lastBlinkOn || windowFocused != lastWindowFocused
         lastBlinkOn = blinkOn
+        lastWindowFocused = windowFocused
         let indicatorChanged = indicator != lastIndicator
         lastIndicator = indicator
         let searchHUDChanged = searchHUD != lastSearchHUD
@@ -594,7 +599,8 @@ final class TerminalRenderer {
             cellWInt: cellWInt,
             cellHInt: cellHInt,
             blinkOn: blinkOn,
-            visualY: shellY
+            visualY: shellY,
+            windowFocused: windowFocused
         )
 
         if let indicator, !indicator.isEmpty {
