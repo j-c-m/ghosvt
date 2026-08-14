@@ -229,12 +229,18 @@ extension TerminalRenderer {
             let bg = (hasBg || style.inverse) ? bgCell : defBg
             // Kitty virtual placeholder: never draw the U+10EEEE glyph (Ghostty blanks it).
             var text = cellTextUTF8(cellsHandle) ?? ""
-            if text.unicodeScalars.first?.value == KittyVirtualUnicode.placeholder {
-                text = ""
+            var cp: UInt32 = 0
+            if let first = text.unicodeScalars.first {
+                if first.value == KittyVirtualUnicode.placeholder {
+                    text = ""
+                } else {
+                    cp = first.value
+                }
             }
 
             out.append(TerminalRowCell(
                 text: text,
+                cp: cp,
                 isWideHead: isWideHead,
                 isWideTail: isWideTail,
                 fg: fg,
@@ -385,8 +391,6 @@ extension TerminalRenderer {
         )
         for seg in segments {
             switch seg {
-            case .gap:
-                break
             case .wide(let col):
                 paintWideOrFallback(
                     col: col, rowIndex: rowIndex, rowCells: rowCells,
@@ -394,9 +398,10 @@ extension TerminalRenderer {
                     cellWInt: cellWInt, cellHInt: cellHInt,
                     highlight: highlight(for: col)
                 )
-            case .run(let start, let end, let style):
+            case .run(let start, let end, let style, let contentHash):
                 paintShapedRun(
                     start: start, end: end, style: style,
+                    contentHash: contentHash,
                     rowCells: rowCells, rowIndex: rowIndex,
                     metrics: metrics, layout: layout,
                     cellWInt: cellWInt, cellHInt: cellHInt,
@@ -407,16 +412,15 @@ extension TerminalRenderer {
     }
 
     enum RunSeg {
-        case run(start: Int, end: Int, style: TextStyleKey) // end exclusive
+        case run(start: Int, end: Int, style: TextStyleKey, contentHash: UInt64)
         case wide(col: Int)
-        case gap
     }
 
-    /// Segment a row into shape runs (Ghostty-aligned break rules).
+    /// Segment a row into shape runs (Ghostty `RunIterator`).
     ///
-    /// Breaks on: 2+ spaces/empties, text style (not bg), wide cells,
-    /// selection / search boundaries, cursor column, and bad ligatures (fi/fl/st).
-    /// Single spaces stay inside runs; 2+ spaces are gaps.
+    /// Breaks on: text style (not bg), wide heads, selection / search
+    /// boundaries, cursor column, and Ghostty bad ligatures (`fi`/`fl`/`st`).
+    /// Spaces and empty cells stay in the run. Trailing empty cells are trimmed.
     func segmentRuns(
         _ cells: [TerminalRowCell],
         selectionLo: Int?,
@@ -428,7 +432,23 @@ extension TerminalRenderer {
         var i = 0
         var runStart: Int?
         var runStyle: TextStyleKey?
+        var runHash = ShaperCache.fnvOffset
         let breakSet = Set(highlightBreaks)
+
+        // Ghostty: trim the right edge of empty cells before forming runs.
+        var maxCol = cells.count
+        while maxCol > 0 {
+            let c = cells[maxCol - 1]
+            if !c.isWideTail, c.cp != 0 || !c.text.isEmpty { break }
+            maxCol -= 1
+        }
+
+        func beginRun(at col: Int, style: TextStyleKey, cp: UInt32) {
+            runStart = col
+            runStyle = style
+            runHash = ShaperCache.fnvOffset
+            ShaperCache.mixCell(&runHash, cp: cp, cluster: 0)
+        }
 
         func flushRun(upTo end: Int) {
             guard let s = runStart, let st = runStyle, s < end else {
@@ -436,7 +456,8 @@ extension TerminalRenderer {
                 runStyle = nil
                 return
             }
-            segs.append(.run(start: s, end: end, style: st))
+            ShaperCache.mix(&runHash, UInt64(end - s))
+            segs.append(.run(start: s, end: end, style: st, contentHash: runHash))
             runStart = nil
             runStyle = nil
         }
@@ -454,13 +475,10 @@ extension TerminalRenderer {
 
             // Cursor: run before cursor stops at cursor; cursor cell is its own run.
             if let cx = cursorCol {
-                // Started before cursor, about to include cursor → stop before it.
                 if runStart < cx, i == cx { return true }
-                // Started at cursor, already took cursor cell → stop after one cell.
                 if runStart == cx, i == runStart + 1 { return true }
             }
 
-            // Bad ligatures (Ghostty): force split so fi/fl/st do not merge.
             if Self.isBadLigaturePair(prev: cells[i - 1], next: cells[i]) {
                 return true
             }
@@ -468,7 +486,7 @@ extension TerminalRenderer {
             return false
         }
 
-        while i < cells.count {
+        while i < maxCol {
             let c = cells[i]
             if c.isWideTail {
                 i += 1
@@ -481,51 +499,31 @@ extension TerminalRenderer {
                 continue
             }
 
-            // Count consecutive space/empty cells.
-            if c.isSpaceOrEmpty {
-                var j = i
-                while j < cells.count, cells[j].isSpaceOrEmpty, !cells[j].isWideHead, !cells[j].isWideTail {
-                    j += 1
-                }
-                let n = j - i
-                if n >= 2 {
-                    flushRun(upTo: i)
-                    segs.append(.gap)
-                    i = j
-                    continue
-                }
-                // Single space: include in run if style matches (or start run).
-            }
-
             if let s = runStart, mustBreakBefore(i: i, runStart: s) {
                 flushRun(upTo: i)
             }
 
             let st = c.textStyle
             if runStart == nil {
-                runStart = i
-                runStyle = st
+                beginRun(at: i, style: st, cp: c.cp)
             } else if st != runStyle {
                 flushRun(upTo: i)
-                runStart = i
-                runStyle = st
+                beginRun(at: i, style: st, cp: c.cp)
+            } else if let s = runStart {
+                ShaperCache.mixCell(&runHash, cp: c.cp, cluster: i - s)
             }
             i += 1
         }
-        flushRun(upTo: cells.count)
+        flushRun(upTo: maxCol)
         return segs
     }
 
-    /// Ghostty "bad ligature" pairs: fi, fl, st (common discretionary ligas).
+    /// Ghostty: split `fi` / `fl` / `st` (plain lowercase codepoints only).
     private static func isBadLigaturePair(prev: TerminalRowCell, next: TerminalRowCell) -> Bool {
-        guard let a = prev.text.first, let b = next.text.first else { return false }
-        // Only plain single-scalar cells (skip multi-codepoint graphemes).
-        guard prev.text.count == 1, next.text.count == 1 else { return false }
-        switch (a, b) {
-        case ("f", "i"), ("f", "l"), ("s", "t"),
-             ("F", "i"), ("F", "l"), ("S", "t"),
-             ("f", "I"), ("f", "L"), ("s", "T"),
-             ("F", "I"), ("F", "L"), ("S", "T"):
+        switch prev.cp {
+        case 0x66 where next.cp == 0x69 || next.cp == 0x6C:
+            return true
+        case 0x73 where next.cp == 0x74:
             return true
         default:
             return false
@@ -536,6 +534,7 @@ extension TerminalRenderer {
         start: Int,
         end: Int,
         style: TextStyleKey,
+        contentHash: UInt64,
         rowCells: [TerminalRowCell],
         rowIndex: Int,
         metrics: CellMetrics,
@@ -547,23 +546,32 @@ extension TerminalRenderer {
         guard start < end else { return }
 
         let font = metrics.font(bold: style.bold, italic: style.italic)
-        let shapedFont = ShaperCache.font(font, ligatures: fontLigatures)
+        let shapedFont = shaper.featuredFont(font, ligatures: fontLigatures)
         let nerdFaces = EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
 
         // Ligatures only when every cell is a normal primary-face glyph.
-        // Sprites (braille/box/blocks/…), Nerd PUA, and missing maps are cell-by-cell.
-        let allPrimary = (start..<end).allSatisfy { col in
-            let t = rowCells[col].text
-            if t.isEmpty { return true }
-            if SpriteFace.covers(text: t) { return false }
-            if GlyphAtlas.isPrivateUse(t) { return false }
-            return GlyphAtlas.fontCovers(shapedFont, text: t)
+        // ASCII/empty is the primary face — no Core Text coverage walk.
+        let allPrimary = rowCells.withUnsafeBufferPointer { buf -> Bool in
+            var col = start
+            while col < end {
+                let cp = buf[col].cp
+                if cp == 0 || (cp >= 0x20 && cp <= 0x7E) {
+                    col += 1
+                    continue
+                }
+                let t = buf[col].text
+                if SpriteFace.covers(text: t) { return false }
+                if GlyphAtlas.isPrivateUse(t) { return false }
+                if !GlyphAtlas.fontCovers(shapedFont, text: t) { return false }
+                col += 1
+            }
+            return true
         }
 
         if allPrimary {
             paintLigatureRun(
-                start: start, end: end, style: style, rowCells: rowCells,
-                rowIndex: rowIndex, metrics: metrics, layout: layout,
+                start: start, end: end, style: style, contentHash: contentHash,
+                rowCells: rowCells, rowIndex: rowIndex, metrics: metrics, layout: layout,
                 cellWInt: cellWInt, cellHInt: cellHInt, selected: selected,
                 shapedFont: shapedFont
             )
@@ -583,6 +591,7 @@ extension TerminalRenderer {
         start: Int,
         end: Int,
         style: TextStyleKey,
+        contentHash: UInt64,
         rowCells: [TerminalRowCell],
         rowIndex: Int,
         metrics: CellMetrics,
@@ -592,22 +601,16 @@ extension TerminalRenderer {
         selected: (Int) -> Bool,
         shapedFont: CTFont
     ) {
-        var text = ""
-        var utf16Starts: [Int] = [0]
-        for col in start..<end {
-            let t = rowCells[col].text.isEmpty ? " " : rowCells[col].text
-            text += t
-            utf16Starts.append(text.utf16.count)
-        }
-        guard !text.isEmpty else { return }
-
         let placements = shaper.shape(
-            text: text,
-            cellUTF16Starts: utf16Starts,
-            style: style,
+            cells: rowCells,
+            start: start,
+            end: end,
+            contentHash: contentHash,
             font: shapedFont,
             fontPx: layout.fontPx,
-            ligatures: fontLigatures
+            ligatures: fontLigatures,
+            bold: style.bold,
+            italic: style.italic
         )
 
         let rowTop = (layout.originY + layout.padPx + Float(rowIndex) * layout.cellH)

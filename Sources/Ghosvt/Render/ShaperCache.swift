@@ -30,49 +30,88 @@ struct ShapedCell: Sendable {
 
 /// CoreText run shaper with a placement cache (mirrors Ghostty’s shape.Cell model).
 final class ShaperCache {
-    private struct Key: Hashable {
-        var text: String
-        var style: TextStyleKey
-        var fontPx: Int
+    /// Ghostty `TextRun.hash`: (cp, relative cluster)* + length + face.
+    private var cache: [UInt64: [ShapedCell]] = [:]
+    private let maxEntries = 4096
+    private var featured: [FeaturedKey: CTFont] = [:]
+
+    private struct FeaturedKey: Hashable {
+        var id: ObjectIdentifier
         var ligatures: Bool
     }
 
-    private var cache: [Key: [ShapedCell]] = [:]
-    private let maxEntries = 4096
+    static let fnvOffset: UInt64 = 14_695_981_039_346_656_037
+    private static let fnvPrime: UInt64 = 1_099_511_628_211
+
+    static func mix(_ digest: inout UInt64, _ v: UInt64) {
+        digest ^= v
+        digest &*= fnvPrime
+    }
+
+    /// Mix one cell into a run content hash (Ghostty `addCodepoint`).
+    static func mixCell(_ digest: inout UInt64, cp: UInt32, cluster: Int) {
+        mix(&digest, UInt64(cp == 0 ? 32 : cp))
+        mix(&digest, UInt64(cluster))
+    }
 
     func clear() {
         cache.removeAll(keepingCapacity: true)
+        featured.removeAll(keepingCapacity: true)
     }
 
-    /// Shape `text` from consecutive run cells.
-    /// `cellUTF16Starts` has length `cellCount + 1` (prefix UTF-16 lengths).
+    /// Featured face (liga/calt/dlig). Cached per base font.
+    func featuredFont(_ base: CTFont, ligatures: Bool) -> CTFont {
+        let key = FeaturedKey(id: ObjectIdentifier(base as AnyObject), ligatures: ligatures)
+        if let hit = featured[key] { return hit }
+        let created = Self.makeFeatured(base, ligatures: ligatures)
+        featured[key] = created
+        return created
+    }
+
+    /// Lookup by precomputed content hash. Builds the Core Text string on miss only.
     func shape(
-        text: String,
-        cellUTF16Starts: [Int],
-        style: TextStyleKey,
+        cells: [TerminalRowCell],
+        start: Int,
+        end: Int,
+        contentHash: UInt64,
         font: CTFont,
         fontPx: Int,
-        ligatures: Bool
+        ligatures: Bool,
+        bold: Bool,
+        italic: Bool
     ) -> [ShapedCell] {
-        let cellCount = max(0, cellUTF16Starts.count - 1)
-        guard cellCount > 0, !text.isEmpty else { return [] }
+        guard start < end, start >= 0, end <= cells.count else { return [] }
 
-        let key = Key(text: text, style: style, fontPx: fontPx, ligatures: ligatures)
-        if let hit = cache[key] {
+        var digest = contentHash
+        Self.mix(&digest, UInt64(fontPx))
+        Self.mix(&digest, ligatures ? 1 : 0)
+        Self.mix(&digest, bold ? 1 : 0)
+        Self.mix(&digest, italic ? 1 : 0)
+
+        if let hit = cache[digest] {
             return hit
         }
 
+        var text = ""
+        var utf16Starts: [Int] = [0]
+        utf16Starts.reserveCapacity(end - start + 1)
+        text.reserveCapacity(end - start)
+        for col in start..<end {
+            let raw = cells[col].text
+            text += raw.isEmpty ? " " : raw
+            utf16Starts.append(text.utf16.count)
+        }
+        guard !text.isEmpty else { return [] }
+
         let shaped = shapeUncached(
             text: text,
-            cellUTF16Starts: cellUTF16Starts,
+            cellUTF16Starts: utf16Starts,
             font: font,
-            cellCount: cellCount,
-            ligatures: ligatures
+            cellCount: end - start
         )
-        if cache.count >= maxEntries {
-            cache.removeAll(keepingCapacity: true)
+        if cache.count < maxEntries {
+            cache[digest] = shaped
         }
-        cache[key] = shaped
         return shaped
     }
 
@@ -82,12 +121,10 @@ final class ShaperCache {
         text: String,
         cellUTF16Starts: [Int],
         font: CTFont,
-        cellCount: Int,
-        ligatures: Bool
+        cellCount: Int
     ) -> [ShapedCell] {
-        let shapedFont = Self.font(font, ligatures: ligatures)
         let attrs: [CFString: Any] = [
-            kCTFontAttributeName: shapedFont,
+            kCTFontAttributeName: font,
         ]
         guard let attr = CFAttributedStringCreate(
             kCFAllocatorDefault,
@@ -203,7 +240,7 @@ final class ShaperCache {
     }
 
     /// Merge liga/calt/dlig onto the face (Ghostty default features when enabled).
-    static func font(_ base: CTFont, ligatures: Bool) -> CTFont {
+    private static func makeFeatured(_ base: CTFont, ligatures: Bool) -> CTFont {
         let value = NSNumber(value: ligatures ? 1 : 0)
         let features: [[CFString: Any]] = [
             [kCTFontOpenTypeFeatureTag: "liga" as CFString, kCTFontOpenTypeFeatureValue: value],

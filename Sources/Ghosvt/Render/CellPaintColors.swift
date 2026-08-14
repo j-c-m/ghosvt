@@ -107,6 +107,8 @@ enum CellPaintColors {
 /// One viewport cell after VT collect (shared by paint + cursor).
 struct TerminalRowCell {
     var text: String
+    /// First scalar, or 0 if empty. Shaper hash treats 0 as U+0020.
+    var cp: UInt32 = 0
     var isWideHead: Bool
     var isWideTail: Bool
     var fg: GhosttyColorRgb
