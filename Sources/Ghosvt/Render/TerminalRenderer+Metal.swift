@@ -142,6 +142,7 @@ extension TerminalRenderer {
         enc.setRenderPipelineState(pipeline)
         enc.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
         enc.setFragmentTexture(atlas.texture, index: 0)
+        enc.setFragmentTexture(colorAtlas.texture, index: 1)
         enc.setFragmentSamplerState(sampler, index: 0)
         if bgCount > 0 {
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: bgCount)
@@ -157,6 +158,7 @@ extension TerminalRenderer {
             let byteOffset = bgCount * CellInstance.stride
             enc.setVertexBuffer(instanceBuffer, offset: byteOffset, index: 0)
             enc.setFragmentTexture(atlas.texture, index: 0)
+            enc.setFragmentTexture(colorAtlas.texture, index: 1)
             enc.setFragmentSamplerState(sampler, index: 0)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: fgCount)
         }
@@ -396,6 +398,11 @@ extension TerminalRenderer {
         float4 uv;
         float4 fg;
         float4 bg;
+        // Four floats, not float3: MSL float3 is 16-byte aligned (96-byte stride).
+        float atlas;
+        float pad0;
+        float pad1;
+        float pad2;
     };
 
     struct ImageInstance {
@@ -415,6 +422,7 @@ extension TerminalRenderer {
         float4 fg;
         float4 bg;
         float hasGlyph;
+        float atlas;
     };
 
     struct ImageVertexOut {
@@ -443,13 +451,24 @@ extension TerminalRenderer {
         o.fg = c.fg;
         o.bg = c.bg;
         o.hasGlyph = (c.uv.z > c.uv.x + 1e-6 && c.uv.w > c.uv.y + 1e-6) ? 1.0 : 0.0;
+        o.atlas = c.atlas;
         return o;
     }
 
     fragment float4 cell_fragment(VertexOut in [[stage_in]],
                                   texture2d<float> atlas [[texture(0)]],
+                                  texture2d<float> colorAtlas [[texture(1)]],
                                   sampler samp [[sampler(0)]]) {
         float4 bg = in.bg;
+        if (in.atlas > 0.5 && in.hasGlyph > 0.5) {
+            float4 c = colorAtlas.sample(samp, in.uv);
+            if (c.a > 0.001) { c.rgb /= c.a; }
+            if (bg.a < 0.01) {
+                return float4(c.rgb, saturate(c.a));
+            }
+            float3 rgb = mix(bg.rgb, c.rgb, saturate(c.a));
+            return float4(rgb, 1.0);
+        }
         float a = 0.0;
         if (in.hasGlyph > 0.5) {
             a = atlas.sample(samp, in.uv).r;

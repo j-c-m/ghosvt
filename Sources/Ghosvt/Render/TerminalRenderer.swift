@@ -16,6 +16,8 @@ final class TerminalRenderer {
     /// Linear sampler for image content.
     var imageSampler: MTLSamplerState?
     var atlas: GlyphAtlas
+    /// Ghostty `atlas_color` (Apple Color Emoji / Noto Color).
+    var colorAtlas: GlyphAtlas
     var shaper = ShaperCache()
     /// Ghostty `SharedGrid.codepoints` (face lookup, including misses).
     var codepoints = CodepointCache()
@@ -230,6 +232,8 @@ final class TerminalRenderer {
 
         guard let atlas = GlyphAtlas(device: device) else { return nil }
         self.atlas = atlas
+        guard let colorAtlas = GlyphAtlas(device: device, format: .bgra) else { return nil }
+        self.colorAtlas = colorAtlas
 
         let library: MTLLibrary
         do {
@@ -296,6 +300,7 @@ final class TerminalRenderer {
 
     func resetAtlas() {
         atlas.clear()
+        colorAtlas.clear()
         shaper.clear()
         codepoints.clear()
         paintFeat = nil

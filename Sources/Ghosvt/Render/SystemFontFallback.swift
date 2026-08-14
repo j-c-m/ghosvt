@@ -23,6 +23,27 @@ enum SystemFontFallback {
 
     private static let store = Store()
 
+    /// Ghostty Darwin fallback: Apple Color Emoji, no size adjustment.
+    static func appleColorEmoji(size: CGFloat) -> CTFont? {
+        let key = Key(text: "\u{1F600}", sizeMilli: Int((size * 1000).rounded()), basePS: "AppleColorEmoji")
+        store.lock.lock()
+        if let cached = store.byKey[key] {
+            store.lock.unlock()
+            return cached
+        }
+        store.lock.unlock()
+
+        let font = CTFontCreateWithName("Apple Color Emoji" as CFString, size, nil)
+        let ps = (CTFontCopyPostScriptName(font) as String?) ?? ""
+        let ok = ps == "AppleColorEmoji" || ps.contains("AppleColorEmoji")
+        let found: CTFont? = ok ? font : nil
+
+        store.lock.lock()
+        store.byKey[key] = found
+        store.lock.unlock()
+        return found
+    }
+
     /// Face that covers `text`, discovered from `primary`'s cascade, or nil.
     ///
     /// Returns nil when `primary` already covers `text` (caller should use

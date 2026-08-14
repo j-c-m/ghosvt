@@ -73,6 +73,7 @@ extension TerminalRenderer {
     ) {
         for attempt in 0..<Self.atlasPaintAttempts {
             let gen = atlas.packGeneration
+            let colorGen = colorAtlas.packGeneration
             // Atlas eviction invalidates UVs already stored on clean rows.
             let skipClean = dirtyOnly && attempt == 0
             preparePaintFonts(metrics: metrics)
@@ -90,7 +91,7 @@ extension TerminalRenderer {
                 cellHInt: cellHInt
             )
             flattenInkExtras()
-            if atlas.packGeneration == gen { break }
+            if atlas.packGeneration == gen, colorAtlas.packGeneration == colorGen { break }
         }
     }
 
@@ -155,6 +156,7 @@ extension TerminalRenderer {
         cellHInt: Int
     ) {
         let genAtStart = atlas.packGeneration
+        let colorGenAtStart = colorAtlas.packGeneration
         var iter = rowIter
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iter)
 
@@ -219,7 +221,9 @@ extension TerminalRenderer {
             var clean = false
             _ = ghostty_render_state_row_set(iter, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
 
-            if atlas.packGeneration != genAtStart { break }
+            if atlas.packGeneration != genAtStart || colorAtlas.packGeneration != colorGenAtStart {
+                break
+            }
         }
     }
 
@@ -381,8 +385,8 @@ extension TerminalRenderer {
                         && abs(bb - defBb) < 1e-4
                     let idx = rowBase + col
                     if idx < gridBuf.count {
-                        gridBuf[idx] = CellInstance(
-                            ox: x, oy: y, sx: cellW, sy: cellH,
+                        gridBuf[idx] = .make(
+                            originX: x, originY: y, width: cellW, height: cellH,
                             u0: 0, v0: 0, u1: 0, v1: 0,
                             fr: fr, fg: fgG, fb: fb, fa: 1,
                             br: br, bg: bgG, bb: bb, ba: isDefaultBg ? 0 : 1
@@ -867,16 +871,16 @@ extension TerminalRenderer {
                         cellBaselinePx: metrics.cellBaselinePx
                     )
                 case .glyph(let font, let glyph, _):
-                    entry = atlas.entry(
+                    entry = stampEntry(
                         glyph: glyph,
+                        font: font,
                         bold: style.bold,
                         italic: style.italic,
-                        font: font,
                         fontPx: layout.fontPx,
-                        cellHeightPx: cellHInt,
-                        cellBaselinePx: metrics.cellBaselinePx,
-                        cellWidthPx: cellWInt,
-                        faceWidthPx: metrics.faceWidthPx
+                        cellW: cellWInt,
+                        cellH: cellHInt,
+                        baseline: metrics.cellBaselinePx,
+                        faceW: metrics.faceWidthPx
                     )
                 case .missing:
                     continue
@@ -884,16 +888,16 @@ extension TerminalRenderer {
             } else if let resolved = resolveGlyphFace(
                 text: cellText, primary: primary, nerdFaces: nerdFaces
             ) {
-                entry = atlas.entry(
+                entry = stampEntry(
                     glyph: resolved.glyph,
+                    font: resolved.font,
                     bold: style.bold,
                     italic: style.italic,
-                    font: resolved.font,
                     fontPx: layout.fontPx,
-                    cellHeightPx: cellHInt,
-                    cellBaselinePx: metrics.cellBaselinePx,
-                    cellWidthPx: cellWInt,
-                    faceWidthPx: metrics.faceWidthPx
+                    cellW: cellWInt,
+                    cellH: cellHInt,
+                    baseline: metrics.cellBaselinePx,
+                    faceW: metrics.faceWidthPx
                 )
             } else {
                 entry = atlas.entry(
@@ -953,7 +957,8 @@ extension TerminalRenderer {
                 width: max(1, pwG), height: max(1, phG),
                 u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
                 fr: ifr, fg: ifg, fb: ifb, fa: 1,
-                br: 0, bg: 0, bb: 0, ba: 0
+                br: 0, bg: 0, bb: 0, ba: 0,
+                atlas: entry.color ? 1 : 0
             ))
         }
     }
@@ -976,6 +981,10 @@ extension TerminalRenderer {
         }
         // Same as Ghostty CodepointResolver: CTFontCreateForString cascade
         // (e.g. U+26E8 ⛨ → STIXTwoMath-Regular).
+        if let ace = SystemFontFallback.appleColorEmoji(size: CTFontGetSize(primary)),
+           let glyphs = GlyphAtlas.glyphs(for: text, font: ace), glyphs.count == 1 {
+            return (ace, glyphs[0])
+        }
         if let sys = SystemFontFallback.face(for: text, from: primary),
            let glyphs = GlyphAtlas.glyphs(for: text, font: sys),
            glyphs.count == 1 {
@@ -986,6 +995,39 @@ extension TerminalRenderer {
 
     func nerdFallbackFonts(metrics: CellMetrics) -> [CTFont] {
         metrics.nerdFaces
+    }
+
+    /// Gray atlas, or Ghostty color atlas when the face has color glyphs.
+    func stampEntry(
+        glyph: CGGlyph,
+        font: CTFont,
+        bold: Bool,
+        italic: Bool,
+        fontPx: Int,
+        cellW: Int,
+        cellH: Int,
+        baseline: Int,
+        faceW: CGFloat
+    ) -> GlyphAtlas.Entry {
+        if GlyphAtlas.hasColorGlyphs(font) {
+            return colorAtlas.entryColor(
+                glyph: glyph,
+                font: font,
+                cellWidthPx: cellW,
+                cellHeightPx: cellH
+            )
+        }
+        return atlas.entry(
+            glyph: glyph,
+            bold: bold,
+            italic: italic,
+            font: font,
+            fontPx: fontPx,
+            cellHeightPx: cellH,
+            cellBaselinePx: baseline,
+            cellWidthPx: cellW,
+            faceWidthPx: faceW
+        )
     }
 
     func paintWideOrFallback(
@@ -1004,17 +1046,34 @@ extension TerminalRenderer {
         guard !text.isEmpty else { return }
         let font = metrics.font(bold: c.bold, italic: c.italic)
         let span = c.isWideHead ? 2 : 1
-        let entry = atlas.entry(
-            text: text,
-            bold: c.bold,
-            italic: c.italic,
-            font: font,
-            cellWidthPx: cellWInt * span,
-            cellHeightPx: cellHInt,
-            cellBaselinePx: metrics.cellBaselinePx,
-            faceWidthPx: metrics.faceWidthPx * CGFloat(span),
-            fallbackFonts: nerdFallbackFonts(metrics: metrics)
-        )
+        let entry: GlyphAtlas.Entry
+        if let resolved = resolveGlyphFace(
+            text: text, primary: font, nerdFaces: nerdFallbackFonts(metrics: metrics)
+        ) {
+            entry = stampEntry(
+                glyph: resolved.glyph,
+                font: resolved.font,
+                bold: c.bold,
+                italic: c.italic,
+                fontPx: layout.fontPx,
+                cellW: cellWInt * span,
+                cellH: cellHInt,
+                baseline: metrics.cellBaselinePx,
+                faceW: metrics.faceWidthPx * CGFloat(span)
+            )
+        } else {
+            entry = atlas.entry(
+                text: text,
+                bold: c.bold,
+                italic: c.italic,
+                font: font,
+                cellWidthPx: cellWInt * span,
+                cellHeightPx: cellHInt,
+                cellBaselinePx: metrics.cellBaselinePx,
+                faceWidthPx: metrics.faceWidthPx * CGFloat(span),
+                fallbackFonts: nerdFallbackFonts(metrics: metrics)
+            )
+        }
         // Cell bg stays in gridCells (step 1). Ink goes to glyphExtras so below_text
         // Kitty images sit under wide glyphs (same order as shaped runs).
         let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
@@ -1041,7 +1100,8 @@ extension TerminalRenderer {
                 height: max(1, entry.pixelH),
                 u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
                 fr: ifr, fg: ifg, fb: ifb, fa: 1,
-                br: 0, bg: 0, bb: 0, ba: 0
+                br: 0, bg: 0, bb: 0, ba: 0,
+                atlas: entry.color ? 1 : 0
             ))
         }
     }

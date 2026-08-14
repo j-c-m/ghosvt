@@ -148,27 +148,44 @@ extension TerminalRenderer {
         } else {
             let font = metrics.font(bold: rc.bold, italic: rc.italic)
             let text = rc.text.isEmpty ? internCodepoint(rc.cp) : rc.text
-            entry = atlas.entry(
-                text: text,
-                bold: rc.bold,
-                italic: rc.italic,
-                font: font,
-                cellWidthPx: cellWInt * span,
-                cellHeightPx: cellHInt,
-                cellBaselinePx: metrics.cellBaselinePx,
-                faceWidthPx: metrics.faceWidthPx * CGFloat(span),
-                fallbackFonts: nerdFallbackFonts(metrics: metrics)
-            )
+            if let resolved = resolveGlyphFace(
+                text: text, primary: font, nerdFaces: nerdFallbackFonts(metrics: metrics)
+            ) {
+                entry = stampEntry(
+                    glyph: resolved.glyph,
+                    font: resolved.font,
+                    bold: rc.bold,
+                    italic: rc.italic,
+                    fontPx: layout.fontPx,
+                    cellW: cellWInt * span,
+                    cellH: cellHInt,
+                    baseline: metrics.cellBaselinePx,
+                    faceW: metrics.faceWidthPx * CGFloat(span)
+                )
+            } else {
+                entry = atlas.entry(
+                    text: text,
+                    bold: rc.bold,
+                    italic: rc.italic,
+                    font: font,
+                    cellWidthPx: cellWInt * span,
+                    cellHeightPx: cellHInt,
+                    cellBaselinePx: metrics.cellBaselinePx,
+                    faceWidthPx: metrics.faceWidthPx * CGFloat(span),
+                    fallbackFonts: nerdFallbackFonts(metrics: metrics)
+                )
+            }
         }
         if entry.pixelW < 0.5 { return }
         instances.append(.make(
-            originX: cellX,
-            originY: cellY,
-            width: layout.cellW * Float(span),
-            height: layout.cellH,
+            originX: cellX + entry.bearingX,
+            originY: cellY + entry.bearingY,
+            width: max(1, entry.pixelW),
+            height: max(1, entry.pixelH),
             u0: entry.uv.x, v0: entry.uv.y, u1: entry.uv.z, v1: entry.uv.w,
             fr: textR, fg: textG, fb: textB, fa: 1,
-            br: 0, bg: 0, bb: 0, ba: 0
+            br: 0, bg: 0, bb: 0, ba: 0,
+            atlas: entry.color ? 1 : 0
         ))
     }
 

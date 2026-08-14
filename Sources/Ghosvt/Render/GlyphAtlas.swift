@@ -4,13 +4,20 @@ import Foundation
 import Metal
 import simd
 
-/// Alpha glyph atlas → R8 Metal texture. Starts at 2048² and doubles on full
-/// (Ghostty `Atlas.grow`), up to the Metal 2D limit.
+/// Glyph atlas. R8 grayscale (default 2048²) or BGRA color (Ghostty `atlas_color`,
+/// default 512²). Doubles on full up to the Metal 2D limit.
 ///
 /// Glyphs are rasterized with CoreText in CG’s native bottom-left space, then
 /// stored top-left for Metal. Shaped glyphs use natural bounds + bearings
 /// (Ghostty-style); text keys keep a cell-boxed path for indicators.
 final class GlyphAtlas {
+    enum Format {
+        case r8
+        case bgra
+
+        var bytesPerPixel: Int { self == .r8 ? 1 : 4 }
+        var pixelFormat: MTLPixelFormat { self == .r8 ? .r8Unorm : .bgra8Unorm }
+    }
     struct TextKey: Hashable {
         let text: String
         let bold: Bool
@@ -41,9 +48,12 @@ final class GlyphAtlas {
         var bearingY: Float = 0
         var pixelW: Float = 0
         var pixelH: Float = 0
+        /// Ghostty `Presentation.emoji` → color atlas.
+        var color: Bool = false
     }
 
     private let device: MTLDevice
+    let format: Format
     private(set) var texture: MTLTexture
     private var atlasWidth: Int
     private var atlasHeight: Int
@@ -69,12 +79,22 @@ final class GlyphAtlas {
 
     let emptyUV = SIMD4<Float>(0, 0, 0, 0)
 
-    init?(device: MTLDevice, width: Int = 2048, height: Int = 2048) {
+    init?(
+        device: MTLDevice,
+        format: Format = .r8,
+        width: Int? = nil,
+        height: Int? = nil
+    ) {
         self.device = device
-        self.atlasWidth = width
-        self.atlasHeight = height
-        self.pixels = [UInt8](repeating: 0, count: width * height)
-        guard let tex = Self.makeTexture(device: device, width: width, height: height) else {
+        self.format = format
+        let edge = width ?? (format == .r8 ? 2048 : 512)
+        let h = height ?? edge
+        self.atlasWidth = edge
+        self.atlasHeight = h
+        self.pixels = [UInt8](repeating: 0, count: edge * h * format.bytesPerPixel)
+        guard let tex = Self.makeTexture(
+            device: device, format: format, width: edge, height: h
+        ) else {
             return nil
         }
         self.texture = tex
@@ -88,7 +108,7 @@ final class GlyphAtlas {
         textCache.removeAll(keepingCapacity: true)
         glyphCache.removeAll(keepingCapacity: true)
         spriteCache.removeAll(keepingCapacity: true)
-        pixels = [UInt8](repeating: 0, count: atlasWidth * atlasHeight)
+        pixels = [UInt8](repeating: 0, count: atlasWidth * atlasHeight * format.bytesPerPixel)
         shelfX = 1
         shelfY = 0
         shelfH = 1
@@ -196,6 +216,8 @@ final class GlyphAtlas {
             for: text, primary: font, already: fallbackFonts
         ))
         for f in fonts {
+            // Color fonts (Apple Color Emoji) go through `entryColor` + BGRA atlas.
+            guard !Self.hasColorGlyphs(f) else { continue }
             // Skip faces that do not map every code unit (avoids .notdef tofu
             // from JetBrains Mono blocking Symbols Nerd Font icons).
             guard Self.fontCovers(f, text: text) else { continue }
@@ -219,6 +241,11 @@ final class GlyphAtlas {
     /// True if `font` maps every Unicode scalar in `text` (handles surrogates).
     static func fontCovers(_ font: CTFont, text: String) -> Bool {
         glyphs(for: text, font: font) != nil
+    }
+
+    /// Ghostty `Face.hasColor` / `color_glyphs` trait (Apple Color Emoji, Noto Color).
+    static func hasColorGlyphs(_ font: CTFont) -> Bool {
+        CTFontGetSymbolicTraits(font).contains(.traitColorGlyphs)
     }
 
     /// One glyph per Unicode scalar, or nil if any scalar is missing.
@@ -336,6 +363,63 @@ final class GlyphAtlas {
         return packed
     }
 
+    /// Color emoji (Ghostty `atlas_color` + `constraint.size = .cover`).
+    func entryColor(
+        glyph: CGGlyph,
+        font: CTFont,
+        cellWidthPx: Int,
+        cellHeightPx: Int
+    ) -> Entry {
+        let cellH = max(1, cellHeightPx)
+        let cellW = max(1, cellWidthPx)
+        let key = GlyphKey(
+            glyph: glyph, fontID: ObjectIdentifier(font as AnyObject),
+            bold: false, italic: false,
+            cellH: cellH, cellBaseline: 0, fontPx: 0,
+            cellW: cellW, faceWMilli: 0
+        )
+        if let hit = glyphCache[key] { return hit }
+
+        var g = glyph
+        var bounds = CGRect.zero
+        CTFontGetBoundingRectsForGlyphs(font, .horizontal, &g, &bounds, 1)
+        if bounds.width < 0.5 || bounds.height < 0.5 {
+            let e = Entry(uv: emptyUV, color: true)
+            glyphCache[key] = e
+            return e
+        }
+
+        // Ghostty emoji: cover, center, pad_left/right 0.025.
+        let padFrac: CGFloat = 0.025
+        let availW = CGFloat(cellW) * (1 - 2 * padFrac)
+        let availH = CGFloat(cellH)
+        let scale = min(availW / bounds.width, availH / bounds.height)
+        let destW = bounds.width * scale
+        let destH = bounds.height * scale
+        let canvasW = max(1, Int(ceil(destW)))
+        let canvasH = max(1, Int(ceil(destH)))
+        let bearingX = Float((CGFloat(cellW) - destW) / 2)
+        let bearingY = Float((CGFloat(cellH) - destH) / 2)
+
+        guard let packed = rasterizeColor(
+            glyph: glyph,
+            font: font,
+            bounds: bounds,
+            canvasW: canvasW,
+            canvasH: canvasH,
+            destW: destW,
+            destH: destH,
+            bearingX: bearingX,
+            bearingY: bearingY
+        ) else {
+            let e = Entry(uv: emptyUV, color: true)
+            glyphCache[key] = e
+            return e
+        }
+        glyphCache[key] = packed
+        return packed
+    }
+
     func prewarmASCII(
         font: CTFont,
         boldFont: CTFont,
@@ -430,6 +514,56 @@ final class GlyphAtlas {
         )
     }
 
+    private func rasterizeColor(
+        glyph: CGGlyph,
+        font: CTFont,
+        bounds: CGRect,
+        canvasW: Int,
+        canvasH: Int,
+        destW: CGFloat,
+        destH: CGFloat,
+        bearingX: Float,
+        bearingY: Float
+    ) -> Entry? {
+        let bpr = canvasW * 4
+        var bgra = [UInt8](repeating: 0, count: bpr * canvasH)
+        let space = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo =
+            CGImageAlphaInfo.premultipliedFirst.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let ctx = CGContext(
+            data: &bgra,
+            width: canvasW,
+            height: canvasH,
+            bitsPerComponent: 8,
+            bytesPerRow: bpr,
+            space: space,
+            bitmapInfo: bitmapInfo
+        ) else { return nil }
+
+        ctx.setShouldAntialias(true)
+        ctx.setAllowsAntialiasing(true)
+        ctx.setAllowsFontSubpixelPositioning(true)
+        ctx.setShouldSubpixelPositionFonts(true)
+        ctx.setAllowsFontSubpixelQuantization(false)
+        ctx.setShouldSubpixelQuantizeFonts(false)
+        ctx.clear(CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
+        ctx.scaleBy(x: destW / bounds.width, y: destH / bounds.height)
+        var g = glyph
+        var pos = CGPoint(x: -bounds.minX, y: -bounds.minY)
+        CTFontDrawGlyphs(font, &g, &pos, 1, ctx)
+
+        return pack(
+            bgra,
+            cellW: canvasW,
+            cellH: canvasH,
+            bearingX: bearingX,
+            bearingY: bearingY,
+            pixelW: Float(canvasW),
+            pixelH: Float(canvasH)
+        )
+    }
+
     private func drawToCoverage(
         cellW: Int,
         cellH: Int,
@@ -500,9 +634,14 @@ final class GlyphAtlas {
         )
     }
 
-    private static func makeTexture(device: MTLDevice, width: Int, height: Int) -> MTLTexture? {
+    private static func makeTexture(
+        device: MTLDevice,
+        format: Format,
+        width: Int,
+        height: Int
+    ) -> MTLTexture? {
         let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Unorm,
+            pixelFormat: format.pixelFormat,
             width: width,
             height: height,
             mipmapped: false
@@ -520,17 +659,23 @@ final class GlyphAtlas {
         let newW = min(oldW * 2, Self.maxAtlasEdge)
         let newH = min(oldH * 2, Self.maxAtlasEdge)
         if newW <= oldW && newH <= oldH { return false }
-        guard let tex = Self.makeTexture(device: device, width: newW, height: newH) else {
+        guard let tex = Self.makeTexture(
+            device: device, format: format, width: newW, height: newH
+        ) else {
             return false
         }
 
-        var next = [UInt8](repeating: 0, count: newW * newH)
+        let bpp = format.bytesPerPixel
+        var next = [UInt8](repeating: 0, count: newW * newH * bpp)
         pixels.withUnsafeBufferPointer { src in
             guard let s = src.baseAddress else { return }
             next.withUnsafeMutableBufferPointer { dst in
                 guard let d = dst.baseAddress else { return }
+                let srcStride = oldW * bpp
+                let dstStride = newW * bpp
                 for y in 0..<oldH {
-                    d.advanced(by: y * newW).update(from: s.advanced(by: y * oldW), count: oldW)
+                    d.advanced(by: y * dstStride)
+                        .update(from: s.advanced(by: y * srcStride), count: srcStride)
                 }
             }
         }
@@ -577,11 +722,15 @@ final class GlyphAtlas {
     ) -> Entry {
         let ox = rect.x + padding
         let oy = rect.y + padding
-        for y in 0..<cellH {
-            let src = y * cellW
-            let dst = (oy + y) * atlasWidth + ox
-            for i in 0..<cellW {
-                pixels[dst + i] = coverage[src + i]
+        let bpp = format.bytesPerPixel
+        coverage.withUnsafeBufferPointer { src in
+            guard let s = src.baseAddress else { return }
+            pixels.withUnsafeMutableBufferPointer { dst in
+                guard let d = dst.baseAddress else { return }
+                for y in 0..<cellH {
+                    d.advanced(by: ((oy + y) * atlasWidth + ox) * bpp)
+                        .update(from: s.advanced(by: y * cellW * bpp), count: cellW * bpp)
+                }
             }
         }
         upload(region: MTLRegionMake2D(rect.x, rect.y, rect.w, rect.h))
@@ -598,7 +747,8 @@ final class GlyphAtlas {
             bearingX: bearingX,
             bearingY: bearingY,
             pixelW: pixelW > 0 ? pixelW : Float(cellW),
-            pixelH: pixelH > 0 ? pixelH : Float(cellH)
+            pixelH: pixelH > 0 ? pixelH : Float(cellH),
+            color: format == .bgra
         )
     }
 
@@ -617,27 +767,34 @@ final class GlyphAtlas {
     }
 
     private func uploadFull() {
+        let rowBytes = atlasWidth * format.bytesPerPixel
         texture.replace(
             region: MTLRegionMake2D(0, 0, atlasWidth, atlasHeight),
             mipmapLevel: 0,
             withBytes: pixels,
-            bytesPerRow: atlasWidth
+            bytesPerRow: rowBytes
         )
     }
 
     private func upload(region: MTLRegion) {
+        let bpp = format.bytesPerPixel
         let x = Int(region.origin.x)
         let y = Int(region.origin.y)
         let w = Int(region.size.width)
         let h = Int(region.size.height)
-        var rowBytes = [UInt8](repeating: 0, count: max(1, w * h))
+        var rowBytes = [UInt8](repeating: 0, count: max(1, w * h * bpp))
         for row in 0..<h {
-            let src = (y + row) * atlasWidth + x
-            let dst = row * w
-            for i in 0..<w {
+            let src = ((y + row) * atlasWidth + x) * bpp
+            let dst = row * w * bpp
+            for i in 0..<(w * bpp) {
                 rowBytes[dst + i] = pixels[src + i]
             }
         }
-        texture.replace(region: region, mipmapLevel: 0, withBytes: rowBytes, bytesPerRow: max(1, w))
+        texture.replace(
+            region: region,
+            mipmapLevel: 0,
+            withBytes: rowBytes,
+            bytesPerRow: max(1, w * bpp)
+        )
     }
 }

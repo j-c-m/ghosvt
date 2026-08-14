@@ -108,6 +108,10 @@ final class CodepointCache {
 
         guard let scalar = UnicodeScalar(cp) else { return .missing }
         let text = String(scalar)
+        if let ace = SystemFontFallback.appleColorEmoji(size: CTFontGetSize(primary)),
+           let g = glyph(cp, in: ace) {
+            return .glyph(font: ace, glyph: g, primary: false)
+        }
         if let sys = SystemFontFallback.face(for: text, from: primary),
            let g = glyph(cp, in: sys) {
             return .glyph(font: sys, glyph: g, primary: false)
