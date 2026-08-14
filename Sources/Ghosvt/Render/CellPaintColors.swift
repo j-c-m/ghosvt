@@ -57,15 +57,6 @@ enum CellPaintColors {
         fg: GhosttyColorRgb,
         bg: GhosttyColorRgb,
         faint: Bool,
-        selected: Bool
-    ) -> (fill: RGB, ink: RGB) {
-        pair(fg: fg, bg: bg, faint: faint, highlight: selected ? .selection : .none)
-    }
-
-    static func pair(
-        fg: GhosttyColorRgb,
-        bg: GhosttyColorRgb,
-        faint: Bool,
         highlight: Highlight
     ) -> (fill: RGB, ink: RGB) {
         let baseInk = RGB(fg).faint(faint)

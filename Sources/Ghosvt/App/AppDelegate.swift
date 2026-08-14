@@ -1,6 +1,5 @@
 import AppKit
 import Metal
-import MetalKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
@@ -18,11 +17,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Minimal main menu so AppKit can dispatch standard Edit actions (paste/select-all)
         // to WKWebView via the responder chain. Without this, ⌘V/⌘A do nothing in WebKit.
         installMainMenu()
-        if let ti = Terminfo.databasePath {
-            fputs("ghosvt: TERMINFO=\(ti) TERM=\(Terminfo.termName)\n", stderr)
-        } else {
+        if Terminfo.databasePath == nil {
             fputs("ghosvt: warning: xterm-ghostty terminfo missing; login will use xterm-256color\n", stderr)
         }
+        #if DEBUG
+        if let ti = Terminfo.databasePath {
+            fputs("ghosvt: TERMINFO=\(ti) TERM=\(Terminfo.termName)\n", stderr)
+        }
+        #endif
         manager = VtManager(config: config)
 
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -126,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // ⌘1…⌘9 / ⌘F1… / ⇧⌘[ ] → VT switch; ⌘PgUp/PgDn/Home/End → scroll; ⌘F search; ⌘B browser.
             if flags.contains(.command) {
-                // No main menu — handle quit ourselves.
+                // Local monitor claims ⌘Q before the menu.
                 if event.charactersIgnoringModifiers?.lowercased() == "q" {
                     NSApp.terminate(nil)
                     return nil

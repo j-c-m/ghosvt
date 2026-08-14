@@ -37,6 +37,4 @@ enum Terminfo {
         fputs("ghosvt: bundled xterm-ghostty terminfo not found\n", stderr)
         return nil
     }()
-
-    static var isAvailable: Bool { databasePath != nil }
 }

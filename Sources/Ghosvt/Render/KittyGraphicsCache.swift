@@ -4,9 +4,9 @@ import Metal
 
 /// Per-session Kitty graphics texture + placement snapshot for Metal.
 ///
-/// Call `sync(session:device:)` under the session lock (or while terminal is
-/// idle) so borrowed pixel pointers stay valid. Textures are keyed by
-/// image_id + image generation.
+/// Call `sync(terminal:device:layout:shellShiftY:visualY:)` under the session
+/// lock (or while terminal is idle) so borrowed pixel pointers stay valid.
+/// Textures are keyed by image_id + image generation.
 ///
 /// Absolute placements use `ghostty_kitty_graphics_placement_render_info`.
 /// Virtual (unicode placeholder) placements scan viewport cells for U+10EEEE

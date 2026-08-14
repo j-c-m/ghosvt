@@ -24,16 +24,4 @@ struct SpriteMetrics {
         self.boxThickness = max(1, boxThickness ?? defaultBox)
         self.underlineThickness = max(1, underlineThickness)
     }
-
-    /// Build from measured terminal cell metrics.
-    init(from cell: CellMetrics) {
-        let under = max(1, cell.fontPx / 16)
-        self.init(
-            cellWidth: cell.cellWidthPx,
-            cellHeight: cell.cellHeightPx,
-            cellBaseline: cell.cellBaselinePx,
-            boxThickness: max(1, under),
-            underlineThickness: under
-        )
-    }
 }

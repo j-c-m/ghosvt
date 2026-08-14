@@ -61,15 +61,6 @@ final class BrowserHistory: @unchecked Sendable {
         }
     }
 
-    /// Up to `limit` matching history entries for UI lists.
-    func suggestions(for typed: String, limit: Int = 12) -> [Entry] {
-        let partial = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard partial.count >= 1 else { return [] }
-        return queue.sync {
-            queryCandidates(partial: partial, limit: max(1, limit))
-        }
-    }
-
     // MARK: - Open
 
     private func openDatabase() {
@@ -105,7 +96,9 @@ final class BrowserHistory: @unchecked Sendable {
             CREATE INDEX IF NOT EXISTS idx_history_last ON history(last_visit DESC);
             CREATE INDEX IF NOT EXISTS idx_history_url ON history(url);
             """)
+        #if DEBUG
         fputs("ghosvt: browser history \(path)\n", stderr)
+        #endif
     }
 
     private func exec(_ sql: String) {

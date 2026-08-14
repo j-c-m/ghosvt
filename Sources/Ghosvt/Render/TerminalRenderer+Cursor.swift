@@ -1,5 +1,4 @@
 import CGhosttyVT
-import CoreText
 import Foundation
 import Metal
 import QuartzCore

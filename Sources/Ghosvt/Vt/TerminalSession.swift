@@ -216,7 +216,7 @@ final class TerminalSession {
             return
         }
         // Reap zombies only — do not stop the pipeline here. Closing the master
-        // before gather finishes drops the child's final output (review bug 1).
+        // before gather finishes drops the child's final output.
         lock.lock()
         if childPID > 0 {
             var status: Int32 = 0
@@ -510,18 +510,6 @@ final class TerminalSession {
         var tracking = false
         _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
         return tracking
-    }
-
-    /// True when DEC mode 1004 (focus events) is enabled.
-    func isFocusReporting() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isLive, let terminal else { return false }
-        var cfg = GhosttyTerminalModeConfig()
-        cfg.mode = ghostty_mode_new(1004, false)
-        cfg.value = false
-        let r = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &cfg)
-        return r == GHOSTTY_SUCCESS && cfg.value
     }
 
     /// Geometry for mouse encode (content surface in pixels, top-left origin).

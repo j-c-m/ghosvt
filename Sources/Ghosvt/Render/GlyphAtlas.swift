@@ -166,20 +166,6 @@ final class GlyphAtlas {
         return packed
     }
 
-    /// Back-compat name used by older braille call sites.
-    func entryBraille(
-        codepoint: UInt32,
-        cellWidthPx: Int,
-        cellHeightPx: Int
-    ) -> Entry {
-        entrySprite(
-            codepoint: codepoint,
-            cellWidthPx: cellWidthPx,
-            cellHeightPx: cellHeightPx,
-            cellBaselinePx: cellHeightPx / 4
-        )
-    }
-
     func entry(
         text: String,
         bold: Bool,

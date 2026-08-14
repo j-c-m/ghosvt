@@ -25,8 +25,6 @@ cp -f jb/fonts/ttf/JetBrainsMono-Italic.ttf "${FONTDIR}/"
 cp -f jb/fonts/ttf/JetBrainsMono-BoldItalic.ttf "${FONTDIR}/"
 cp -f jb/fonts/ttf/JetBrainsMono-ExtraBold.ttf "${FONTDIR}/"
 cp -f jb/fonts/ttf/JetBrainsMono-ExtraBoldItalic.ttf "${FONTDIR}/"
-cp -f "jb/fonts/variable/JetBrainsMono[wght].ttf" "${FONTDIR}/JetBrainsMono-Variable.ttf"
-cp -f "jb/fonts/variable/JetBrainsMono-Italic[wght].ttf" "${FONTDIR}/JetBrainsMono-Italic-Variable.ttf"
 cp -f nf/SymbolsNerdFont-Regular.ttf "${FONTDIR}/"
 cp -f nf/SymbolsNerdFontMono-Regular.ttf "${FONTDIR}/"
 

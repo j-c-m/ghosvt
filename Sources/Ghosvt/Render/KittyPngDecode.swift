@@ -17,13 +17,10 @@ enum KittyPngDecode {
         if r != GHOSTTY_SUCCESS {
             fputs("ghosvt: failed to install Kitty PNG decoder (\(r.rawValue))\n", stderr)
         } else {
+            #if DEBUG
             fputs("ghosvt: Kitty PNG decoder (ImageIO) installed\n", stderr)
+            #endif
         }
-    }
-
-    /// Clear the process-global callback (tests / teardown).
-    static func uninstall() {
-        _ = ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, nil)
     }
 }
 

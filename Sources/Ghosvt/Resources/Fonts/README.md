@@ -10,8 +10,6 @@ Same packages Ghostty embeds via `build.zig.zon` / `src/font/embedded.zig`.
 | `JetBrainsMono-BoldItalic.ttf` | Bold italic fallback |
 | `JetBrainsMono-ExtraBold.ttf` | **SGR bold** face |
 | `JetBrainsMono-ExtraBoldItalic.ttf` | **SGR bold + italic** face |
-| `JetBrainsMono-Variable.ttf` | Variable (`JetBrainsMono[wght].ttf`) |
-| `JetBrainsMono-Italic-Variable.ttf` | Variable italic |
 | `SymbolsNerdFont-Regular.ttf` | Ghostty `nerd_fonts_symbols_only` cascade |
 | `SymbolsNerdFontMono-Regular.ttf` | Mono nerd symbols (preferred cascade first) |
 

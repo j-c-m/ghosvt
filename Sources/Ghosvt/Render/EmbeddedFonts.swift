@@ -18,8 +18,6 @@ enum EmbeddedFonts {
         case boldItalic = "JetBrainsMono-BoldItalic.ttf"
         case extraBold = "JetBrainsMono-ExtraBold.ttf"
         case extraBoldItalic = "JetBrainsMono-ExtraBoldItalic.ttf"
-        case variable = "JetBrainsMono-Variable.ttf"
-        case variableItalic = "JetBrainsMono-Italic-Variable.ttf"
         /// Ghostty `nerd_fonts_symbols_only` (`SymbolsNerdFont-Regular.ttf`).
         case symbolsNerd = "SymbolsNerdFont-Regular.ttf"
         /// Mono symbols (tighter cell fit for terminal glyphs).

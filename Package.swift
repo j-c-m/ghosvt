@@ -14,7 +14,6 @@ let package = Package(
         .target(
             name: "CGhosttyVT",
             path: "Sources/CGhosttyVT",
-            exclude: ["ghostty-vt.pc"],
             publicHeadersPath: ".",
             cSettings: [
                 .headerSearchPath("../../\(ghosttyInclude)"),

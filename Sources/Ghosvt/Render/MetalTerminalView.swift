@@ -56,7 +56,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         var editing = false
         /// Insertion point (0...address.count).
         var caret = 0
-        /// Selection anchor; when `selEnd != caret` (or we use range), selected range is min/max.
+        /// Selection anchor; range is `min/max(selAnchor, caret)`.
         var selAnchor = 0
         var canGoBack = false
         var canGoForward = false
@@ -103,8 +103,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// Focus/screen observers use selector-based `NotificationCenter` registration on `self`.
     private var focusObserversInstalled = false
     private var workspaceObserversInstalled = false
+    #if DEBUG
     /// Last logged display range (minInterval, maxInterval, maxFps); skip repeat logs.
     private var lastLoggedDisplay: (minI: CFTimeInterval, maxI: CFTimeInterval, fps: Int)?
+    #endif
     /// True while `draw(_:)` is on the stack; `requestFrame` must not recurse.
     private var inDraw = false
 
@@ -336,6 +338,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         renderer?.configureDisplay(minInterval: minInterval, maxInterval: maxInterval)
 
+        #if DEBUG
         let next = (minI: minInterval, maxI: maxInterval, fps: maxFps)
         if let prev = lastLoggedDisplay,
            abs(prev.minI - next.minI) < 1e-9,
@@ -355,6 +358,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         } else {
             fputs("ghosvt: display \(maxFps) Hz fixed (paced present)\n", stderr)
         }
+        #endif
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -2195,11 +2199,13 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             return
         }
         webView.isInspectable = true
+        #if DEBUG
         fputs(
             "ghosvt: webext present popup label=\(action.label) "
                 + "url=\(webView.url?.absoluteString ?? "nil")\n",
             stderr
         )
+        #endif
         guard let popover = action.popupPopover else {
             completion(BrowserExtensionHost.unsupportedError("action has no popup popover"))
             return

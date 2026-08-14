@@ -10,21 +10,6 @@ struct UntrustedURL: Equatable {
         case invalidWebURL
         case inaccessibleFile
         case unsafeFile
-
-        var message: String {
-            switch self {
-            case .malformedURL:
-                "The target is not an absolute URL with a scheme."
-            case .unsafeCharacters:
-                "The target contains invisible or line-breaking characters."
-            case .invalidWebURL:
-                "The web target does not contain a valid host."
-            case .inaccessibleFile:
-                "The local target does not exist or is not a regular file or directory."
-            case .unsafeFile:
-                "Opening this local target could execute code."
-            }
-        }
     }
 
     enum Decision: Equatable {
@@ -82,27 +67,6 @@ struct UntrustedURL: Equatable {
         default:
             return nil
         }
-    }
-
-    var displayString: String {
-        let normalized: String
-        if let url = URL(string: string), url.scheme != nil {
-            normalized = url.isFileURL
-                ? url.standardizedFileURL.resolvingSymlinksInPath().path
-                : string
-        } else {
-            normalized = URL(filePath: string).standardizedFileURL.path
-        }
-        var result = String()
-        result.reserveCapacity(normalized.count)
-        for scalar in normalized.unicodeScalars {
-            if Self.isUnsafeCharacter(scalar) {
-                result += "\\u{\(String(scalar.value, radix: 16, uppercase: true))}"
-            } else {
-                result.unicodeScalars.append(scalar)
-            }
-        }
-        return result
     }
 }
 

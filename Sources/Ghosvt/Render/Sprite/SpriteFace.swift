@@ -14,13 +14,6 @@ enum SpriteFace {
             || BranchSprites.covers(cp)
     }
 
-    static func covers(text: String) -> Bool {
-        guard text.unicodeScalars.count == 1,
-              let v = text.unicodeScalars.first?.value
-        else { return false }
-        return covers(v)
-    }
-
     /// Draw into a full-cell R8 coverage buffer. Returns false if not a sprite cp.
     @discardableResult
     static func draw(

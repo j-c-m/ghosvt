@@ -11,6 +11,7 @@
 build.log
 DerivedData/
 macos/build/
+macos/**/build/
 # Ghostty source working tree (cloned + patched by build-libghostty.sh).
 # Pin: Vendor/ghostty.rev  Patches: patches/*.patch
 Vendor/ghostty/

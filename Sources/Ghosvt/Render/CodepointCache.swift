@@ -72,24 +72,6 @@ final class CodepointCache {
         }
     }
 
-    /// True when the cell can join a primary-face ligature run.
-    func isPrimary(
-        cp: UInt32,
-        bold: Bool,
-        italic: Bool,
-        fontPx: Int,
-        primary: CTFont,
-        nerdFaces: [CTFont]
-    ) -> Bool {
-        switch resolve(
-            cp: cp, bold: bold, italic: italic, fontPx: fontPx,
-            primary: primary, nerdFaces: nerdFaces
-        ) {
-        case .glyph(_, _, true): return true
-        default: return false
-        }
-    }
-
     private func search(
         cp: UInt32,
         primary: CTFont,
