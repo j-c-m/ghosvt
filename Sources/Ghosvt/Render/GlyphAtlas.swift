@@ -4,7 +4,8 @@ import Foundation
 import Metal
 import simd
 
-/// Alpha glyph atlas → R8 Metal texture.
+/// Alpha glyph atlas → R8 Metal texture. Starts at 2048² and doubles on full
+/// (Ghostty `Atlas.grow`), up to the Metal 2D limit.
 ///
 /// Glyphs are rasterized with CoreText in CG’s native bottom-left space, then
 /// stored top-left for Metal. Shaped glyphs use natural bounds + bearings
@@ -44,8 +45,8 @@ final class GlyphAtlas {
 
     private let device: MTLDevice
     private(set) var texture: MTLTexture
-    private let atlasWidth: Int
-    private let atlasHeight: Int
+    private var atlasWidth: Int
+    private var atlasHeight: Int
     private var pixels: [UInt8]
     private var shelfX = 0
     private var shelfY = 0
@@ -54,8 +55,10 @@ final class GlyphAtlas {
     private var glyphCache: [GlyphKey: Entry] = [:]
     private var spriteCache: [SpriteKey: Entry] = [:]
     private let padding = 1
-    /// Bumped on `clear()`. Mid-paint eviction invalidates earlier UVs; repaint when this changes.
+    /// Bumped on `clear()` / `grow()`. Live instance UVs are stale until the grid repaints.
     private(set) var packGeneration: Int = 0
+    /// Metal 2D limit on Apple Silicon / modern Mac GPUs.
+    private static let maxAtlasEdge = 16384
 
     private struct SpriteKey: Hashable {
         let codepoint: UInt32
@@ -66,21 +69,14 @@ final class GlyphAtlas {
 
     let emptyUV = SIMD4<Float>(0, 0, 0, 0)
 
-    init?(device: MTLDevice, width: Int = 4096, height: Int = 4096) {
+    init?(device: MTLDevice, width: Int = 2048, height: Int = 2048) {
         self.device = device
         self.atlasWidth = width
         self.atlasHeight = height
         self.pixels = [UInt8](repeating: 0, count: width * height)
-
-        let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Unorm,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        desc.usage = [.shaderRead]
-        desc.storageMode = .shared
-        guard let tex = device.makeTexture(descriptor: desc) else { return nil }
+        guard let tex = Self.makeTexture(device: device, width: width, height: height) else {
+            return nil
+        }
         self.texture = tex
         shelfX = 1
         shelfY = 0
@@ -488,13 +484,85 @@ final class GlyphAtlas {
                 bearingX: bearingX, bearingY: bearingY, pixelW: pixelW, pixelH: pixelH
             )
         }
-        // Full: clear and place this glyph. packGeneration bumps so the grid repaints.
+        // Ghostty SharedGrid: AtlasFull → grow(size * 2), keep packed glyphs.
+        if grow(), let rect = allocate(width: w, height: h) {
+            return write(
+                coverage, cellW: cellW, cellH: cellH, rect: rect,
+                bearingX: bearingX, bearingY: bearingY, pixelW: pixelW, pixelH: pixelH
+            )
+        }
+        // At Metal max (or grow failed): evict and place this glyph.
         clear()
         guard let rect = allocate(width: w, height: h) else { return nil }
         return write(
             coverage, cellW: cellW, cellH: cellH, rect: rect,
             bearingX: bearingX, bearingY: bearingY, pixelW: pixelW, pixelH: pixelH
         )
+    }
+
+    private static func makeTexture(device: MTLDevice, width: Int, height: Int) -> MTLTexture? {
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        desc.usage = [.shaderRead]
+        desc.storageMode = .shared
+        return device.makeTexture(descriptor: desc)
+    }
+
+    /// Double the atlas (square, Ghostty `Atlas.grow`). Copies ink; rescales cached UVs.
+    @discardableResult
+    private func grow() -> Bool {
+        let oldW = atlasWidth
+        let oldH = atlasHeight
+        let newW = min(oldW * 2, Self.maxAtlasEdge)
+        let newH = min(oldH * 2, Self.maxAtlasEdge)
+        if newW <= oldW && newH <= oldH { return false }
+        guard let tex = Self.makeTexture(device: device, width: newW, height: newH) else {
+            return false
+        }
+
+        var next = [UInt8](repeating: 0, count: newW * newH)
+        pixels.withUnsafeBufferPointer { src in
+            guard let s = src.baseAddress else { return }
+            next.withUnsafeMutableBufferPointer { dst in
+                guard let d = dst.baseAddress else { return }
+                for y in 0..<oldH {
+                    d.advanced(by: y * newW).update(from: s.advanced(by: y * oldW), count: oldW)
+                }
+            }
+        }
+
+        let scale = SIMD4<Float>(
+            Float(oldW) / Float(newW),
+            Float(oldH) / Float(newH),
+            Float(oldW) / Float(newW),
+            Float(oldH) / Float(newH)
+        )
+        rescaleUVs(&textCache, by: scale)
+        rescaleUVs(&glyphCache, by: scale)
+        rescaleUVs(&spriteCache, by: scale)
+
+        pixels = next
+        atlasWidth = newW
+        atlasHeight = newH
+        texture = tex
+        // Packed ink occupies [0, oldW) × [0, oldH). Resume on the new bottom band.
+        shelfX = 0
+        shelfY = oldH
+        shelfH = 0
+        packGeneration &+= 1
+        uploadFull()
+        return true
+    }
+
+    private func rescaleUVs<K: Hashable>(_ cache: inout [K: Entry], by scale: SIMD4<Float>) {
+        for (key, var entry) in cache {
+            entry.uv *= scale
+            cache[key] = entry
+        }
     }
 
     private func write(

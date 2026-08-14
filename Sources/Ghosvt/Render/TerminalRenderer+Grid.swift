@@ -5,7 +5,7 @@ import Metal
 
 // MARK: - Grid rebuild + row paint
 extension TerminalRenderer {
-    /// Max paints if the glyph atlas resets mid-pass (invalidates earlier UVs).
+    /// Max paints if the glyph atlas grows or resets mid-pass (invalidates earlier UVs).
     private static let atlasPaintAttempts = 3
 
     func rebuildAllRows(
