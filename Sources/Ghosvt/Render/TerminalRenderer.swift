@@ -40,6 +40,12 @@ final class TerminalRenderer {
     /// Per-viewport-row ink so a partial dirty pass can replace one row.
     var glyphExtrasByRow: [[CellInstance]] = []
     var underlineExtrasByRow: [[CellInstance]] = []
+    /// Interned single-codepoint cell strings.
+    var codepointStrings: [UInt32: String] = [:]
+    /// Reused GRAPHEMES_UTF8 dest; grown on OUT_OF_SPACE.
+    var utf8Scratch = [UInt8](repeating: 0, count: 128)
+    /// Reused collect dest so a dirty row does not allocate a new `[TerminalRowCell]`.
+    var collectScratch: [TerminalRowCell] = []
     var gridCols = 0
     var gridRows = 0
     /// Packed instance count last uploaded (`bg + fg`).
@@ -312,6 +318,11 @@ final class TerminalRenderer {
                 cellBaselinePx: metrics.cellBaselinePx,
                 faceWidthPx: metrics.faceWidthPx
             )
+            if codepointStrings.count < 95 {
+                for code in 0x20...0x7E {
+                    _ = internCodepoint(UInt32(code))
+                }
+            }
             prewarmedKey = warmKey
         }
 

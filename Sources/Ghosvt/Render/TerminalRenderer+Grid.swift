@@ -212,26 +212,39 @@ extension TerminalRenderer {
         defFg: GhosttyColorRgb,
         defBg: GhosttyColorRgb
     ) -> [TerminalRowCell] {
-        var out: [TerminalRowCell] = []
-        out.reserveCapacity(layout.cols)
+        let empty = TerminalRowCell(
+            text: "", isWideHead: false, isWideTail: false,
+            fg: defFg, bg: defBg,
+            bold: false, italic: false, faint: false, inverse: false, underline: false
+        )
+        if collectScratch.count != layout.cols {
+            collectScratch = Array(repeating: empty, count: layout.cols)
+        }
+
         var skipTail = false
         var col = 0
         while ghostty_render_state_row_cells_next(cellsHandle) {
             defer { col += 1 }
             guard col < layout.cols else { break }
 
+            var rawCell: GhosttyCell = 0
+            let hasRaw = ghostty_render_state_row_cells_get(
+                cellsHandle,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
+                &rawCell
+            ) == GHOSTTY_SUCCESS
+
             var isWideHead = false
             var isWideTail = false
+            var hasText = false
+            var hasStyling = false
+            var contentTag = GHOSTTY_CELL_CONTENT_CODEPOINT
             if skipTail {
                 isWideTail = true
                 skipTail = false
-            } else {
-                var rawCell: GhosttyCell = 0
-                if ghostty_render_state_row_cells_get(
-                    cellsHandle,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
-                    &rawCell
-                ) == GHOSTTY_SUCCESS {
+            }
+            if hasRaw {
+                if !isWideTail {
                     var wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW
                     if ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_WIDE, &wide) == GHOSTTY_SUCCESS {
                         if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL {
@@ -242,60 +255,74 @@ extension TerminalRenderer {
                         }
                     }
                 }
+                _ = ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText)
+                _ = ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_HAS_STYLING, &hasStyling)
+                _ = ghostty_cell_get(rawCell, GHOSTTY_CELL_DATA_CONTENT_TAG, &contentTag)
             }
+
+            let bgOnly =
+                contentTag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE
+                || contentTag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB
 
             var fg = defFg
-            _ = ghostty_render_state_row_cells_get(
-                cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg
-            )
             var bgCell = defBg
-            let hasBg = ghostty_render_state_row_cells_get(
-                cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bgCell
-            ) == GHOSTTY_SUCCESS
-
-            var style = GhosttyStyle()
-            style.size = MemoryLayout<GhosttyStyle>.size
-            ghostty_style_default(&style)
-            _ = ghostty_render_state_row_cells_get(
-                cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style
-            )
-            if style.inverse {
-                swap(&fg, &bgCell)
-            }
-            let bg = (hasBg || style.inverse) ? bgCell : defBg
-            // Kitty virtual placeholder: never draw the U+10EEEE glyph (Ghostty blanks it).
-            var text = cellTextUTF8(cellsHandle) ?? ""
-            var cp: UInt32 = 0
-            if let first = text.unicodeScalars.first {
-                if first.value == KittyVirtualUnicode.placeholder {
-                    text = ""
-                } else {
-                    cp = first.value
+            var hasBg = false
+            var bold = false
+            var italic = false
+            var faint = false
+            var inverse = false
+            var underline = false
+            if hasStyling || bgOnly {
+                _ = ghostty_render_state_row_cells_get(
+                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg
+                )
+                hasBg = ghostty_render_state_row_cells_get(
+                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bgCell
+                ) == GHOSTTY_SUCCESS
+                var style = GhosttyStyle()
+                style.size = MemoryLayout<GhosttyStyle>.size
+                ghostty_style_default(&style)
+                _ = ghostty_render_state_row_cells_get(
+                    cellsHandle, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style
+                )
+                bold = style.bold
+                italic = style.italic
+                faint = style.faint
+                inverse = style.inverse
+                underline = style.underline != 0
+                if inverse {
+                    swap(&fg, &bgCell)
                 }
             }
+            let bg = (hasBg || inverse) ? bgCell : defBg
 
-            out.append(TerminalRowCell(
+            var text = ""
+            var cp: UInt32 = 0
+            if hasText {
+                let packed = packedCellText(cellsHandle, raw: hasRaw ? rawCell : nil)
+                text = packed.text
+                cp = packed.cp
+            }
+
+            collectScratch[col] = TerminalRowCell(
                 text: text,
                 cp: cp,
                 isWideHead: isWideHead,
                 isWideTail: isWideTail,
                 fg: fg,
                 bg: bg,
-                bold: style.bold,
-                italic: style.italic,
-                faint: style.faint,
-                inverse: style.inverse,
-                underline: style.underline != 0
-            ))
+                bold: bold,
+                italic: italic,
+                faint: faint,
+                inverse: inverse,
+                underline: underline
+            )
         }
-        while out.count < layout.cols {
-            out.append(TerminalRowCell(
-                text: "", isWideHead: false, isWideTail: false,
-                fg: defFg, bg: defBg,
-                bold: false, italic: false, faint: false, inverse: false, underline: false
-            ))
+        while col < layout.cols {
+            collectScratch[col] = empty
+            col += 1
         }
-        return out
+        return collectScratch
     }
 
     func paintRow(

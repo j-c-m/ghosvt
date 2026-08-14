@@ -210,14 +210,54 @@ extension TerminalRenderer {
         }
     }
 
+    /// Single codepoint from the packed cell; UTF-8 only for grapheme clusters.
+    func packedCellText(
+        _ cells: GhosttyRenderStateRowCells,
+        raw: GhosttyCell?
+    ) -> (text: String, cp: UInt32) {
+        if let raw {
+            var tag = GHOSTTY_CELL_CONTENT_CODEPOINT
+            if ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &tag) == GHOSTTY_SUCCESS,
+               tag == GHOSTTY_CELL_CONTENT_CODEPOINT {
+                var cp: UInt32 = 0
+                if ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CODEPOINT, &cp) == GHOSTTY_SUCCESS {
+                    if cp == 0 || cp == KittyVirtualUnicode.placeholder {
+                        return ("", 0)
+                    }
+                    return (internCodepoint(cp), cp)
+                }
+            }
+        }
+        let text = cellTextUTF8(cells) ?? ""
+        if let first = text.unicodeScalars.first {
+            if first.value == KittyVirtualUnicode.placeholder {
+                return ("", 0)
+            }
+            return (text, first.value)
+        }
+        return ("", 0)
+    }
+
+    func internCodepoint(_ cp: UInt32) -> String {
+        if cp == 0 { return "" }
+        if let hit = codepointStrings[cp] { return hit }
+        guard let scalar = UnicodeScalar(cp) else { return "" }
+        let s = String(scalar)
+        if codepointStrings.count < 8192 {
+            codepointStrings[cp] = s
+        }
+        return s
+    }
+
     func cellTextUTF8(_ cells: GhosttyRenderStateRowCells) -> String? {
         // Prefer UTF-8. Grow on OUT_OF_SPACE (long ZWJ / combining clusters).
-        var cap = 128
         for _ in 0..<6 {
-            var storage = [UInt8](repeating: 0, count: cap)
             var written = 0
             var needed = 0
-            let result = storage.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
+            if utf8Scratch.count < 16 {
+                utf8Scratch = [UInt8](repeating: 0, count: 128)
+            }
+            let result = utf8Scratch.withUnsafeMutableBufferPointer { buf -> GhosttyResult in
                 var gb = GhosttyBuffer(ptr: buf.baseAddress, cap: buf.count, len: 0)
                 let r = ghostty_render_state_row_cells_get(
                     cells,
@@ -230,10 +270,10 @@ extension TerminalRenderer {
             }
             if result == GHOSTTY_SUCCESS {
                 if written <= 0 { return nil }
-                return String(bytes: storage.prefix(written), encoding: .utf8)
+                return String(bytes: utf8Scratch.prefix(written), encoding: .utf8)
             }
             if result == GHOSTTY_OUT_OF_SPACE {
-                cap = max(needed, cap * 2, 1)
+                utf8Scratch = [UInt8](repeating: 0, count: max(needed, utf8Scratch.count * 2, 1))
                 continue
             }
             break
