@@ -19,6 +19,8 @@ struct CellMetrics {
     var fontBold: CTFont
     var fontItalic: CTFont
     var fontBoldItalic: CTFont
+    /// Nerd faces at this size (mono first). Built once in `measure`.
+    var nerdFaces: [CTFont]
     /// Ascent in points.
     var ascent: CGFloat
     /// Underline stroke thickness in device pixels (CT / Ghostty-style).
@@ -102,6 +104,7 @@ struct CellMetrics {
             fontBold: bold,
             fontItalic: italic,
             fontBoldItalic: boldItalic,
+            nerdFaces: EmbeddedFonts.nerdFaces(size: pxSize),
             ascent: ascent / s,
             underlineThicknessPx: ulThick,
             underlineTopPx: ulTop

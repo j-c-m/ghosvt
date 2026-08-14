@@ -484,7 +484,6 @@ extension TerminalRenderer {
         var runFace: CodepointCache.FaceKind?
         var runHash = ShaperCache.fnvOffset
         let breakSet = Set(highlightBreaks)
-        let nerdFaces = EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
         var featuredByStyle: [UInt8: CTFont] = [:]
 
         func featured(bold: Bool, italic: Bool) -> CTFont {
@@ -499,13 +498,14 @@ extension TerminalRenderer {
         }
 
         func faceKind(of c: TerminalRowCell) -> CodepointCache.FaceKind {
-            codepoints.faceKind(
+            if c.cp == 0 || (c.cp >= 0x20 && c.cp <= 0x7E) { return .primary }
+            return codepoints.faceKind(
                 cp: c.cp,
                 bold: c.bold,
                 italic: c.italic,
                 fontPx: layout.fontPx,
                 primary: featured(bold: c.bold, italic: c.italic),
-                nerdFaces: nerdFaces
+                nerdFaces: metrics.nerdFaces
             )
         }
 
@@ -629,7 +629,6 @@ extension TerminalRenderer {
 
         let font = metrics.font(bold: style.bold, italic: style.italic)
         let shapedFont = shaper.featuredFont(font, ligatures: fontLigatures)
-        let nerdFaces = EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
 
         // Ghostty: a run is one font index. Primary face is shaped; else cell-by-cell.
         if face == .primary {
@@ -646,7 +645,7 @@ extension TerminalRenderer {
             start: start, end: end, style: style, rowCells: rowCells,
             rowIndex: rowIndex, metrics: metrics, layout: layout,
             cellWInt: cellWInt, cellHInt: cellHInt, selected: selected,
-            primary: shapedFont, nerdFaces: nerdFaces
+            primary: shapedFont, nerdFaces: metrics.nerdFaces
         )
     }
 
@@ -874,7 +873,7 @@ extension TerminalRenderer {
     }
 
     func nerdFallbackFonts(metrics: CellMetrics) -> [CTFont] {
-        EmbeddedFonts.nerdFaces(size: CTFontGetSize(metrics.font))
+        metrics.nerdFaces
     }
 
     func paintWideOrFallback(
