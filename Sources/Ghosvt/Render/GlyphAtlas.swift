@@ -19,7 +19,7 @@ final class GlyphAtlas {
     struct GlyphKey: Hashable {
         let glyph: UInt16
         /// Distinguishes JetBrains vs Nerd (glyph IDs are per-face).
-        let fontName: String
+        let fontID: ObjectIdentifier
         let bold: Bool
         let italic: Bool
         let cellH: Int
@@ -275,9 +275,9 @@ final class GlyphAtlas {
         let cellH = max(1, cellHeightPx)
         let cellW = max(1, cellWidthPx)
         let baseline = max(0, min(cellBaselinePx, cellH))
-        let fontName = (CTFontCopyPostScriptName(font) as String?) ?? "unknown"
         let key = GlyphKey(
-            glyph: glyph, fontName: fontName, bold: bold, italic: italic,
+            glyph: glyph, fontID: ObjectIdentifier(font as AnyObject),
+            bold: bold, italic: italic,
             cellH: cellH, cellBaseline: baseline, fontPx: fontPx,
             cellW: cellW, faceWMilli: Int((faceWidthPx * 1000).rounded())
         )
