@@ -92,6 +92,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var linkHover: TerminalRenderer.LinkHoverRange?
     /// Last cell used for link-hover resolve (skip full scan while stationary).
     private var lastLinkHoverCell: (col: Int, row: Int)?
+    /// Mouse-moved is added only while ⌘ is down (link hover).
     private var trackingArea: NSTrackingArea?
 
     /// Centered terminal-style quit panel (⌘Q / menu Quit).
@@ -400,12 +401,15 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if let trackingArea {
             removeTrackingArea(trackingArea)
         }
-        let opts: NSTrackingArea.Options = [
+        var opts: NSTrackingArea.Options = [
             .activeInKeyWindow,
-            .mouseMoved,
+            .mouseEnteredAndExited,
             .inVisibleRect,
             .enabledDuringMouseDrag,
         ]
+        if NSEvent.modifierFlags.contains(.command) {
+            opts.insert(.mouseMoved)
+        }
         let area = NSTrackingArea(rect: bounds, options: opts, owner: self, userInfo: nil)
         addTrackingArea(area)
         trackingArea = area
@@ -2710,8 +2714,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func flagsChanged(with event: NSEvent) {
-        // ⌘ up/down: refresh or clear link hover underline.
-        if event.modifierFlags.contains(.command) {
+        // ⌘ up/down: subscribe to mouseMoved only while held; refresh hover.
+        let cmd = event.modifierFlags.contains(.command)
+        updateTrackingAreas()
+        if cmd {
             updateLinkHover(with: event)
         } else {
             clearLinkHover()
