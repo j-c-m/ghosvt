@@ -92,8 +92,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     private var linkHover: TerminalRenderer.LinkHoverRange?
     /// Last cell used for link-hover resolve (skip full scan while stationary).
     private var lastLinkHoverCell: (col: Int, row: Int)?
-    /// Mouse-moved is added only while ⌘ is down (link hover).
+    /// Installed only while ⌘ (link hover) or the VT wants mouse motion.
     private var trackingArea: NSTrackingArea?
+    /// Last VT mouse-tracking flag used to decide whether a tracking area exists.
+    private var lastVtMouseTracking = false
 
     /// Centered terminal-style quit panel (⌘Q / menu Quit).
     private(set) var isQuitConfirmOpen = false
@@ -400,16 +402,20 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         super.updateTrackingAreas()
         if let trackingArea {
             removeTrackingArea(trackingArea)
+            self.trackingArea = nil
         }
-        var opts: NSTrackingArea.Options = [
+        let vtTracking = manager?.active.isMouseTracking() ?? false
+        lastVtMouseTracking = vtTracking
+        // A full-view area makes AppKit walk _NSTrackingAreaAKManager on every
+        // mouse packet. Idle getty does not need that.
+        guard NSEvent.modifierFlags.contains(.command) || vtTracking else { return }
+        let opts: NSTrackingArea.Options = [
             .activeInKeyWindow,
             .mouseEnteredAndExited,
+            .mouseMoved,
             .inVisibleRect,
             .enabledDuringMouseDrag,
         ]
-        if NSEvent.modifierFlags.contains(.command) {
-            opts.insert(.mouseMoved)
-        }
         let area = NSTrackingArea(rect: bounds, options: opts, owner: self, userInfo: nil)
         addTrackingArea(area)
         trackingArea = area
@@ -661,6 +667,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         // Drain PTY for all VTs so buffers don't block; skip scroll/indicator
         // work on the VT that is covered by the browser (sleep that surface).
         manager.pollAllIO()
+        let vtTracking = manager.active.isMouseTracking()
+        if vtTracking != lastVtMouseTracking {
+            updateTrackingAreas()
+        }
 
         let now = CACurrentMediaTime()
         let dt = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
