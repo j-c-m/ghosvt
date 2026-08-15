@@ -345,6 +345,7 @@ final class BrowserChrome: NSObject {
         }
 
         let browser = makeBrowserTabView(onVT: index)
+        browser.pageZoom = view.pageZoomScale
         view.addSubview(browser)
         session.tabs.append(browser)
         let tabIndex = session.tabs.count - 1
@@ -623,6 +624,22 @@ final class BrowserChrome: NSObject {
         let vis = max(0, col - bar.urlStart)
         // Use the layout's painted window, not chrome.visibleStart (may change mid-click).
         return min(chrome.address.count, max(0, bar.visibleStart + vis))
+    }
+
+    func applyPageZoom(_ zoom: CGFloat) {
+        for (i, slot) in view.overlays.enumerated() {
+            guard let session = slot.session else { continue }
+            for tab in session.tabs {
+                tab.pageZoom = zoom
+                if #available(macOS 15.4, *) {
+                    BrowserExtensionHost.shared.tabPropertiesChanged(
+                        browser: tab,
+                        vtIndex: i,
+                        [.zoomFactor]
+                    )
+                }
+            }
+        }
     }
 
     func hideAllBrowserViews() {

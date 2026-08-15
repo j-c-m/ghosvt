@@ -1411,12 +1411,20 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         applyFontSize(base)
     }
 
+    /// Page zoom matches runtime font zoom (`fontSize /` pre-zoom size).
+    var pageZoomScale: CGFloat {
+        let base = originalFontSize ?? config.fontSize
+        guard base > 0.001 else { return 1 }
+        return max(0.25, min(5, config.fontSize / base))
+    }
+
     private func applyFontSize(_ points: CGFloat) {
         let next = min(255, max(1, points))
         guard abs(next - config.fontSize) > 0.001 else { return }
         config.fontSize = next
         refreshMetrics(force: true)
         applyResize()
+        chrome.applyPageZoom(pageZoomScale)
         if activeBrowser != nil {
             layoutActiveBrowser()
         }

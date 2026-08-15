@@ -27,6 +27,17 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     /// Underlying page view (extension tab bridge, first-responder checks).
     var pageWebView: WKWebView { webView }
 
+    /// Page scale (1 = 100%). Kept across WKWebView swaps.
+    var pageZoom: CGFloat = 1 {
+        didSet {
+            let z = max(0.25, min(5, pageZoom))
+            if abs(z - pageZoom) > 0.0001 { pageZoom = z; return }
+            if abs(webView.pageZoom - z) > 0.0001 {
+                webView.pageZoom = z
+            }
+        }
+    }
+
     var canGoBack: Bool { webView.canGoBack }
     var canGoForward: Bool { webView.canGoForward }
     var currentURLString: String { webView.url?.absoluteString ?? "" }
@@ -283,6 +294,7 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         }
         addSubview(webView)
         webView.frame = bounds
+        webView.pageZoom = pageZoom
 
         titleObservation = webView.observe(\.title, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.onNavigationStateChange?() }
