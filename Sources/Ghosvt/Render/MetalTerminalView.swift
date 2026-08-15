@@ -112,8 +112,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     #endif
     /// True while `draw(_:)` is on the stack; `requestFrame` must not recurse.
     private var inDraw = false
-    /// Coalesce browser-chrome presents off the key-monitor stack.
-    private var chromeFramePending = false
+    /// One pending present; extra `requestFrame` calls collapse.
+    private var framePending = false
 
     // Scrollback search (⌘F): per-VT state; steals one row while that VT is active.
     private struct VTSearchState {
@@ -551,15 +551,27 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         requestFrame()
     }
 
-    /// Coalesced present. Idle frames do not acquire a drawable.
-    /// On main, draw this turn (Ghostty wakeup → draw now). Do not wait for MTKView vsync.
+    /// Ask for a present. Safe to call from any thread, the key monitor, or `draw`.
+    /// Extra calls in the same turn become one frame after the current stack returns.
     nonisolated func requestFrame() {
         if Thread.isMainThread {
-            MainActor.assumeIsolated { self.flushFrameRequest() }
+            MainActor.assumeIsolated { self.scheduleFrame() }
             return
         }
         DispatchQueue.main.async { [weak self] in
-            self?.flushFrameRequest()
+            self?.scheduleFrame()
+        }
+    }
+
+    private func scheduleFrame() {
+        guard !screensAsleep else { return }
+        needsDisplay = true
+        guard !framePending else { return }
+        framePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.framePending = false
+            self.flushFrameRequest()
         }
     }
 
@@ -568,18 +580,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         needsDisplay = true
         guard !inDraw else { return }
         draw()
-    }
-
-    /// Present chrome on the next turn. Do not draw from a local key monitor —
-    /// a sync `requestFrame` there races WebView layout and first responder.
-    private func requestChromeFrame() {
-        guard !chromeFramePending else { return }
-        chromeFramePending = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.chromeFramePending = false
-            self.requestFrame()
-        }
     }
 
     private func bindSessionRedraws() {
@@ -1081,7 +1081,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let deltaRows = Double(dy) / Double(max(metrics.cellHeight, 1))
         if session.encodeAlternateScroll(deltaRows: deltaRows) { return }
         session.applyScrollImpulse(deltaRows: deltaRows)
-        requestFrame()
     }
 
     // MARK: - Selection / mouse
@@ -1216,6 +1215,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        requestFrame()
         noteMouseUp(event)
         if activeBrowser != nil {
             if browserAddressDragging {
@@ -1240,6 +1240,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        requestFrame()
         if activeBrowser != nil {
             // No link hover / PTY mouse while browser owns the VT.
             return
@@ -1258,6 +1259,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        requestFrame()
         noteMouseDown(event)
         if activeBrowser != nil { return }
         if let manager, manager.active.isMouseTracking(), !shouldHostSelect(event) {
@@ -1268,6 +1270,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func rightMouseUp(with event: NSEvent) {
+        requestFrame()
         noteMouseUp(event)
         if activeBrowser != nil { return }
         if let manager, manager.active.isMouseTracking() {
@@ -1278,6 +1281,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func rightMouseDragged(with event: NSEvent) {
+        requestFrame()
         if activeBrowser != nil { return }
         if let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_RIGHT)
@@ -1295,6 +1299,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func otherMouseDown(with event: NSEvent) {
+        requestFrame()
         noteMouseDown(event)
         if activeBrowser != nil { return }
         // Middle button: app when tracking, else paste.
@@ -1312,6 +1317,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        requestFrame()
         noteMouseUp(event)
         if activeBrowser != nil { return }
         if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
@@ -1322,6 +1328,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func otherMouseDragged(with event: NSEvent) {
+        requestFrame()
         if activeBrowser != nil { return }
         if event.buttonNumber == 2, let manager, manager.active.isMouseTracking() {
             sendAppMouse(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: GHOSTTY_MOUSE_BUTTON_MIDDLE)
@@ -1345,6 +1352,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// One priority list for every key-down entry. Performs host side effects.
     @discardableResult
     func routeKey(_ event: NSEvent) -> KeyDisposition {
+        requestFrame()
         guard event.type == .keyDown else { return .toMenu }
         if handleQuitConfirmKey(event) { return .consumed }
 
@@ -1406,10 +1414,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard let manager else { return }
         if manager.active.selectionActive {
             manager.active.clearSelection()
-            requestFrame()
         }
         KeyBridge.handleKeyDown(event, session: manager.active)
-        requestFrame()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -2057,7 +2063,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             }
         }
         layoutActiveBrowser()
-        requestChromeFrame()
+        requestFrame()
     }
 
     private func endBrowserAddressEdit(focusWeb: Bool) {
@@ -2068,7 +2074,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if focusWeb {
             activeBrowser?.focusWebContent()
         }
-        requestChromeFrame()
     }
 
     /// Active WebView sits under stolen chrome rows (address + optional tab strip).
@@ -2133,7 +2138,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         browserAddressDragging = false
         window?.makeFirstResponder(self)
         installBrowserPageClickMonitor()
-        requestChromeFrame()
     }
 
     /// Absolute address index under a full-grid column in the URL segment.
@@ -2210,7 +2214,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         for i in items.count..<extensionActionButtons.count {
             extensionActionButtons[i].isHidden = true
         }
-        requestChromeFrame()
+        requestFrame()
     }
 
     /// Reposition existing buttons only (paint path / layout).
@@ -2346,7 +2350,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 c.caret = c.address.count
             }
         }
-        requestChromeFrame()
     }
 
     @discardableResult
@@ -2504,7 +2507,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     @discardableResult
     func handleBrowserKeys(_ event: NSEvent) -> Bool {
         let handled = handleBrowserKeyEvent(event)
-        if handled { requestChromeFrame() }
         return handled
     }
 
@@ -2763,7 +2765,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         session.findOpen = true
         layoutActiveBrowser()
         window?.makeFirstResponder(self)
-        requestChromeFrame()
         if !session.findNeedle.isEmpty {
             runBrowserFind()
         }
@@ -2773,7 +2774,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard let session = activeBrowserSession, session.findOpen else { return }
         session.findOpen = false
         layoutActiveBrowser()
-        requestChromeFrame()
         activeBrowser?.focusWebContent()
     }
 
@@ -2785,7 +2785,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             DispatchQueue.main.async {
                 guard let self, let session = self.activeBrowserSession else { return }
                 session.findHasMatch = found
-                self.requestChromeFrame()
+                self.requestFrame()
             }
         }
     }
@@ -2917,7 +2917,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     func handleScrollPage(_ event: NSEvent, manager: VtManager) -> Bool {
         guard let dir = KeyBridge.scrollPageDirection(from: event) else { return false }
         manager.active.scrollPageSmooth(direction: dir, isRepeat: event.isARepeat)
-        requestFrame()
         return true
     }
 
@@ -2926,17 +2925,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     func handleTerminalChords(_ event: NSEvent, manager: VtManager) -> Bool {
         if let dir = KeyBridge.scrollExtremeDirection(from: event) {
             manager.active.scrollExtremeSmooth(direction: dir, isRepeat: event.isARepeat)
-            requestFrame()
             return true
         }
         if KeyBridge.isSelectAll(event) {
             _ = manager.active.selectAll()
-            requestFrame()
             return true
         }
         if KeyBridge.isClearScreen(event) {
             guard manager.active.clearScreen() else { return false }
-            requestFrame()
             return true
         }
         if let bytes = KeyBridge.lineEditBytes(from: event) {
@@ -2944,7 +2940,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             if manager.active.scrollToBottomKeystroke {
                 manager.active.scrollViewportToBottom(isRepeat: event.isARepeat)
             }
-            requestFrame()
             return true
         }
         return false
@@ -3015,6 +3010,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        requestFrame()
         // ⌘ up/down: subscribe to mouseMoved only while held; refresh hover.
         let cmd = event.modifierFlags.contains(.command)
         updateTrackingAreas()
@@ -3129,7 +3125,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         quitConfirmCompletion = nil
         // Drop packed GPU instances so the next frame cannot re-present the panel.
         renderer?.invalidatePackedInstances()
-        requestFrame()
         done?(confirmed)
     }
 
@@ -3263,7 +3258,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     private func scheduleSearch() {
-        requestFrame()
         searchDebounce?.cancel()
         let needle = searchNeedle
         let work = DispatchWorkItem { [weak self] in
@@ -3320,7 +3314,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             searchIndex = (searchIndex + 1) % searchMatches.count
         }
         applyCurrentMatch()
-        requestFrame()
     }
 
     private func applyCurrentMatch() {
