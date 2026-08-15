@@ -48,6 +48,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         var showsTabStrip: Bool { tabs.count > 1 }
         var stolenChromeRows: Int { showsTabStrip ? 2 : 1 }
+        var findOpen = false
+        var findNeedle = ""
+        var findHasMatch = true
     }
 
     /// Per-VT address bar / nav chrome (mirrors `searchByVT`).
@@ -109,6 +112,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     #endif
     /// True while `draw(_:)` is on the stack; `requestFrame` must not recurse.
     private var inDraw = false
+    /// Coalesce browser-chrome presents off the key-monitor stack.
+    private var chromeFramePending = false
 
     // Scrollback search (⌘F): per-VT state; steals one row while that VT is active.
     private struct VTSearchState {
@@ -189,6 +194,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
     /// True while the active VT has an embedded browser (PTY input suspended).
     var isBrowserActive: Bool { activeBrowser != nil }
+
+    /// True while the stolen address bar is focused for typing.
+    var isBrowserFindOpen: Bool { activeBrowserSession?.findOpen == true }
 
     /// True while the stolen address bar is focused for typing.
     var isBrowserAddressEditing: Bool {
@@ -382,7 +390,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// Browser open + address idle → WebView; address editing → metal; else metal (PTY).
     private func restorePreferredFirstResponder() {
         if isBrowserActive {
-            if isBrowserAddressEditing {
+            if isBrowserAddressEditing || isBrowserFindOpen {
                 window?.makeFirstResponder(self)
             } else {
                 activeBrowser?.focusWebContent()
@@ -395,10 +403,11 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         // Something focused metal while the page should own keys — bounce to WebView.
-        // Skip when address bar is editing (metal is intentional first responder).
-        if ok, isBrowserActive, !isBrowserAddressEditing {
+        // Skip when address bar or find HUD is using metal as first responder.
+        if ok, isBrowserActive, !isBrowserAddressEditing, !isBrowserFindOpen {
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.isBrowserActive, !self.isBrowserAddressEditing else { return }
+                guard let self, self.isBrowserActive,
+                      !self.isBrowserAddressEditing, !self.isBrowserFindOpen else { return }
                 guard self.window?.firstResponder === self else { return }
                 self.activeBrowser?.focusWebContent()
             }
@@ -559,6 +568,18 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         needsDisplay = true
         guard !inDraw else { return }
         draw()
+    }
+
+    /// Present chrome on the next turn. Do not draw from a local key monitor —
+    /// a sync `requestFrame` there races WebView layout and first responder.
+    private func requestChromeFrame() {
+        guard !chromeFramePending else { return }
+        chromeFramePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.chromeFramePending = false
+            self.requestFrame()
+        }
     }
 
     private func bindSessionRedraws() {
@@ -756,11 +777,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             let letterboxBg = DefaultColors.background
             let editing = isBrowserAddressEditing
             let caretOn: Bool
-            if editing, let rs = manager.active.renderState {
+            if editing || isBrowserFindOpen, let rs = manager.active.renderState {
                 caretOn = renderer.cursorBlinkOn(renderState: rs)
             } else {
-                caretOn = editing
+                caretOn = editing || isBrowserFindOpen
             }
+            let findHUD = isBrowserFindOpen ? browserFindHUDLayout(cols: cols) : nil
             renderer.presentBrowserChrome(
                 drawable: drawable,
                 renderPassDescriptor: rpd,
@@ -771,7 +793,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 cols: cols,
                 line: bar.line,
                 caretCol: bar.caretCol,
-                showCaret: caretOn && !bar.hasSelection,
+                showCaret: editing && caretOn && !bar.hasSelection,
                 letterboxBg: letterboxBg,
                 defFg: defFg,
                 defBg: defBg,
@@ -780,6 +802,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 tabStripLine: strip?.line,
                 tabActiveStartCol: strip?.activeStart ?? -1,
                 tabActiveEndCol: strip?.activeEnd ?? -1,
+                findLine: findHUD?.line,
+                findCaretCol: findHUD?.caretCol ?? 0,
+                findShowCaret: isBrowserFindOpen && caretOn,
                 quitConfirm: isQuitConfirmOpen,
                 quitLayoutRows: max(1, Int(lastRows))
             )
@@ -1325,10 +1350,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = flags.contains(.command)
-        if command, event.charactersIgnoringModifiers?.lowercased() == "q" {
-            NSApp.terminate(nil)
-            return .consumed
-        }
 
         if isBrowserActive {
             if command {
@@ -1341,9 +1362,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 return .toWebView
             }
             if handleBrowserKeys(event) { return .consumed }
-            if isBrowserAddressEditing { return .consumed }
+            if isBrowserAddressEditing || isBrowserFindOpen { return .consumed }
             if handleBrowserPageScrollKeys(event) { return .consumed }
             return .toWebView
+        }
+
+        if command, event.charactersIgnoringModifiers?.lowercased() == "q" {
+            NSApp.terminate(nil)
+            return .consumed
         }
 
         if handleBrowserKeys(event) { return .consumed }
@@ -1429,7 +1455,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             runSearch(needle: searchNeedle, selectFirst: false)
         }
         showBrowserForActiveVT()
-        if let browser = activeBrowser {
+        if isBrowserAddressEditing || isBrowserFindOpen {
+            window?.makeFirstResponder(self)
+        } else if let browser = activeBrowser {
             browser.focusWebContent()
         } else {
             window?.makeFirstResponder(self)
@@ -1618,7 +1646,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let closeCol = cols - 1
         // After ← →, then one cell per extension action, then URL.
         // Layout: 0=←  2=→  4..=actions  then URL … close.
-        let actionCount = min(extensionActionSlotCount(), max(0, closeCol - 5))
+        // Keep a URL band so action icons cannot eat the type-in cells.
+        let minUrlCols = 16
+        let maxActions = max(0, closeCol - 4 - 1 - minUrlCols)
+        let actionCount = min(extensionActionSlotCount(), maxActions)
         var actionCols: [Int] = []
         if actionCount > 0 {
             for i in 0..<actionCount {
@@ -2017,7 +2048,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             }
         }
         if active < browserChromeByVT.count {
-            browserChromeByVT[active].editing = false
             if let b = browserSessionByVT[active]?.activeBrowser {
                 if browserChromeByVT[active].address.isEmpty {
                     browserChromeByVT[active].address = b.currentURLString
@@ -2027,6 +2057,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             }
         }
         layoutActiveBrowser()
+        requestChromeFrame()
     }
 
     private func endBrowserAddressEdit(focusWeb: Bool) {
@@ -2037,6 +2068,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if focusWeb {
             activeBrowser?.focusWebContent()
         }
+        requestChromeFrame()
     }
 
     /// Active WebView sits under stolen chrome rows (address + optional tab strip).
@@ -2052,6 +2084,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         r.size.height = max(0, r.size.height - steal)
         r.origin.x += pad
         r.size.width = max(0, r.size.width - 2 * pad)
+        // Find HUD is the last full-grid row, not flush with the view bottom
+        // (pad + leftover sit below it). Sit the WebView on that row's top.
+        if session.findOpen, let full = fullGridSize(),
+           let findRow = fullGridCellFrame(col: 0, row: Int(full.rows) - 1) {
+            let top = r.maxY
+            r.origin.y = findRow.maxY
+            r.size.height = max(0, top - r.origin.y)
+        }
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         r = ContentLayout.pixelAlign(r, scale: scale)
         for (i, browser) in session.tabs.enumerated() {
@@ -2065,12 +2105,16 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 || abs(browser.frame.size.height - r.size.height) > eps {
                 browser.frame = r
             }
-            browser.autoresizingMask = [.width, .height]
+            browser.autoresizingMask = session.findOpen ? [.width] : [.width, .height]
         }
     }
 
     private func beginBrowserAddressEdit(selectAll: Bool = false) {
         guard activeBrowser != nil else { return }
+        if let session = activeBrowserSession, session.findOpen {
+            session.findOpen = false
+            layoutActiveBrowser()
+        }
         updateActiveBrowserChrome { chrome in
             let wasEditing = chrome.editing
             chrome.editing = true
@@ -2089,6 +2133,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         browserAddressDragging = false
         window?.makeFirstResponder(self)
         installBrowserPageClickMonitor()
+        requestChromeFrame()
     }
 
     /// Absolute address index under a full-grid column in the URL segment.
@@ -2165,6 +2210,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         for i in items.count..<extensionActionButtons.count {
             extensionActionButtons[i].isHidden = true
         }
+        requestChromeFrame()
     }
 
     /// Reposition existing buttons only (paint path / layout).
@@ -2197,6 +2243,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             btn.focusRingType = .none
             btn.wantsLayer = true
             btn.layer?.backgroundColor = NSColor.clear.cgColor
+            btn.layer?.masksToBounds = true
             btn.target = self
             btn.action = #selector(extensionActionButtonClicked(_:))
             addSubview(btn)
@@ -2299,6 +2346,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 c.caret = c.address.count
             }
         }
+        requestChromeFrame()
     }
 
     @discardableResult
@@ -2328,6 +2376,19 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                     return true
                 }
             }
+            return true
+        }
+        if isBrowserFindOpen, let full = fullGridSize(), cell.row == Int(full.rows) - 1 {
+            let find = browserFindHUDLayout(cols: Int(lastCols))
+            if cell.col == find.upCol {
+                runBrowserFind(backwards: false)
+                return true
+            }
+            if cell.col == find.downCol {
+                runBrowserFind(backwards: true)
+                return true
+            }
+            window?.makeFirstResponder(self)
             return true
         }
         // Address bar is full-grid row 0 when browser is open.
@@ -2394,6 +2455,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         static let w: UInt16 = 0x0D
         static let r: UInt16 = 0x0F
         static let l: UInt16 = 0x25
+        static let f: UInt16 = 0x03
+        static let q: UInt16 = 0x0C
         static let leftBracket: UInt16 = 0x21
         static let rightBracket: UInt16 = 0x1E
         static let leftArrow: UInt16 = 0x7B
@@ -2440,6 +2503,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// ⌘W / ⌘T / address typing while a browser is active on this VT.
     @discardableResult
     func handleBrowserKeys(_ event: NSEvent) -> Bool {
+        let handled = handleBrowserKeyEvent(event)
+        if handled { requestChromeFrame() }
+        return handled
+    }
+
+    private func handleBrowserKeyEvent(_ event: NSEvent) -> Bool {
         // ⌘B works even before a browser exists on this VT.
         if handleOpenBrowserChord(event) { return true }
         // ⌘T: new tab (opens browser if needed).
@@ -2462,19 +2531,33 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             return true
         }
         if event.keyCode == 53 { // Escape
+            if isBrowserFindOpen {
+                closeBrowserFind()
+                return true
+            }
             if editing {
                 endBrowserAddressEdit(focusWeb: true)
                 return true
             }
             return false
         }
-        if isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
-            // Close active tab; last tab dismisses the session.
-            if let session = browserSessionByVT[i] {
-                closeBrowserTab(onVT: i, tabIndex: session.activeTabIndex)
-            } else {
-                dismissBrowser(onVT: i)
+        if isCommandChord(event, keyCode: BrowserKeyCode.q, char: "q")
+            || isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
+            dismissBrowser(onVT: i)
+            return true
+        }
+        if isCommandChord(event, keyCode: BrowserKeyCode.f, char: "f") {
+            toggleBrowserFind()
+            return true
+        }
+        if let forward = KeyBridge.searchNavigateForward(from: event) {
+            if isBrowserFindOpen {
+                runBrowserFind(backwards: !forward)
+                return true
             }
+            return false
+        }
+        if isBrowserFindOpen, handleBrowserFindTyping(event) {
             return true
         }
         // ⌘⌥← / ⌘⌥→ cycle tabs.
@@ -2640,6 +2723,112 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 insertIntoBrowserAddress(String(filtered))
             }
             return true
+        }
+        return true
+    }
+
+    private func browserFindHUDLayout(cols: Int) -> SearchHUDLayout {
+        let needle = activeBrowserSession?.findNeedle ?? ""
+        let hasMatch = activeBrowserSession?.findHasMatch ?? true
+        guard cols > 0 else {
+            return SearchHUDLayout(line: "/", caretCol: 1, upCol: -1, downCol: -1)
+        }
+        let status = (!needle.isEmpty && !hasMatch) ? "0" : ""
+        let nav = "↑ ↓"
+        let right = status.isEmpty ? (" " + nav) : (" " + status + " " + nav)
+        let rightCols = terminalCellCols(right)
+        let leftBudget = max(1, cols - rightCols)
+        let slashCols = terminalCellCols("/")
+        let needleBudget = max(0, leftBudget - slashCols)
+        let shown = prefixFittingCellCols(needle, maxCols: needleBudget)
+        let left = "/" + shown
+        var cells = Array(repeating: " ", count: cols)
+        placeCellString(left, at: 0, into: &cells)
+        placeCellString(right, at: max(0, cols - rightCols), into: &cells)
+        return SearchHUDLayout(
+            line: cells.joined(),
+            caretCol: min(terminalCellCols(left), cols - 1),
+            upCol: cols >= 3 ? cols - 3 : -1,
+            downCol: cols >= 1 ? cols - 1 : -1
+        )
+    }
+
+    private func toggleBrowserFind() {
+        guard let session = activeBrowserSession else { return }
+        if session.findOpen {
+            closeBrowserFind()
+            return
+        }
+        endBrowserAddressEdit(focusWeb: false)
+        session.findOpen = true
+        layoutActiveBrowser()
+        window?.makeFirstResponder(self)
+        requestChromeFrame()
+        if !session.findNeedle.isEmpty {
+            runBrowserFind()
+        }
+    }
+
+    private func closeBrowserFind() {
+        guard let session = activeBrowserSession, session.findOpen else { return }
+        session.findOpen = false
+        layoutActiveBrowser()
+        requestChromeFrame()
+        activeBrowser?.focusWebContent()
+    }
+
+    private func runBrowserFind(backwards: Bool = false) {
+        guard let session = activeBrowserSession else { return }
+        let needle = session.findNeedle
+        guard !needle.isEmpty else { return }
+        activeBrowser?.findInPage(needle, backwards: backwards) { [weak self] found in
+            DispatchQueue.main.async {
+                guard let self, let session = self.activeBrowserSession else { return }
+                session.findHasMatch = found
+                self.requestChromeFrame()
+            }
+        }
+    }
+
+    @discardableResult
+    private func handleBrowserFindTyping(_ event: NSEvent) -> Bool {
+        guard let session = activeBrowserSession, session.findOpen else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) || flags.contains(.control) {
+            return false
+        }
+        switch event.keyCode {
+        case 36, 76:
+            runBrowserFind(backwards: flags.contains(.shift))
+            return true
+        case 51, 117:
+            if !session.findNeedle.isEmpty {
+                session.findNeedle.removeLast()
+                runBrowserFind()
+            }
+            return true
+        case 126:
+            runBrowserFind(backwards: false)
+            return true
+        case 125:
+            runBrowserFind(backwards: true)
+            return true
+        default:
+            break
+        }
+        if let chars = event.characters {
+            var changed = false
+            for ch in chars {
+                let v = ch.unicodeScalars.first?.value ?? 0
+                if v >= 0x20, v != 0x7F, !(v >= 0xF700 && v <= 0xF8FF) {
+                    session.findNeedle.append(ch)
+                    changed = true
+                }
+            }
+            if changed {
+                runBrowserFind()
+                return true
+            }
         }
         return true
     }

@@ -843,8 +843,12 @@ final class TerminalRenderer {
         tabStripLine: String? = nil,
         tabActiveStartCol: Int = -1,
         tabActiveEndCol: Int = -1,
+        /// Bottom stolen find row (`/needle`); nil → no find HUD.
+        findLine: String? = nil,
+        findCaretCol: Int = 0,
+        findShowCaret: Bool = false,
         quitConfirm: Bool = false,
-        /// Full shell grid for centering the quit panel (chrome layout is 1–2 rows).
+        /// Full content grid rows (top chrome + page + optional find).
         quitLayoutRows: Int = 24
     ) {
         let pw = Float(drawableSize.width)
@@ -873,6 +877,23 @@ final class TerminalRenderer {
             fontPx: metrics.fontPx
         )
         var instances: [CellInstance] = []
+        // Opaque strip over the full content width (including pad) so the last
+        // VT frame cannot show through the stolen rows.
+        let fill = CellPaintColors.RGB(defBg)
+        let lifted = CellPaintColors.RGB(
+            r: min(1, fill.r + 0.08),
+            g: min(1, fill.g + 0.08),
+            b: min(1, fill.b + 0.08)
+        )
+        instances.append(.make(
+            originX: layout.originX,
+            originY: layout.originY,
+            width: Float(contentRect.width.rounded(.toNearestOrAwayFromZero)),
+            height: layout.padPx + layout.cellH * Float(chromeRows),
+            u0: 0, v0: 0, u1: 0, v1: 0,
+            fr: lifted.r, fg: lifted.g, fb: lifted.b, fa: 1,
+            br: lifted.r, bg: lifted.g, bb: lifted.b, ba: 1
+        ))
         appendSearchHUD(
             to: &instances,
             line: line,
@@ -907,6 +928,44 @@ final class TerminalRenderer {
                 selStartCol: tabActiveStartCol,
                 selEndCol: tabActiveEndCol,
                 topRowIndex: 1
+            )
+        }
+        if let findLine {
+            let fullRows = max(chromeRows + 1, quitLayoutRows)
+            let findLayout = LayoutKey(
+                originX: layout.originX,
+                originY: layout.originY,
+                cellW: layout.cellW,
+                cellH: layout.cellH,
+                padPx: layout.padPx,
+                cols: cols,
+                rows: max(1, fullRows - 1),
+                fontPx: layout.fontPx
+            )
+            let findY = findLayout.originY + findLayout.padPx
+                + Float(findLayout.rows) * findLayout.cellH
+            instances.append(.make(
+                originX: findLayout.originX,
+                originY: findY,
+                width: Float(contentRect.width.rounded(.toNearestOrAwayFromZero)),
+                height: findLayout.cellH,
+                u0: 0, v0: 0, u1: 0, v1: 0,
+                fr: lifted.r, fg: lifted.g, fb: lifted.b, fa: 1,
+                br: lifted.r, bg: lifted.g, bb: lifted.b, ba: 1
+            ))
+            appendSearchHUD(
+                to: &instances,
+                line: findLine,
+                caretCol: findCaretCol,
+                showCaret: findShowCaret,
+                atTop: false,
+                metrics: metrics,
+                layout: findLayout,
+                cellWInt: cellWInt,
+                cellHInt: cellHInt,
+                defFg: defFg,
+                defBg: defBg,
+                caretStyle: .themeBlock
             )
         }
         if quitConfirm {

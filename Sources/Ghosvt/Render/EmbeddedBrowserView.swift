@@ -134,6 +134,22 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         return NSApp.sendAction(action, to: webView, from: self)
     }
 
+    /// Select the next (or previous) match. WKWebView has no find bar on macOS.
+    func findInPage(_ string: String, backwards: Bool = false, completion: ((Bool) -> Void)? = nil) {
+        let needle = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else {
+            completion?(false)
+            return
+        }
+        let config = WKFindConfiguration()
+        config.backwards = backwards
+        config.wraps = true
+        config.caseSensitive = false
+        webView.find(needle, configuration: config) { result in
+            completion?(result.matchFound)
+        }
+    }
+
     /// Page Up / Page Down (and ⌘ variants) for document scroll.
     @discardableResult
     func performPageScrollKey(_ event: NSEvent) -> Bool {
