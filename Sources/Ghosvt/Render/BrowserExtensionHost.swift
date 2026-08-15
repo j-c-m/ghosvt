@@ -9,12 +9,10 @@ import CryptoKit
 /// unpacked directories with root `manifest.json` (`resourceBaseURL`).
 /// Base scheme: `safari-web-extension://`.
 ///
-/// **Load policy:** pinned remote packages on first browser open (not app launch).
-/// Safari `/Applications` autoload is off (native-dependent apps like Bitwarden).
+/// **Load policy:** `web-extension` pins from ghosvt config, on first browser open
+/// (not app launch). Safari `/Applications` autoload is off.
 /// Firefox-flavored pins may spoof a desktop Firefox UA; Safari pins stay honest.
 /// `nativeMessaging` is never granted.
-///
-/// TODO: drive `pinnedRemotePackages` from ghosvt config instead of hardcoding.
 @available(macOS 15.4, *)
 final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     static let shared = BrowserExtensionHost()
@@ -23,27 +21,16 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     /// When true, also load Safari web-extension appexes from `/Applications`.
     private static let loadInstalledSafariExtensions = false
 
-    /// Remote zip/xpi pins fetched into Application Support on first browser open.
+    /// Remote zip/xpi pin fetched into Application Support on first browser open.
     private struct RemoteDirectoryPackage {
         var url: URL
         var dirName: String
-        /// Spoof desktop Firefox UA (needed for Bitwarden; not for Safari uBOL).
-        var spoofFirefoxUA: Bool
+        /// Nil = infer from the unpacked manifest (gecko vs safari).
+        var spoofFirefoxUA: Bool?
     }
 
-    // TODO: ghosvt config-driven pin list.
-    private static let pinnedRemotePackages: [RemoteDirectoryPackage] = [
-        RemoteDirectoryPackage(
-            url: URL(string: "https://github.com/bitwarden/clients/releases/download/browser-v2026.7.0/dist-firefox-2026.7.0.zip")!,
-            dirName: "bitwarden-firefox-2026.7.0",
-            spoofFirefoxUA: true
-        ),
-        RemoteDirectoryPackage(
-            url: URL(string: "https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.811.1529/uBOLite_2026.811.1529.safari.zip")!,
-            dirName: "ubolite-safari-2026.811.1529",
-            spoofFirefoxUA: false
-        ),
-    ]
+    /// Pins from config; captured on the first load call.
+    private var pendingPins: [RemoteDirectoryPackage] = []
 
     /// Desktop Firefox UA for packages with `spoofFirefoxUA` (Bitwarden).
     private static let firefoxExtensionUserAgent =
@@ -188,12 +175,38 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
 
     /// Discover and load extension packages. Idempotent; call when the embedded
     /// browser first opens (not at app launch). Storage is ghosvt-local.
-    func loadBundledExtensionsIfNeeded() {
+    func loadBundledExtensionsIfNeeded(pins: [Config.WebExtensionPin]) {
         guard !extensionLoadStarted else { return }
         extensionLoadStarted = true
+        pendingPins = Self.remotePackages(from: pins)
         DispatchQueue.main.async { [weak self] in
             self?.startExtensionLoadPipeline()
         }
+    }
+
+    private static func remotePackages(from pins: [Config.WebExtensionPin]) -> [RemoteDirectoryPackage] {
+        var taken = Set<String>()
+        var out: [RemoteDirectoryPackage] = []
+        out.reserveCapacity(pins.count)
+        for pin in pins {
+            let dir = cacheDirName(for: pin.url, taken: taken)
+            taken.insert(dir)
+            out.append(RemoteDirectoryPackage(
+                url: pin.url,
+                dirName: dir,
+                spoofFirefoxUA: pin.spoofFirefoxUA
+            ))
+        }
+        return out
+    }
+
+    private static func cacheDirName(for url: URL, taken: Set<String>) -> String {
+        var stem = url.deletingPathExtension().lastPathComponent
+        if stem.isEmpty { stem = "ext" }
+        if !taken.contains(stem) { return stem }
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        let hex = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        return "\(stem)-\(hex)"
     }
 
     private func startExtensionLoadPipeline() {
@@ -210,7 +223,8 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
                 discovered.append(contentsOf: safari)
             }
 
-            for pin in Self.pinnedRemotePackages {
+            let pins = self.pendingPins
+            for pin in pins {
                 do {
                     let pkg = try await Self.ensureRemoteDirectoryPackage(pin)
                     #if DEBUG

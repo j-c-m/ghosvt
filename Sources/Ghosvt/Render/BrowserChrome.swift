@@ -274,7 +274,7 @@ final class BrowserChrome: NSObject {
     /// Discover/load Safari web extensions on first browser open (not at app launch).
     func ensureBrowserExtensionsLoaded() {
         guard #available(macOS 15.4, *) else { return }
-        BrowserExtensionHost.shared.loadBundledExtensionsIfNeeded()
+        BrowserExtensionHost.shared.loadBundledExtensionsIfNeeded(pins: view.config.webExtensions)
     }
 
     func openBrowser(url: URL, onVT index: Int) {

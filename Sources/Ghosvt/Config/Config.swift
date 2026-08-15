@@ -44,6 +44,15 @@ struct Config: Sendable {
     var searchPosition: SearchPosition = .bottom
     /// When true, ⌘B / ⌘-click use the embedded WKWebView. When false, ⌘B is off and ⌘-click uses the system browser.
     var embeddedBrowser: Bool = true
+    /// Remote zip/xpi pins loaded on first browser open. Empty = no extensions.
+    var webExtensions: [WebExtensionPin] = []
+
+    /// One `web-extension =` line. `spoofFirefoxUA` nil means infer from the manifest.
+    struct WebExtensionPin: Sendable, Equatable {
+        var url: URL
+        var spoofFirefoxUA: Bool?
+        static let maxCount = 16
+    }
 
     static func configDirectoryURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -133,11 +142,36 @@ struct Config: Sendable {
                 }
             case "embedded-browser":
                 cfg.embeddedBrowser = parseBool(value)
+            case "web-extension":
+                if cfg.webExtensions.count < WebExtensionPin.maxCount,
+                   let pin = parseWebExtension(value) {
+                    cfg.webExtensions.append(pin)
+                }
             default:
                 break
             }
         }
         return cfg
+    }
+
+    /// `https://…/pkg.zip` plus optional `firefox-ua` / `safari-ua`.
+    private static func parseWebExtension(_ value: String) -> WebExtensionPin? {
+        let parts = value.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let raw = parts.first, let url = UntrustedURL(raw).embeddableHTTPURL else {
+            return nil
+        }
+        var spoof: Bool?
+        for token in parts.dropFirst() {
+            switch token.lowercased() {
+            case "firefox-ua", "firefox":
+                spoof = true
+            case "safari-ua", "safari":
+                spoof = false
+            default:
+                break
+            }
+        }
+        return WebExtensionPin(url: url, spoofFirefoxUA: spoof)
     }
 
     private static func parseBool(_ value: String) -> Bool {

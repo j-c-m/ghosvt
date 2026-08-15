@@ -111,6 +111,8 @@ copy-on-select = true
 font-ligatures = true
 search-position = bottom
 embedded-browser = true
+# web-extension = https://github.com/bitwarden/clients/releases/download/browser-v2026.7.0/dist-firefox-2026.7.0.zip
+# web-extension = https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.811.1529/uBOLite_2026.811.1529.safari.zip
 ```
 
 ### Options
@@ -130,11 +132,24 @@ embedded-browser = true
 | `font-ligatures` / `ligatures` | `true` | OpenType liga/calt on shaped runs |
 | `search-position` | `bottom` | Stolen search row: `top` or `bottom` |
 | `embedded-browser` | `true` | Embed via ⌘B / ⌘-click. When `false`: ⌘B off; ⌘-click opens the system browser |
+| `web-extension` | *(none)* | Repeatable remote zip/xpi. See [Web extensions](#web-extensions). |
 | `scroll-spring-k` | `120` | Overscroll spring stiffness |
 | `scroll-spring-c` | `14` | Overscroll damping |
 | `scroll-friction` | `6` | Coast friction |
 
 Bools: `true` / `yes` / `on` / `1`.
+
+### Web extensions
+
+Repeatable `web-extension` lines. Loaded on first browser open, not at launch. Empty list = no extensions. Cap 16.
+
+URL plus optional `firefox-ua` / `safari-ua`. Omit the flag to infer from the manifest (`gecko` → Firefox UA, `safari` → honest).
+
+Safari `/Applications` appexes are not autoloaded. `nativeMessaging` is never granted.
+
+Safari web extensions are usually an `.appex` plus a native Mac app. Safari launches that app and talks to it over `nativeMessaging`. ghosvt cannot host those native apps inside the embed, so those packages fail.
+
+Firefox (and some Safari-lite) zips are just web files and a manifest. Those load. Prefer the Firefox build when both exist (for example Bitwarden). `gecko` in the manifest infers Firefox UA.
 
 ## Keys
 
