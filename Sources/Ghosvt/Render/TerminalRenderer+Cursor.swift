@@ -305,14 +305,6 @@ extension TerminalRenderer {
         }
     }
 
-    /// Caret style for stolen-row HUDs.
-    enum HUDCaretStyle {
-        /// Search: peach block + black ink.
-        case searchHighlight
-        /// Theme block cursor: fill = fg, ink = bg (solid terminal colors).
-        case themeBlock
-    }
-
     /// Stolen VT row: full-width cell strip for `/needle` + count or browser address bar.
     /// Not scrolled with visualY (HUD stays fixed). `atTop` places it above the shell.
     /// `selStartCol`/`selEndCol` (exclusive) paint an inverted selection range when set.
@@ -328,7 +320,6 @@ extension TerminalRenderer {
         cellHInt: Int,
         defFg: GhosttyColorRgb,
         defBg: GhosttyColorRgb,
-        caretStyle: HUDCaretStyle = .searchHighlight,
         selStartCol: Int = -1,
         selEndCol: Int = -1,
         /// When `atTop`, which content row (0 = first stolen row). Ignored for bottom HUD.
@@ -348,17 +339,8 @@ extension TerminalRenderer {
             g: min(1, Float(defBg.g) / 255 + 0.08),
             b: min(1, Float(defBg.b) / 255 + 0.08)
         )
-        let caretFill: CellPaintColors.RGB
-        let caretInk: CellPaintColors.RGB
-        switch caretStyle {
-        case .searchHighlight:
-            caretFill = CellPaintColors.searchSelectedFill
-            caretInk = CellPaintColors.searchSelectedInk
-        case .themeBlock:
-            // Solid block cursor in theme colors (fg cell, bg text).
-            caretFill = ink
-            caretInk = CellPaintColors.RGB(defBg)
-        }
+        let caretFill = ink
+        let caretInk = CellPaintColors.RGB(defBg)
         // Address-bar text selection: theme invert (fg fill, bg ink).
         let selFill = ink
         let selInk = CellPaintColors.RGB(defBg)

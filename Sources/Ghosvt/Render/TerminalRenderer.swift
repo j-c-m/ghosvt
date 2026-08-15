@@ -906,7 +906,6 @@ final class TerminalRenderer {
             cellHInt: cellHInt,
             defFg: defFg,
             defBg: defBg,
-            caretStyle: .themeBlock,
             selStartCol: selStartCol,
             selEndCol: selEndCol,
             topRowIndex: 0
@@ -924,7 +923,6 @@ final class TerminalRenderer {
                 cellHInt: cellHInt,
                 defFg: defFg,
                 defBg: defBg,
-                caretStyle: .themeBlock,
                 selStartCol: tabActiveStartCol,
                 selEndCol: tabActiveEndCol,
                 topRowIndex: 1
@@ -964,8 +962,7 @@ final class TerminalRenderer {
                 cellWInt: cellWInt,
                 cellHInt: cellHInt,
                 defFg: defFg,
-                defBg: defBg,
-                caretStyle: .themeBlock
+                defBg: defBg
             )
         }
         if quitConfirm {

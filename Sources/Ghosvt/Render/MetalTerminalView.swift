@@ -3263,6 +3263,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     private func scheduleSearch() {
+        requestFrame()
         searchDebounce?.cancel()
         let needle = searchNeedle
         let work = DispatchWorkItem { [weak self] in
@@ -3277,12 +3278,14 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         guard let session = manager?.active else {
             searchMatches = []
             searchIndex = 0
+            requestFrame()
             return
         }
         if needle.isEmpty {
             searchMatches = []
             searchIndex = 0
             session.clearSelection()
+            requestFrame()
             return
         }
         let matches = session.findMatches(needle: needle)
@@ -3290,6 +3293,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if matches.isEmpty {
             searchIndex = 0
             session.clearSelection()
+            requestFrame()
             return
         }
         // Matches are newest-first (index 0 = bottom of scrollback). Start there.
@@ -3299,6 +3303,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             searchIndex = min(searchIndex, matches.count - 1)
         }
         applyCurrentMatch()
+        requestFrame()
     }
 
     private func navigateSearch(reverse: Bool) {
@@ -3315,6 +3320,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             searchIndex = (searchIndex + 1) % searchMatches.count
         }
         applyCurrentMatch()
+        requestFrame()
     }
 
     private func applyCurrentMatch() {
