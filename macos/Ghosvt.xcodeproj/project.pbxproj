@@ -26,6 +26,9 @@
 		EE75C822CEE317163592547C /* KittyPngDecode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EC8561DCFF8E42C88367FC5 /* KittyPngDecode.swift */; };
 		01E349F65079AB7191E9F3EE /* KittyVirtualUnicode.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9054E94B22C55EF4203E84 /* KittyVirtualUnicode.swift */; };
 		34456565BE3DFBADC921E513 /* MetalTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D6B639A27CA5FBA6363B851 /* MetalTerminalView.swift */; };
+		A10000000000000000000001 /* VTOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* VTOverlay.swift */; };
+		A10000000000000000000003 /* SearchOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* SearchOverlay.swift */; };
+		A10000000000000000000005 /* BrowserChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000006 /* BrowserChrome.swift */; };
 		7CAA0FB977CF25F029A25962 /* ShaperCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 932420256371EAF044E8C8BB /* ShaperCache.swift */; };
 		C0DE01CA5E000000C0DE0002 /* CodepointCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE01CA5E000000C0DE0001 /* CodepointCache.swift */; };
 		CC1BE06AE7F8241C630F9DA6 /* Block.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF6A2A6E3E2FE4467B95450F /* Block.swift */; };
@@ -87,6 +90,9 @@
 		3EC8561DCFF8E42C88367FC5 /* KittyPngDecode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KittyPngDecode.swift"; sourceTree = "<group>"; };
 		DF9054E94B22C55EF4203E84 /* KittyVirtualUnicode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KittyVirtualUnicode.swift"; sourceTree = "<group>"; };
 		9D6B639A27CA5FBA6363B851 /* MetalTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MetalTerminalView.swift"; sourceTree = "<group>"; };
+		A10000000000000000000002 /* VTOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VTOverlay.swift"; sourceTree = "<group>"; };
+		A10000000000000000000004 /* SearchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SearchOverlay.swift"; sourceTree = "<group>"; };
+		A10000000000000000000006 /* BrowserChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BrowserChrome.swift"; sourceTree = "<group>"; };
 		932420256371EAF044E8C8BB /* ShaperCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ShaperCache.swift"; sourceTree = "<group>"; };
 		C0DE01CA5E000000C0DE0001 /* CodepointCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CodepointCache.swift"; sourceTree = "<group>"; };
 		CF6A2A6E3E2FE4467B95450F /* Block.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Block.swift"; sourceTree = "<group>"; };
@@ -229,6 +235,9 @@
 				3EC8561DCFF8E42C88367FC5 /* KittyPngDecode.swift */,
 				DF9054E94B22C55EF4203E84 /* KittyVirtualUnicode.swift */,
 				9D6B639A27CA5FBA6363B851 /* MetalTerminalView.swift */,
+				A10000000000000000000002 /* VTOverlay.swift */,
+				A10000000000000000000004 /* SearchOverlay.swift */,
+				A10000000000000000000006 /* BrowserChrome.swift */,
 				C0DE01CA5E000000C0DE0001 /* CodepointCache.swift */,
 				932420256371EAF044E8C8BB /* ShaperCache.swift */,
 				9FF02C045289F920C44DA069 /* SystemFontFallback.swift */,
@@ -454,6 +463,9 @@
 				EE75C822CEE317163592547C /* KittyPngDecode.swift in Sources */,
 				01E349F65079AB7191E9F3EE /* KittyVirtualUnicode.swift in Sources */,
 				34456565BE3DFBADC921E513 /* MetalTerminalView.swift in Sources */,
+				A10000000000000000000001 /* VTOverlay.swift in Sources */,
+				A10000000000000000000003 /* SearchOverlay.swift in Sources */,
+				A10000000000000000000005 /* BrowserChrome.swift in Sources */,
 				C0DE01CA5E000000C0DE0002 /* CodepointCache.swift in Sources */,
 				7CAA0FB977CF25F029A25962 /* ShaperCache.swift in Sources */,
 				CC1BE06AE7F8241C630F9DA6 /* Block.swift in Sources */,
