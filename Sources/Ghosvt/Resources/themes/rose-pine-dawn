@@ -1,0 +1,51 @@
+# MIT License
+#
+# Copyright (c) 2023 Rosé Pine
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# SPDX-License-Identifier: MIT
+# Theme:    Rose Pine Dawn
+# Mode:     light
+# Source:   Rose Pine (https://github.com/rose-pine)
+
+palette = 0=#f2e9e1
+palette = 1=#b4637a
+palette = 2=#286983
+palette = 3=#ea9d34
+palette = 4=#56949f
+palette = 5=#907aa9
+palette = 6=#d7827e
+palette = 7=#575279
+palette = 8=#9893a5
+palette = 9=#b4637a
+palette = 10=#286983
+palette = 11=#ea9d34
+palette = 12=#56949f
+palette = 13=#907aa9
+palette = 14=#d7827e
+palette = 15=#575279
+
+background = #faf4ed
+foreground = #575279
+
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+selection-foreground = cell-background
+selection-background = cell-foreground

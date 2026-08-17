@@ -1,0 +1,51 @@
+# MIT License
+#
+# Copyright (c) 2021 James Simpson
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# SPDX-License-Identifier: MIT
+# Theme:    Terafox
+# Mode:     dark
+# Source:   Eden East (https://github.com/EdenEast/nightfox.nvim)
+
+palette = 0=#2f3239
+palette = 1=#e85c51
+palette = 2=#7aa4a1
+palette = 3=#fda47f
+palette = 4=#5a93aa
+palette = 5=#ad5c7c
+palette = 6=#a1cdd8
+palette = 7=#ebebeb
+palette = 8=#4e5157
+palette = 9=#eb746b
+palette = 10=#8eb2af
+palette = 11=#fdb292
+palette = 12=#73a3b7
+palette = 13=#b97490
+palette = 14=#afd4de
+palette = 15=#eeeeee
+
+background = #152528
+foreground = #e6eaea
+
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+selection-foreground = cell-background
+selection-background = cell-foreground

@@ -1,0 +1,51 @@
+# MIT License
+#
+# Copyright (c) 2016 Ike Ku
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# SPDX-License-Identifier: MIT
+# Theme:    Ayu Light
+# Mode:     light
+# Source:   https://github.com/ayu-theme/vscode-ayu/blob/master/ayu-dark.json https://github.com/ayu-theme/vscode-ayu/blob/master/ayu-light.json
+
+palette = 0=#000000
+palette = 1=#f06b6c
+palette = 2=#6cbf43
+palette = 3=#e7a100
+palette = 4=#21a1e2
+palette = 5=#a176cb
+palette = 6=#4abc96
+palette = 7=#c7c7c7
+palette = 8=#686868
+palette = 9=#f07171
+palette = 10=#86b300
+palette = 11=#eba400
+palette = 12=#22a4e6
+palette = 13=#a37acc
+palette = 14=#4cbf99
+palette = 15=#d1d1d1
+
+background = #f8f9fa
+foreground = #5c6166
+
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+selection-foreground = cell-background
+selection-background = cell-foreground

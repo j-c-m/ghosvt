@@ -110,6 +110,7 @@ max-aspect = 3:2
 copy-on-select = true
 font-ligatures = true
 search-position = bottom
+theme = eighties-black
 embedded-browser = true
 # web-extension = https://github.com/bitwarden/clients/releases/download/browser-v2026.7.0/dist-firefox-2026.7.0.zip
 # web-extension = https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.811.1529/uBOLite_2026.811.1529.safari.zip
@@ -131,6 +132,13 @@ embedded-browser = true
 | `copy-on-select` | `true` | Copy selection to pasteboard on mouse-up |
 | `font-ligatures` / `ligatures` | `true` | OpenType liga/calt on shaped runs |
 | `search-position` | `bottom` | Stolen search row: `top` or `bottom` |
+| `theme` | `eighties-black` | Slug from `~/.config/ghosvt/themes` or bundled `Resources/themes`. Then overlay `background` / `foreground` / `palette` / `cursor-*` / `selection-*` / `search-*`. |
+| `background` / `foreground` | *(theme)* | `#RRGGBB` |
+| `palette` | *(theme)* | Repeatable `N=#RRGGBB` (0…255) |
+| `cursor-color` / `cursor-text` | `cell-foreground` / `cell-background` | `#RRGGBB` or `cell-foreground` / `cell-background` |
+| `selection-foreground` / `selection-background` | `cell-background` / `cell-foreground` | Same tokens as cursor |
+| `search-foreground` / `search-background` | `#000000` / `#FFE082` | Same tokens as cursor |
+| `search-selected-foreground` / `search-selected-background` | `#000000` / `#F2A57E` | Same tokens as cursor |
 | `embedded-browser` | `true` | Embed via ⌘B / ⌘-click. When `false`: ⌘B off; ⌘-click opens the system browser |
 | `web-extension` | *(none)* | Repeatable remote zip/xpi. See [Web extensions](#web-extensions). |
 | `scroll-spring-k` | `120` | Overscroll spring stiffness |
@@ -212,6 +220,7 @@ Refresh embedded fonts:
 | `scripts/run.sh` | Stamp-aware libghostty build + SPM release run |
 | `scripts/fetch-terminfo.sh` | Refresh bundled terminfo |
 | `scripts/fetch-fonts.sh` | Refresh embedded fonts |
+| `scripts/fetch-themes.sh` | Latest [terminal-themes](https://github.com/j-c-m/terminal-themes) Ghostty pack → `Resources/themes` |
 
 | Path | Purpose |
 |------|---------|

@@ -1,0 +1,49 @@
+# Copyright (c) 2011 Ethan Schoonover
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+# SPDX-License-Identifier: MIT
+# Theme:    Solarized Light
+# Mode:     light
+# Source:   Solarized (https://github.com/altercation/solarized/)
+
+palette = 0=#073642
+palette = 1=#dc322f
+palette = 2=#859900
+palette = 3=#cb4b16
+palette = 4=#268bd2
+palette = 5=#6c71c4
+palette = 6=#2aa198
+palette = 7=#93a1a1
+palette = 8=#586e75
+palette = 9=#dc322f
+palette = 10=#859900
+palette = 11=#b58900
+palette = 12=#268bd2
+palette = 13=#d33682
+palette = 14=#2aa198
+palette = 15=#fdf6e3
+
+background = #fdf6e3
+foreground = #657b83
+
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+selection-foreground = cell-background
+selection-background = cell-foreground

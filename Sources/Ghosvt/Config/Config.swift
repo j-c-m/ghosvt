@@ -46,6 +46,10 @@ struct Config: Sendable {
     var embeddedBrowser: Bool = true
     /// Remote zip/xpi pins loaded on first browser open. Empty = no extensions.
     var webExtensions: [WebExtensionPin] = []
+    /// Ghostty theme slug (`theme = eighties-black`). Empty = no named file.
+    var themeName: String = "eighties-black"
+    /// Explicit color keys overlaid after the theme file.
+    var themeOverlay = Theme.Overlay()
 
     /// One `web-extension =` line. `spoofFirefoxUA` nil means infer from the manifest.
     struct WebExtensionPin: Sendable, Equatable {
@@ -70,17 +74,13 @@ struct Config: Sendable {
         var cfg = Config()
         let url = configFileURL()
         guard let data = try? String(contentsOf: url, encoding: .utf8) else {
+            _ = Theme.resolve(from: cfg)
             return cfg
         }
         for rawLine in data.split(whereSeparator: \.isNewline) {
-            var line = String(rawLine)
-            if let hash = line.firstIndex(of: "#") {
-                line = String(line[..<hash])
-            }
-            line = line.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty, let eq = line.firstIndex(of: "=") else { continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
-            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            guard let kv = parseAssignment(String(rawLine)) else { continue }
+            let key = kv.key
+            let value = kv.value
             switch key {
             case "vt-count":
                 if let n = Int(value) { cfg.vtCount = min(12, max(1, n)) }
@@ -147,11 +147,53 @@ struct Config: Sendable {
                    let pin = parseWebExtension(value) {
                     cfg.webExtensions.append(pin)
                 }
+            case "theme":
+                cfg.themeName = value
+            case "background", "foreground", "cursor-color", "cursor-text",
+                 "selection-foreground", "selection-background",
+                 "search-foreground", "search-background",
+                 "search-selected-foreground", "search-selected-background",
+                 "palette":
+                Theme.apply(key, value: value, to: &cfg.themeOverlay)
             default:
                 break
             }
         }
+        _ = Theme.resolve(from: cfg)
         return cfg
+    }
+
+    /// `key = value` with Ghostty comments: `#` at line start, or after a complete value.
+    static func parseAssignment(_ raw: String) -> (key: String, value: String)? {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        if line.isEmpty || line.hasPrefix("#") { return nil }
+        guard let eq = line.firstIndex(of: "=") else { return nil }
+        let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+        let value = stripTrailingComment(
+            String(line[line.index(after: eq)...])
+        )
+        guard !key.isEmpty else { return nil }
+        return (key, value)
+    }
+
+    static func stripTrailingComment(_ raw: String) -> String {
+        var seenContent = false
+        var i = raw.startIndex
+        while i < raw.endIndex {
+            let ch = raw[i]
+            if ch == "#" {
+                if !seenContent {
+                    i = raw.index(after: i)
+                    continue
+                }
+                if i > raw.startIndex, raw[raw.index(before: i)].isWhitespace {
+                    return String(raw[..<i]).trimmingCharacters(in: .whitespaces)
+                }
+            }
+            if !ch.isWhitespace { seenContent = true }
+            i = raw.index(after: i)
+        }
+        return raw.trimmingCharacters(in: .whitespaces)
     }
 
     /// `https://…/pkg.zip` plus optional `firefox-ua` / `safari-ua`.

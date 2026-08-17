@@ -47,9 +47,9 @@ extension TerminalRenderer {
             style = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW
         }
 
-        // cursor-color = cell-foreground, cursor-text = cell-background (OSC 12 → fill only).
+        // cursor-color / cursor-text (OSC 12 → fill only).
         var cellInk = CellPaintColors.RGB(defFg)
-        var cellFill = CellPaintColors.RGB(DefaultColors.background)
+        var cellFill = CellPaintColors.RGB(Theme.current.background)
         let gIdx = Int(cy) * layout.cols + Int(cx)
         if gIdx >= 0, gIdx < gridCells.count {
             let cell = gridCells[gIdx]
@@ -57,7 +57,13 @@ extension TerminalRenderer {
             cellFill = CellPaintColors.RGB(r: cell.br, g: cell.bg, b: cell.bb)
         }
         let osc: GhosttyColorRgb? = colors.cursor_has_value ? colors.cursor : nil
-        let cur = CellPaintColors.cursor(cellInk: cellInk, cellFill: cellFill, defFg: defFg, oscCursor: osc)
+        let cur = CellPaintColors.cursor(
+            cellInk: cellInk,
+            cellFill: cellFill,
+            defFg: defFg,
+            defBg: Theme.current.background,
+            oscCursor: osc
+        )
         let cr = cur.fill.r, cgC = cur.fill.g, cb = cur.fill.b
         let tr = cur.text.r, tg = cur.text.g, tb = cur.text.b
 
@@ -244,8 +250,8 @@ extension TerminalRenderer {
         let startCol = max(0, (layout.cols - boxCols) / 2)
         let startRow = max(0, (layout.rows - boxRows) / 2)
         let font = metrics.fontBold
-        let ink = CellPaintColors.RGB(DefaultColors.foreground)
-        let fill = CellPaintColors.RGB(r: 0.08, g: 0.08, b: 0.10)
+        let ink = CellPaintColors.RGB(Theme.current.foreground)
+        let fill = CellPaintColors.RGB(Theme.current.background)
 
         for (r, line) in lines.enumerated() {
             let row = startRow + r

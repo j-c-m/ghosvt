@@ -1,0 +1,51 @@
+# MIT License
+#
+# Copyright (c) 2019 sainnhe
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# SPDX-License-Identifier: MIT
+# Theme:    Everforest Light Medium
+# Mode:     light
+# Source:   https://github.com/sainnhe/everforest/blob/master/palette.md
+
+palette = 0=#fdf6e3
+palette = 1=#f85552
+palette = 2=#8da101
+palette = 3=#dfa000
+palette = 4=#3a94c5
+palette = 5=#df69ba
+palette = 6=#35a77c
+palette = 7=#5c6a72
+palette = 8=#a6b0a0
+palette = 9=#f85552
+palette = 10=#8da101
+palette = 11=#dfa000
+palette = 12=#3a94c5
+palette = 13=#df69ba
+palette = 14=#35a77c
+palette = 15=#2d353b
+
+background = #fdf6e3
+foreground = #5c6a72
+
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+selection-foreground = cell-background
+selection-background = cell-foreground

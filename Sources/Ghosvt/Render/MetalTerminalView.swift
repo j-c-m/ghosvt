@@ -103,7 +103,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         autoResizeDrawable = true
         // Triple-buffer adds a frame of present latency vs Ghostty's tighter queue.
         (layer as? CAMetalLayer)?.maximumDrawableCount = 2
-        let bg = DefaultColors.background
+        let bg = Theme.current.background
         clearColor = MTLClearColor(
             red: Double(bg.r) / 255,
             green: Double(bg.g) / 255,
@@ -639,9 +639,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
             let cols = max(1, Int(lastCols))
             let bar = chrome.browserHUDLayout(cols: cols)
             let strip = chrome.browserTabStripLayout(cols: cols)
-            let defBg = DefaultColors.background
-            let defFg = DefaultColors.foreground
-            let letterboxBg = DefaultColors.background
+            let defBg = Theme.current.background
+            let defFg = Theme.current.foreground
+            let letterboxBg = Theme.current.background
             let editing = isBrowserAddressEditing
             let caretOn: Bool
             if editing || isBrowserFindOpen, let rs = manager.active.renderState {

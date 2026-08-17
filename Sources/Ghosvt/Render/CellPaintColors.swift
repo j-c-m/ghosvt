@@ -45,13 +45,6 @@ enum CellPaintColors {
         }
     }
 
-    /// Ghostty `search-background` / `search-foreground`.
-    static let searchFill = RGB(byteR: 0xFF, g: 0xE0, b: 0x82)
-    static let searchInk = RGB(byteR: 0x00, g: 0x00, b: 0x00)
-    /// Ghostty `search-selected-background` / `search-selected-foreground`.
-    static let searchSelectedFill = RGB(byteR: 0xF2, g: 0xA5, b: 0x7E)
-    static let searchSelectedInk = RGB(byteR: 0x00, g: 0x00, b: 0x00)
-
     /// Fill (background) and ink (foreground) for a cell after highlight.
     static func pair(
         fg: GhosttyColorRgb,
@@ -61,33 +54,57 @@ enum CellPaintColors {
     ) -> (fill: RGB, ink: RGB) {
         let baseInk = RGB(fg).faint(faint)
         let baseFill = RGB(bg)
+        let theme = Theme.current
         switch highlight {
         case .none:
             return (baseFill, baseInk)
         case .selection:
-            // Ghostty default: invert cell fg/bg.
-            return (baseInk, baseFill)
+            let fill = theme.selectionBackground.resolve(
+                cellInk: baseInk, cellFill: baseFill, defFg: fg, defBg: bg
+            )
+            let ink = theme.selectionForeground.resolve(
+                cellInk: baseInk, cellFill: baseFill, defFg: fg, defBg: bg
+            )
+            return (fill, ink)
         case .search:
-            return (searchFill, searchInk)
+            let fill = theme.searchBackground.resolve(
+                cellInk: baseInk, cellFill: baseFill, defFg: fg, defBg: bg
+            )
+            let ink = theme.searchForeground.resolve(
+                cellInk: baseInk, cellFill: baseFill, defFg: fg, defBg: bg
+            )
+            return (fill, ink)
         case .searchSelected:
-            return (searchSelectedFill, searchSelectedInk)
+            let fill = theme.searchSelectedBackground.resolve(
+                cellInk: baseInk, cellFill: baseFill, defFg: fg, defBg: bg
+            )
+            let ink = theme.searchSelectedForeground.resolve(
+                cellInk: baseInk, cellFill: baseFill, defFg: fg, defBg: bg
+            )
+            return (fill, ink)
         }
     }
 
-    /// Cursor fill / text for host defaults `cell-foreground` / `cell-background`.
+    /// Cursor fill / text from `cursor-color` / `cursor-text`.
     /// OSC 12 absolute cursor color overrides fill only when provided.
     static func cursor(
         cellInk: RGB,
         cellFill: RGB,
         defFg: GhosttyColorRgb,
+        defBg: GhosttyColorRgb,
         oscCursor: GhosttyColorRgb?
     ) -> (fill: RGB, text: RGB) {
-        var fill = cellInk
-        // Empty / no distinct ink → theme foreground.
-        if fill.r == 0, fill.g == 0, fill.b == 0 {
-            fill = RGB(defFg)
+        var ink = cellInk
+        if ink.r == 0, ink.g == 0, ink.b == 0 {
+            ink = RGB(defFg)
         }
-        let text = cellFill
+        let theme = Theme.current
+        var fill = theme.cursorColor.resolve(
+            cellInk: ink, cellFill: cellFill, defFg: defFg, defBg: defBg
+        )
+        let text = theme.cursorText.resolve(
+            cellInk: ink, cellFill: cellFill, defFg: defFg, defBg: defBg
+        )
         if let osc = oscCursor {
             fill = RGB(osc)
         }

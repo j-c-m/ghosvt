@@ -1,0 +1,51 @@
+# MIT License
+#
+# Copyright (c) 2017-present vim-moonfly-colors authors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# SPDX-License-Identifier: MIT
+# Theme:    Moonfly
+# Mode:     dark
+# Source:   Dennis B (https://github.com/bluz71/vim-moonfly-colors)
+
+palette = 0=#323437
+palette = 1=#ff5d5d
+palette = 2=#8cc85f
+palette = 3=#e3c78a
+palette = 4=#80a0ff
+palette = 5=#cf87e8
+palette = 6=#79dac8
+palette = 7=#c6c6c6
+palette = 8=#949494
+palette = 9=#ff5189
+palette = 10=#36c692
+palette = 11=#c6c684
+palette = 12=#74b2ff
+palette = 13=#ae81ff
+palette = 14=#85dc85
+palette = 15=#e4e4e4
+
+background = #080808
+foreground = #bdbdbd
+
+cursor-color = cell-foreground
+cursor-text = cell-background
+
+selection-foreground = cell-background
+selection-background = cell-foreground

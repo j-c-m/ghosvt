@@ -86,11 +86,11 @@ final class TerminalRenderer {
     /// Glyph / overlay instance count packed after backgrounds.
     var lastFgCount = 0
     var lastLayoutKey: LayoutKey?
-    var lastDefBg = (r: DefaultColors.background.r, g: DefaultColors.background.g, b: DefaultColors.background.b)
-    private(set) var lastDefFg = DefaultColors.foreground
-    private(set) var lastDefBgRgb = DefaultColors.background
+    var lastDefBg = (r: Theme.current.background.r, g: Theme.current.background.g, b: Theme.current.background.b)
+    private(set) var lastDefFg = Theme.current.foreground
+    private(set) var lastDefBgRgb = Theme.current.background
     /// Color used to clear the full drawable (letterbox bars match terminal / FS TUI).
-    private(set) var lastLetterboxBg = DefaultColors.background
+    private(set) var lastLetterboxBg = Theme.current.background
     var lastIndicator: String?
     var lastBlinkOn = true
     var lastWindowFocused = true
@@ -511,8 +511,8 @@ final class TerminalRenderer {
         // Both zero usually means unset; use host defaults (bg may be black).
         if defFg.r == 0, defFg.g == 0, defFg.b == 0,
            defBg.r == 0, defBg.g == 0, defBg.b == 0 {
-            defFg = DefaultColors.foreground
-            defBg = DefaultColors.background
+            defFg = Theme.current.foreground
+            defBg = Theme.current.background
         }
         lastDefBg = (defBg.r, defBg.g, defBg.b)
         lastDefFg = defFg
@@ -805,7 +805,7 @@ final class TerminalRenderer {
         lastBgCount = 0
         lastFgCount = instances.count
         lastDrawnCount = instances.count
-        let letterboxBg = DefaultColors.background
+        let letterboxBg = Theme.current.background
         present(
             bgCount: 0,
             fgCount: instances.count,

@@ -11,6 +11,8 @@
 		E8F342BC5CC7D491C7F9DFDD /* BrowserHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 069F161528BDDD82969C8A93 /* BrowserHistory.swift */; };
 		81BF93952C73E66D83B92B80 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35E4C46FE39AE922435ECBC6 /* Config.swift */; };
 		620D3BAA3CEEAD4D07B35CB7 /* DefaultColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ABA636B6DEB556D52701921 /* DefaultColors.swift */; };
+		A10000000000000000000007 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* Theme.swift */; };
+		A10000000000000000000009 /* themes in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000A /* themes */; };
 		05941F5BAF56ACAE47084C41 /* Clipboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F16EDC67D5AB9C37D5CF98 /* Clipboard.swift */; };
 		59FFB4DA50D77F01F69B210E /* KeyBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9281C453364D2EBEAF079612 /* KeyBridge.swift */; };
 		C1440241831CD51C92CF2055 /* UntrustedURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 330A55F0D3341A275BA32CC3 /* UntrustedURL.swift */; };
@@ -75,6 +77,8 @@
 		069F161528BDDD82969C8A93 /* BrowserHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BrowserHistory.swift"; sourceTree = "<group>"; };
 		35E4C46FE39AE922435ECBC6 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Config.swift"; sourceTree = "<group>"; };
 		5ABA636B6DEB556D52701921 /* DefaultColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DefaultColors.swift"; sourceTree = "<group>"; };
+		A10000000000000000000008 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Theme.swift"; sourceTree = "<group>"; };
+		A1000000000000000000000A /* themes */ = {isa = PBXFileReference; lastKnownFileType = folder; name = themes; path = "../Sources/Ghosvt/Resources/themes"; sourceTree = "<group>"; };
 		E7F16EDC67D5AB9C37D5CF98 /* Clipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Clipboard.swift"; sourceTree = "<group>"; };
 		9281C453364D2EBEAF079612 /* KeyBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "KeyBridge.swift"; sourceTree = "<group>"; };
 		330A55F0D3341A275BA32CC3 /* UntrustedURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UntrustedURL.swift"; sourceTree = "<group>"; };
@@ -185,6 +189,7 @@
 			children = (
 				35E4C46FE39AE922435ECBC6 /* Config.swift */,
 				5ABA636B6DEB556D52701921 /* DefaultColors.swift */,
+				A10000000000000000000008 /* Theme.swift */,
 			);
 			path = "Config";
 			name = "Config";
@@ -332,6 +337,7 @@
 				5DE24A0370BF41BA5A41E4BE /* Ghosvt-Info.plist */,
 				DCAFEB5EF23421DEA7414D34 /* Fonts */,
 				DCCC42E53D5932E0E35BC502 /* terminfo */,
+				A1000000000000000000000A /* themes */,
 				D8BD5DD42310CB1693158D7B /* Frameworks */,
 				30772F61AC9BDC8631745269 /* Products */,
 			);
@@ -412,6 +418,7 @@
 				C5CACA5955A5E6CFC223889C /* Assets.xcassets in Resources */,
 				B5C12AB7F22FF786155A620F /* Fonts in Resources */,
 				1BAC1028DB10760820AFDC3A /* terminfo in Resources */,
+				A10000000000000000000009 /* themes in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -448,6 +455,7 @@
 				E8F342BC5CC7D491C7F9DFDD /* BrowserHistory.swift in Sources */,
 				81BF93952C73E66D83B92B80 /* Config.swift in Sources */,
 				620D3BAA3CEEAD4D07B35CB7 /* DefaultColors.swift in Sources */,
+				A10000000000000000000007 /* Theme.swift in Sources */,
 				05941F5BAF56ACAE47084C41 /* Clipboard.swift in Sources */,
 				59FFB4DA50D77F01F69B210E /* KeyBridge.swift in Sources */,
 				C1440241831CD51C92CF2055 /* UntrustedURL.swift in Sources */,

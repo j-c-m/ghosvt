@@ -27,12 +27,11 @@ enum DefaultColors {
         GhosttyColorRgb(r: 0xF2, g: 0xF0, b: 0xEC), // 15
     ]
 
-    /// Install fg/bg + ANSI 0–15. Does not set an absolute cursor color so the
-    /// host default is Ghostty `cursor-color = cell-foreground` /
-    /// `cursor-text = cell-background` (OSC 12 can still set a fixed cursor).
-    static func apply(to terminal: GhosttyTerminal) {
-        var fg = foreground
-        var bg = background
+    /// Install fg/bg + palette from the resolved theme. Does not set an absolute
+    /// cursor color; `cursor-color` / `cursor-text` are paint-time.
+    static func apply(to terminal: GhosttyTerminal, theme: ResolvedTheme = Theme.current) {
+        var fg = theme.foreground
+        var bg = theme.background
         withUnsafePointer(to: &fg) { ptr in
             _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, UnsafeRawPointer(ptr))
         }
@@ -40,13 +39,23 @@ enum DefaultColors {
             _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, UnsafeRawPointer(ptr))
         }
 
-        // Start from libghostty’s full 256 palette, then overlay ANSI 0–15.
-        var palette = [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 0, g: 0, b: 0), count: 256)
-        _ = palette.withUnsafeMutableBufferPointer { buf in
-            ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, buf.baseAddress)
+        var palette = theme.palette
+        if palette.count < 256 {
+            palette.append(contentsOf: repeatElement(
+                GhosttyColorRgb(r: 0, g: 0, b: 0),
+                count: 256 - palette.count
+            ))
         }
-        for i in 0..<min(16, ansi16.count) {
-            palette[i] = ansi16[i]
+        palette.withUnsafeMutableBufferPointer { buf in
+            var stock = [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 0, g: 0, b: 0), count: 256)
+            _ = stock.withUnsafeMutableBufferPointer { sbuf in
+                ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, sbuf.baseAddress)
+            }
+            for i in 16..<256 where i < buf.count {
+                if buf[i].r == 0, buf[i].g == 0, buf[i].b == 0 {
+                    buf[i] = stock[i]
+                }
+            }
         }
         _ = palette.withUnsafeBufferPointer { buf in
             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, UnsafeRawPointer(buf.baseAddress))

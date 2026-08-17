@@ -1,4 +1,5 @@
 .font-fetch/
+.theme-fetch/
 .build/
 .DS_Store
 .swiftpm/
