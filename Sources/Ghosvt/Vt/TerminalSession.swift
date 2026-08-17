@@ -837,7 +837,7 @@ final class TerminalSession {
                 )
             }
         }
-        // Spacegray Eighties with overrides (fg/bg/cursor + ANSI 0–15).
+        // Eighties Black (fg/bg + ANSI 0–15).
         DefaultColors.apply(to: term)
 
         // Advertise as xterm-ghostty (matches bundled terminfo / Ghostty capabilities).
