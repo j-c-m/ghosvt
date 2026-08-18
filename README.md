@@ -1,10 +1,14 @@
-# ghosvt
+
 
 Fullscreen macOS multi-VT terminal on **libghostty-vt** + **Metal**.
 
-Experimental. Build from source. Not affiliated with Ghostty.
+* Linux-style consoles: **⌘F1…** switch VTs; **⇧⌘[ / ⇧⌘]** previous / next. Default **`console-mode = login`** uses a getty banner and a full password prompt. **`shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**).
 
-Linux-style consoles: **⌘F1…** switch VTs; **⇧⌘[ / ⇧⌘]** previous / next. Default **`console-mode = login`** uses a getty banner and a full password prompt. **`shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**).
+* Access a browser without leaving the virtual console. Embedded Safari-like WebKit browser that supports some Safari and Firefox extensions. **uBlock Origin Lite** (Safari) tested and working. **Bitwarden** (Firefox) tested and working.
+
+* DOS Demo–inspired smooth scroll: **⌘Page Up / ⌘Page Down** through history; accelerates while held. Wheel / trackpad with spring overscroll.
+
+Experimental. Build from source. Not affiliated with Ghostty.
 
 ## Requirements
 
@@ -95,7 +99,7 @@ Alias: `getty` → `login`.
 
 ## Config
 
-Ghostty-style file: **`~/.config/ghosvt/config`**  
+Ghostty-style file: **`~/.config/ghosvt/config`**
 (or `$XDG_CONFIG_HOME/ghosvt/config`). Missing file → defaults.
 
 ```
