@@ -30,10 +30,16 @@ struct ShapedCell: Sendable {
 
 /// CoreText run shaper with a placement cache (mirrors Ghostty’s shape.Cell model).
 final class ShaperCache {
-    /// Ghostty `TextRun.hash`: (cp, relative cluster)* + length + face.
-    private var cache: [UInt64: [ShapedCell]] = [:]
-    private let maxEntries = 4096
+    /// Ghostty `CacheTable` layout: 512 buckets × 8, LRU within each bucket.
+    private let bucketCount = 512
+    private let bucketSize = 8
+    private var buckets: [[Bucket]]
     private var featured: [FeaturedKey: CTFont] = [:]
+
+    private struct Bucket {
+        var key: UInt64
+        var value: [ShapedCell]
+    }
 
     private struct FeaturedKey: Hashable {
         var id: ObjectIdentifier
@@ -54,9 +60,44 @@ final class ShaperCache {
         mix(&digest, UInt64(cluster))
     }
 
+    init() {
+        let n = bucketCount
+        let cap = bucketSize
+        buckets = (0..<n).map { _ in
+            var b: [Bucket] = []
+            b.reserveCapacity(cap)
+            return b
+        }
+    }
+
     func clear() {
-        cache.removeAll(keepingCapacity: true)
+        for i in buckets.indices {
+            buckets[i].removeAll(keepingCapacity: true)
+        }
         featured.removeAll(keepingCapacity: true)
+    }
+
+    private func bucketIndex(_ key: UInt64) -> Int {
+        Int(key & UInt64(bucketCount - 1))
+    }
+
+    private func cached(_ key: UInt64) -> [ShapedCell]? {
+        let i = bucketIndex(key)
+        guard let j = buckets[i].firstIndex(where: { $0.key == key }) else { return nil }
+        if j + 1 != buckets[i].count {
+            let e = buckets[i].remove(at: j)
+            buckets[i].append(e)
+            return e.value
+        }
+        return buckets[i][j].value
+    }
+
+    private func store(_ key: UInt64, _ value: [ShapedCell]) {
+        let i = bucketIndex(key)
+        if buckets[i].count == bucketSize {
+            buckets[i].removeFirst()
+        }
+        buckets[i].append(Bucket(key: key, value: value))
     }
 
     /// Featured face (liga/calt/dlig). Cached per base font.
@@ -88,7 +129,7 @@ final class ShaperCache {
         Self.mix(&digest, bold ? 1 : 0)
         Self.mix(&digest, italic ? 1 : 0)
 
-        if let hit = cache[digest] {
+        if let hit = cached(digest) {
             return hit
         }
 
@@ -117,9 +158,7 @@ final class ShaperCache {
             font: font,
             cellCount: end - start
         )
-        if cache.count < maxEntries {
-            cache[digest] = shaped
-        }
+        store(digest, shaped)
         return shaped
     }
 
