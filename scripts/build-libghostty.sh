@@ -140,7 +140,7 @@ if [[ ! -f "${ARTIFACT}" ]]; then
   exit 1
 fi
 
-# Verify search shim symbols when the patch set is present.
+# Verify patched C symbols when the patch set is present.
 # Avoid `grep -q` under `pipefail` (SIGPIPE from early close → false negative).
 if ((${#PATCHES[@]} > 0)) && command -v nm >/dev/null 2>&1; then
   _nm_out="$(nm "${ARTIFACT}" 2>/dev/null || true)"

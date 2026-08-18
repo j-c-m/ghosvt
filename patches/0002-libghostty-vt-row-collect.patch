@@ -1,42 +1,97 @@
 diff --git a/include/ghostty/vt/render.h b/include/ghostty/vt/render.h
-index f6b5e2222..9b03891ff 100644
+index f6b5e2222..60fc25a25 100644
 --- a/include/ghostty/vt/render.h
 +++ b/include/ghostty/vt/render.h
-@@ -872,6 +872,67 @@ GHOSTTY_API GhosttyResult ghostty_render_state_row_cells_get_multi(
-     void** values,
-     size_t* out_written);
+@@ -300,6 +300,85 @@ typedef struct {
+   uint16_t end_x;
+ } GhosttyRenderStateRowSelection;
  
 +/**
 + * One packed viewport cell from ghostty_render_state_row_cells_collect.
 + *
-+ * Layout is 16 bytes. flags bits:
-+ *   0 wide head, 1 wide tail, 2 bold, 3 italic, 4 faint,
-+ *   5 inverse, 6 underline, 7 multi-codepoint grapheme.
++ * Layout is 16 bytes and is frozen. New fields require a new function.
++ * flags is a bitmask of GhosttyRenderStatePackedCellFlag.
++ *
++ * fg/bg are the same resolved colors as
++ * GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR /
++ * GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR (or def_fg/def_bg when
++ * the cell has none). Inverse is not applied; check the inverse flag.
 + *
 + * @ingroup render
 + */
 +typedef struct {
++  /** First Unicode scalar of the cell. 0 if the cell has no text. */
 +  uint32_t cp;
++
++  /** Bitmask of GhosttyRenderStatePackedCellFlag. */
 +  uint32_t flags;
++
++  /** Resolved foreground red. */
 +  uint8_t fg_r;
++
++  /** Resolved foreground green. */
 +  uint8_t fg_g;
++
++  /** Resolved foreground blue. */
 +  uint8_t fg_b;
++
++  /** Padding. Must be zero. */
 +  uint8_t _pad0;
++
++  /** Resolved background red. */
 +  uint8_t bg_r;
++
++  /** Resolved background green. */
 +  uint8_t bg_g;
++
++  /** Resolved background blue. */
 +  uint8_t bg_b;
++
++  /** Padding. Must be zero. */
 +  uint8_t _pad1;
 +} GhosttyRenderStatePackedCell;
 +
-+#define GHOSTTY_PACKED_CELL_WIDE_HEAD ((uint32_t)1u << 0)
-+#define GHOSTTY_PACKED_CELL_WIDE_TAIL ((uint32_t)1u << 1)
-+#define GHOSTTY_PACKED_CELL_BOLD ((uint32_t)1u << 2)
-+#define GHOSTTY_PACKED_CELL_ITALIC ((uint32_t)1u << 3)
-+#define GHOSTTY_PACKED_CELL_FAINT ((uint32_t)1u << 4)
-+#define GHOSTTY_PACKED_CELL_INVERSE ((uint32_t)1u << 5)
-+#define GHOSTTY_PACKED_CELL_UNDERLINE ((uint32_t)1u << 6)
-+#define GHOSTTY_PACKED_CELL_HAS_GRAPHEME ((uint32_t)1u << 7)
++/**
++ * Bit flags for GhosttyRenderStatePackedCell.flags.
++ *
++ * Combine with bitwise OR. Inverse is a flag only; it does not swap fg/bg.
++ *
++ * @ingroup render
++ */
++typedef enum GHOSTTY_ENUM_TYPED {
++  /** First cell of a wide (two-column) character. */
++  GHOSTTY_PACKED_CELL_WIDE_HEAD = 1 << 0,
 +
++  /** Spacer tail of a wide character. */
++  GHOSTTY_PACKED_CELL_WIDE_TAIL = 1 << 1,
++
++  /** Bold. */
++  GHOSTTY_PACKED_CELL_BOLD = 1 << 2,
++
++  /** Italic. */
++  GHOSTTY_PACKED_CELL_ITALIC = 1 << 3,
++
++  /** Faint. */
++  GHOSTTY_PACKED_CELL_FAINT = 1 << 4,
++
++  /** Inverse (SGR 7). Colors are not swapped. */
++  GHOSTTY_PACKED_CELL_INVERSE = 1 << 5,
++
++  /** Any underline style. */
++  GHOSTTY_PACKED_CELL_UNDERLINE = 1 << 6,
++
++  /** Cell has additional grapheme codepoints beyond cp. */
++  GHOSTTY_PACKED_CELL_HAS_GRAPHEME = 1 << 7,
++  GHOSTTY_PACKED_CELL_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
++} GhosttyRenderStatePackedCellFlag;
++
+ /**
+  * Render-state cursor information.
+  *
+@@ -872,6 +951,38 @@ GHOSTTY_API GhosttyResult ghostty_render_state_row_cells_get_multi(
+     void** values,
+     size_t* out_written);
+ 
 +/**
 + * Collect every cell in the current row into a packed buffer.
 + *
@@ -46,8 +101,10 @@ index f6b5e2222..9b03891ff 100644
 + * Writes min(row_cols, cap) cells, then zero-fills the rest of cap.
 + * *out_len is the number of real cells (not including padding).
 + *
-+ * Inverse is already applied to fg/bg. Kitty U+10EEEE is stored as cp=0.
-+ * Multi-codepoint graphemes set HAS_GRAPHEME; fetch UTF-8 separately.
++ * Colors match row_cells_get fg_color/bg_color (or def_fg/def_bg when
++ * the cell has none). Inverse is a flag only; it is not applied to
++ * fg/bg. Multi-codepoint graphemes set HAS_GRAPHEME; fetch UTF-8
++ * separately via ghostty_render_state_row_cells_get.
 + *
 + * @param cells Bound row cells handle (NULL → GHOSTTY_INVALID_VALUE)
 + * @param def_fg Default foreground when the cell has none (NULL → 0,0,0)
@@ -71,7 +128,7 @@ index f6b5e2222..9b03891ff 100644
   * Free a row cells instance.
   *
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 6cd76e354..437b8d593 100644
+index e47954668..7282589ee 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
 @@ -300,6 +300,7 @@ comptime {
@@ -83,10 +140,10 @@ index 6cd76e354..437b8d593 100644
              @export(&c.render_state_free, .{ .name = "ghostty_render_state_free" });
          }
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index 020771b73..552340262 100644
+index 7bf2ab117..b5581d6c3 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -111,6 +111,7 @@ pub const render_state_row_cells_next = render.row_cells_next;
+@@ -110,6 +110,7 @@ pub const render_state_row_cells_next = render.row_cells_next;
  pub const render_state_row_cells_select = render.row_cells_select;
  pub const render_state_row_cells_get = render.row_cells_get;
  pub const render_state_row_cells_get_multi = render.row_cells_get_multi;
@@ -95,10 +152,10 @@ index 020771b73..552340262 100644
  
  pub const sgr_new = sgr.new;
 diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
-index c108456f2..8d13f50b1 100644
+index c108456f2..3299a977f 100644
 --- a/src/terminal/c/render.zig
 +++ b/src/terminal/c/render.zig
-@@ -719,6 +719,130 @@ pub fn row_cells_get_multi(
+@@ -719,6 +719,121 @@ pub fn row_cells_get_multi(
      return .success;
  }
  
@@ -123,10 +180,11 @@ index c108456f2..8d13f50b1 100644
 +    pub const flag_inverse: u32 = 1 << 5;
 +    pub const flag_underline: u32 = 1 << 6;
 +    pub const flag_has_grapheme: u32 = 1 << 7;
-+};
 +
-+/// Kitty unicode placeholder (U+10EEEE). Hosts treat this as no text.
-+const kitty_placeholder: u21 = 0x10EEEE;
++    comptime {
++        std.debug.assert(@sizeOf(@This()) == 16);
++    }
++};
 +
 +/// Fill `out[0..cap]` from the current row in one C crossing.
 +pub fn row_cells_collect(
@@ -181,8 +239,7 @@ index c108456f2..8d13f50b1 100644
 +    const bg_only = cell.content_tag == .bg_color_palette or
 +        cell.content_tag == .bg_color_rgb;
 +    const cp = cell.codepoint();
-+    const has_text = cell.hasText() and cp != kitty_placeholder;
-+    if (has_text) {
++    if (cell.hasText()) {
 +        out.cp = cp;
 +        if (cell.hasGrapheme()) out.flags |= PackedCell.flag_has_grapheme;
 +    }
@@ -190,7 +247,6 @@ index c108456f2..8d13f50b1 100644
 +    var fg = def_fg;
 +    var bg_cell = def_bg;
 +    var has_bg = false;
-+    var inverse = false;
 +    if (cell.hasStyling() or bg_only) {
 +        const s: Style = if (cell.hasStyling()) cells.styles[x] else .{};
 +        if (s.fg_color != .none) {
@@ -203,20 +259,12 @@ index c108456f2..8d13f50b1 100644
 +        if (s.flags.bold) out.flags |= PackedCell.flag_bold;
 +        if (s.flags.italic) out.flags |= PackedCell.flag_italic;
 +        if (s.flags.faint) out.flags |= PackedCell.flag_faint;
-+        if (s.flags.inverse) {
-+            inverse = true;
-+            out.flags |= PackedCell.flag_inverse;
-+        }
++        if (s.flags.inverse) out.flags |= PackedCell.flag_inverse;
 +        if (@intFromEnum(s.flags.underline) != 0) {
 +            out.flags |= PackedCell.flag_underline;
 +        }
-+        if (inverse) {
-+            const tmp = fg;
-+            fg = bg_cell;
-+            bg_cell = tmp;
-+        }
 +    }
-+    const bg = if (has_bg or inverse) bg_cell else def_bg;
++    const bg = if (has_bg) bg_cell else def_bg;
 +    out.fg_r = fg.r;
 +    out.fg_g = fg.g;
 +    out.fg_b = fg.b;
@@ -229,3 +277,209 @@ index c108456f2..8d13f50b1 100644
  inline fn rowCellsGetDispatch(
      cells: *const RowCellsWrapper,
      x: usize,
+@@ -2568,3 +2683,205 @@ test "render: row_cells_get_multi null returns invalid_value" {
+     var values = [_]?*anyopaque{@ptrCast(&raw)};
+     try testing.expectEqual(Result.invalid_value, row_cells_get_multi(null, 1, null, &values, null));
+ }
++
++const CollectRow = struct {
++    state: RenderState,
++    it: RowIterator,
++    cells: RowCells,
++    len: usize,
++
++    fn deinit(self: CollectRow) void {
++        row_cells_free(self.cells);
++        row_iterator_free(self.it);
++        free(self.state);
++    }
++};
++
++fn collectFirstRow(
++    terminal: terminal_c.Terminal,
++    def_fg: colorpkg.RGB.C,
++    def_bg: colorpkg.RGB.C,
++    out: []PackedCell,
++) !CollectRow {
++    var state: RenderState = null;
++    try testing.expectEqual(Result.success, new(
++        &lib.alloc.test_allocator,
++        &state,
++    ));
++    errdefer free(state);
++    try testing.expectEqual(Result.success, update(state, terminal));
++
++    var it: RowIterator = null;
++    try testing.expectEqual(Result.success, row_iterator_new(
++        &lib.alloc.test_allocator,
++        &it,
++    ));
++    errdefer row_iterator_free(it);
++    try testing.expectEqual(Result.success, get(state, .row_iterator, @ptrCast(&it)));
++    try testing.expect(row_iterator_next(it));
++
++    var cells: RowCells = null;
++    try testing.expectEqual(Result.success, row_cells_new(
++        &lib.alloc.test_allocator,
++        &cells,
++    ));
++    errdefer row_cells_free(cells);
++    try testing.expectEqual(Result.success, row_get(it, .cells, @ptrCast(&cells)));
++
++    var len: usize = 0;
++    try testing.expectEqual(Result.success, row_cells_collect(
++        cells,
++        &def_fg,
++        &def_bg,
++        out.ptr,
++        out.len,
++        &len,
++    ));
++    return .{ .state = state, .it = it, .cells = cells, .len = len };
++}
++
++test "render: row cells collect invalid_value" {
++    var buf: [1]PackedCell = undefined;
++    var len: usize = 99;
++    try testing.expectEqual(Result.invalid_value, row_cells_collect(
++        null,
++        null,
++        null,
++        &buf,
++        buf.len,
++        &len,
++    ));
++    try testing.expectEqual(Result.invalid_value, row_cells_collect(
++        @ptrFromInt(@alignOf(RowCellsWrapper)),
++        null,
++        null,
++        null,
++        buf.len,
++        &len,
++    ));
++}
++
++test "render: row cells collect empty uses defaults" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        4,
++        1,
++    ));
++    defer terminal_c.free(terminal);
++
++    const def_fg: colorpkg.RGB.C = .{ .r = 1, .g = 2, .b = 3 };
++    const def_bg: colorpkg.RGB.C = .{ .r = 4, .g = 5, .b = 6 };
++    var buf: [6]PackedCell = undefined;
++    const got = try collectFirstRow(terminal, def_fg, def_bg, &buf);
++    defer got.deinit();
++
++    try testing.expectEqual(@as(usize, 4), got.len);
++    try testing.expectEqual(@as(u32, 0), buf[0].cp);
++    try testing.expectEqual(@as(u32, 0), buf[0].flags);
++    try testing.expectEqual(def_fg.r, buf[0].fg_r);
++    try testing.expectEqual(def_fg.g, buf[0].fg_g);
++    try testing.expectEqual(def_fg.b, buf[0].fg_b);
++    try testing.expectEqual(def_bg.r, buf[0].bg_r);
++    try testing.expectEqual(@as(u32, 0), buf[4].cp);
++    try testing.expectEqual(@as(u32, 0), buf[5].flags);
++}
++
++test "render: row cells collect inverse is flag only" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        10,
++        1,
++    ));
++    defer terminal_c.free(terminal);
++
++    const input = "\x1b[38;2;10;20;30m\x1b[7mA";
++    terminal_c.vt_write(terminal, input, input.len);
++
++    const def_fg: colorpkg.RGB.C = .{ .r = 255, .g = 255, .b = 255 };
++    const def_bg: colorpkg.RGB.C = .{ .r = 0, .g = 0, .b = 0 };
++    var buf: [10]PackedCell = undefined;
++    const got = try collectFirstRow(terminal, def_fg, def_bg, &buf);
++    defer got.deinit();
++    try testing.expectEqual(@as(usize, 10), got.len);
++
++    try testing.expectEqual(@as(u32, 'A'), buf[0].cp);
++    try testing.expect(buf[0].flags & PackedCell.flag_inverse != 0);
++    try testing.expectEqual(@as(u8, 10), buf[0].fg_r);
++    try testing.expectEqual(@as(u8, 20), buf[0].fg_g);
++    try testing.expectEqual(@as(u8, 30), buf[0].fg_b);
++
++    try testing.expectEqual(Result.success, row_cells_select(got.cells, 0));
++    var fg: colorpkg.RGB.C = undefined;
++    try testing.expectEqual(Result.success, row_cells_get(got.cells, .fg_color, @ptrCast(&fg)));
++    try testing.expectEqual(fg.r, buf[0].fg_r);
++    try testing.expectEqual(fg.g, buf[0].fg_g);
++    try testing.expectEqual(fg.b, buf[0].fg_b);
++}
++
++test "render: row cells collect wide flags" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        4,
++        1,
++    ));
++    defer terminal_c.free(terminal);
++
++    // U+FF21 FULLWIDTH LATIN CAPITAL LETTER A
++    terminal_c.vt_write(terminal, "\xef\xbc\xa1", 3);
++
++    const def: colorpkg.RGB.C = .{ .r = 0, .g = 0, .b = 0 };
++    var buf: [4]PackedCell = undefined;
++    const got = try collectFirstRow(terminal, def, def, &buf);
++    defer got.deinit();
++    try testing.expectEqual(@as(usize, 4), got.len);
++    try testing.expect(buf[0].flags & PackedCell.flag_wide_head != 0);
++    try testing.expect(buf[1].flags & PackedCell.flag_wide_tail != 0);
++}
++
++test "render: row cells collect kitty placeholder keeps codepoint" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        4,
++        1,
++    ));
++    defer terminal_c.free(terminal);
++
++    // U+10EEEE
++    terminal_c.vt_write(terminal, "\xf4\x8e\xbb\xae", 4);
++
++    const def: colorpkg.RGB.C = .{ .r = 0, .g = 0, .b = 0 };
++    var buf: [4]PackedCell = undefined;
++    const got = try collectFirstRow(terminal, def, def, &buf);
++    defer got.deinit();
++    try testing.expectEqual(@as(usize, 4), got.len);
++    try testing.expectEqual(@as(u32, 0x10EEEE), buf[0].cp);
++}
++
++test "render: row cells collect grapheme flag" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        4,
++        1,
++    ));
++    defer terminal_c.free(terminal);
++
++    // e + combining acute
++    terminal_c.vt_write(terminal, "e\xcc\x81", 3);
++
++    const def: colorpkg.RGB.C = .{ .r = 0, .g = 0, .b = 0 };
++    var buf: [4]PackedCell = undefined;
++    const got = try collectFirstRow(terminal, def, def, &buf);
++    defer got.deinit();
++    try testing.expectEqual(@as(usize, 4), got.len);
++    try testing.expect(buf[0].flags & PackedCell.flag_has_grapheme != 0);
++}

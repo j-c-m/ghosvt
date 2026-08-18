@@ -1,32 +1,36 @@
 diff --git a/include/ghostty/vt.h b/include/ghostty/vt.h
-index 7519a3f25..b0b19c06c 100644
+index 7519a3f25..932deda2d 100644
 --- a/include/ghostty/vt.h
 +++ b/include/ghostty/vt.h
-@@ -138,6 +138,7 @@ extern "C" {
- #include <ghostty/vt/device.h>
- #include <ghostty/vt/focus.h>
- #include <ghostty/vt/formatter.h>
+@@ -30,6 +30,7 @@
+  * The API is organized into the following groups:
+  * - @ref terminal "Terminal" - Complete terminal emulator state and rendering
+  * - @ref render "Render State" - Incremental render state updates for custom renderers
++ * - @ref search "Screen Search" - Full-screen text search including scrollback
+  * - @ref formatter "Formatter" - Format terminal content as plain text, VT sequences, or HTML
+  * - @ref snapshot "Terminal Snapshot" - Encode and incrementally restore terminal state
+  * - @ref osc "OSC Parser" - Parse OSC (Operating System Command) sequences
+@@ -154,6 +155,7 @@ extern "C" {
+ #include <ghostty/vt/paste.h>
+ #include <ghostty/vt/point.h>
+ #include <ghostty/vt/screen.h>
 +#include <ghostty/vt/search.h>
- #include <ghostty/vt/render.h>
- #include <ghostty/vt/terminal.h>
- #include <ghostty/vt/grid_ref.h>
+ #include <ghostty/vt/selection.h>
+ #include <ghostty/vt/size_report.h>
+ #include <ghostty/vt/snapshot.h>
 diff --git a/include/ghostty/vt/search.h b/include/ghostty/vt/search.h
 new file mode 100644
-index 000000000..eff90948c
+index 000000000..520b6af24
 --- /dev/null
 +++ b/include/ghostty/vt/search.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,132 @@
 +/**
 + * @file search.h
 + *
-+ * Temporary C ABI for screen scrollback search (ScreenSearch).
++ * C API for full-screen text search (ScreenSearch), including scrollback.
 + *
-+ * Ghostty implements search in Zig (`terminal/search`) but does not yet
-+ * ship a stable C/Swift binding. This header is a **ghosvt shim** until
-+ * libghostty-vt 1.4.0 (or the official search C API). Do not treat the
-+ * symbol names or layout as stable beyond this project.
-+ *
-+ * Serialize with other terminal mutations (same rule as selection / grid_ref).
++ * Callers must serialize with other terminal mutations (same rule as
++ * selection / grid_ref).
 + */
 +
 +#ifndef GHOSTTY_VT_SEARCH_H
@@ -41,7 +45,7 @@ index 000000000..eff90948c
 +extern "C" {
 +#endif
 +
-+/** @defgroup search Screen Search (shim)
++/** @defgroup search Screen Search
 + *
 + * Full-screen text search over the active screen including scrollback,
 + * backed by Ghostty's ScreenSearch engine.
@@ -153,38 +157,56 @@ index 000000000..eff90948c
 +
 +#endif /* GHOSTTY_VT_SEARCH_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index ba97dae1e..6cd76e354 100644
+index ba97dae1e..e47954668 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -303,6 +303,11 @@ comptime {
+@@ -303,6 +303,12 @@ comptime {
              @export(&c.render_state_row_cells_free, .{ .name = "ghostty_render_state_row_cells_free" });
              @export(&c.render_state_free, .{ .name = "ghostty_render_state_free" });
          }
-+        // Temporary ghosvt/shim until official libghostty-vt search C API (1.4.0).
-+        @export(&c.screen_search_new, .{ .name = "ghostty_screen_search_new" });
-+        @export(&c.screen_search_free, .{ .name = "ghostty_screen_search_free" });
-+        @export(&c.screen_search_match_count, .{ .name = "ghostty_screen_search_match_count" });
-+        @export(&c.screen_search_match_at, .{ .name = "ghostty_screen_search_match_at" });
++        if (features.search) {
++            @export(&c.screen_search_new, .{ .name = "ghostty_screen_search_new" });
++            @export(&c.screen_search_free, .{ .name = "ghostty_screen_search_free" });
++            @export(&c.screen_search_match_count, .{ .name = "ghostty_screen_search_match_count" });
++            @export(&c.screen_search_match_at, .{ .name = "ghostty_screen_search_match_at" });
++        }
          @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
          @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
          @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
+diff --git a/src/terminal/build_options.zig b/src/terminal/build_options.zig
+index 124929d28..33f4e6fb6 100644
+--- a/src/terminal/build_options.zig
++++ b/src/terminal/build_options.zig
+@@ -97,6 +97,13 @@ pub const Options = struct {
+         /// C API: `ghostty_render_state_*`.
+         render_state: bool = true,
+ 
++        /// Full-screen text search over the active screen and
++        /// scrollback (ScreenSearch), including a flattened
++        /// row-local match list for C embedders.
++        ///
++        /// C API: `ghostty_screen_search_*`.
++        search: bool = true,
++
+         /// Encoding of host input events into the byte sequences a
+         /// terminal application expects: keyboard input (including the
+         /// Kitty keyboard protocol), mouse reporting, focus reporting,
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index a7b72aa05..020771b73 100644
+index a7b72aa05..7bf2ab117 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -8,6 +8,7 @@ pub const color = @import("color.zig");
- pub const color_scheme = @import("color_scheme.zig");
- pub const focus = @import("focus.zig");
- pub const formatter = @import("formatter.zig");
+@@ -32,6 +32,7 @@ pub const types = @import("types.zig");
+ pub const modes = @import("modes.zig");
+ pub const osc = @import("osc.zig");
+ pub const render = @import("render.zig");
 +pub const search = @import("search.zig");
- pub const grid_ref = @import("grid_ref.zig");
- pub const grid_ref_tracked = @import("grid_ref_tracked.zig");
- pub const io = @import("io.zig");
-@@ -83,6 +84,12 @@ pub const formatter_format_buf = formatter.format_buf;
+ pub const selection = @import("selection.zig");
+ pub const selection_gesture = @import("selection_gesture.zig");
+ pub const key_event = @import("key_event.zig");
+@@ -83,6 +84,11 @@ pub const formatter_format_buf = formatter.format_buf;
  pub const formatter_format_alloc = formatter.format_alloc;
  pub const formatter_free = formatter.free;
  
-+// Temporary ghosvt/shim search C ABI until official 1.4.0 exports.
 +pub const screen_search_new = search.screen_search_new;
 +pub const screen_search_free = search.screen_search_free;
 +pub const screen_search_match_count = search.screen_search_match_count;
@@ -195,16 +217,11 @@ index a7b72aa05..020771b73 100644
  pub const render_state_update = render.update;
 diff --git a/src/terminal/c/search.zig b/src/terminal/c/search.zig
 new file mode 100644
-index 000000000..9fc934043
+index 000000000..f9ba370c5
 --- /dev/null
 +++ b/src/terminal/c/search.zig
-@@ -0,0 +1,216 @@
-+//! Temporary C ABI for terminal screen search (ScreenSearch).
-+//!
-+//! Ghostty has a full Zig search engine (terminal/search) but no stable C
-+//! exports yet. This module is a **ghosvt shim** until libghostty-vt 1.4.0
-+//! (or whenever upstream ships an official search C API). Remove or replace
-+//! when that lands; keep the public names/layout easy to swap.
+@@ -0,0 +1,316 @@
++//! C API for terminal screen search (ScreenSearch).
 +//!
 +//! Callers must serialize with other terminal mutations (same rule as
 +//! selection / grid_ref APIs).
@@ -214,6 +231,7 @@ index 000000000..9fc934043
 +const CAllocator = lib.alloc.Allocator;
 +const terminal_c = @import("terminal.zig");
 +const ZigTerminal = @import("../Terminal.zig");
++const Screen = @import("../Screen.zig");
 +const ScreenSearch = @import("../search/screen.zig").ScreenSearch;
 +const FlattenedHighlight = @import("../highlight.zig").Flattened;
 +const Result = @import("result.zig").Result;
@@ -272,7 +290,6 @@ index 000000000..9fc934043
 +
 +    wrapper.* = .{
 +        .alloc = alloc,
-+        // screens.active is already *Screen.
 +        .search = ScreenSearch.init(alloc, t.screens.active, slice) catch {
 +            return .out_of_memory;
 +        },
@@ -346,7 +363,7 @@ index 000000000..9fc934043
 +
 +fn appendExpanded(
 +    wrapper: *SearchWrapper,
-+    screen: *@import("../Screen.zig"),
++    screen: *Screen,
 +    hl: FlattenedHighlight,
 +) error{OutOfMemory}!void {
 +    const start_pin = hl.startPin();
@@ -414,4 +431,109 @@ index 000000000..9fc934043
 +            .y = sy,
 +        });
 +    }
++}
++
++const testing = std.testing;
++
++test "search: empty needle is invalid_value" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        10,
++        2,
++    ));
++    defer terminal_c.free(terminal);
++
++    var handle: ScreenSearchHandle = @ptrFromInt(1);
++    try testing.expectEqual(Result.invalid_value, screen_search_new(
++        &lib.alloc.test_allocator,
++        terminal,
++        "".ptr,
++        0,
++        &handle,
++    ));
++    try testing.expectEqual(@as(ScreenSearchHandle, null), handle);
++
++    handle = @ptrFromInt(1);
++    try testing.expectEqual(Result.invalid_value, screen_search_new(
++        &lib.alloc.test_allocator,
++        terminal,
++        null,
++        3,
++        &handle,
++    ));
++    try testing.expectEqual(@as(ScreenSearchHandle, null), handle);
++}
++
++test "search: simple match" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        20,
++        2,
++    ));
++    defer terminal_c.free(terminal);
++
++    terminal_c.vt_write(terminal, "hello", 5);
++
++    var handle: ScreenSearchHandle = null;
++    try testing.expectEqual(Result.success, screen_search_new(
++        &lib.alloc.test_allocator,
++        terminal,
++        "ell",
++        3,
++        &handle,
++    ));
++    defer screen_search_free(handle);
++
++    var count: usize = 0;
++    try testing.expectEqual(Result.success, screen_search_match_count(handle, &count));
++    try testing.expectEqual(@as(usize, 1), count);
++
++    var match: Match = undefined;
++    try testing.expectEqual(Result.success, screen_search_match_at(handle, 0, &match));
++    try testing.expectEqual(@as(u16, 1), match.start_x);
++    try testing.expectEqual(@as(u16, 3), match.end_x);
++
++    try testing.expectEqual(Result.no_value, screen_search_match_at(handle, 1, &match));
++}
++
++test "search: multi-row match expands" {
++    var terminal: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(
++        &lib.alloc.test_allocator,
++        &terminal,
++        4,
++        3,
++    ));
++    defer terminal_c.free(terminal);
++
++    // 4-col grid: "abcd" + "efgh" wraps "cdef" across the row boundary.
++    terminal_c.vt_write(terminal, "abcdefgh", 8);
++
++    var handle: ScreenSearchHandle = null;
++    try testing.expectEqual(Result.success, screen_search_new(
++        &lib.alloc.test_allocator,
++        terminal,
++        "cdef",
++        4,
++        &handle,
++    ));
++    defer screen_search_free(handle);
++
++    var count: usize = 0;
++    try testing.expectEqual(Result.success, screen_search_match_count(handle, &count));
++    try testing.expect(count >= 2);
++
++    var first: Match = undefined;
++    var second: Match = undefined;
++    try testing.expectEqual(Result.success, screen_search_match_at(handle, 0, &first));
++    try testing.expectEqual(Result.success, screen_search_match_at(handle, 1, &second));
++    try testing.expect(first.y != second.y);
++}
++
++test "search: free null is safe" {
++    screen_search_free(null);
 +}
