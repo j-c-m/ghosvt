@@ -114,7 +114,7 @@ search-position = bottom
 theme = eighties-black
 embedded-browser = true
 # web-extension = https://github.com/bitwarden/clients/releases/download/browser-v2026.7.0/dist-firefox-2026.7.0.zip
-# web-extension = https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.811.1529/uBOLite_2026.811.1529.safari.zip
+# web-extension = https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.818.1458/uBOLite_2026.818.1458.safari.zip
 ```
 
 ### Options
