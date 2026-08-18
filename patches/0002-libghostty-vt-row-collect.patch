@@ -1,10 +1,12 @@
 diff --git a/include/ghostty/vt/render.h b/include/ghostty/vt/render.h
+index f6b5e2222..9b03891ff 100644
 --- a/include/ghostty/vt/render.h
 +++ b/include/ghostty/vt/render.h
-@@ -778,6 +778,67 @@
+@@ -872,6 +872,67 @@ GHOSTTY_API GhosttyResult ghostty_render_state_row_cells_get_multi(
+     void** values,
      size_t* out_written);
  
- /**
++/**
 + * One packed viewport cell from ghostty_render_state_row_cells_collect.
 + *
 + * Layout is 16 bytes. flags bits:
@@ -65,20 +67,41 @@ diff --git a/include/ghostty/vt/render.h b/include/ghostty/vt/render.h
 +    size_t cap,
 +    size_t* out_len);
 +
-+/**
+ /**
   * Free a row cells instance.
   *
-  * @param cells The row cells handle to free (may be NULL)
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index 6cd76e354..437b8d593 100644
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -300,6 +300,7 @@ comptime {
+             @export(&c.render_state_row_cells_select, .{ .name = "ghostty_render_state_row_cells_select" });
+             @export(&c.render_state_row_cells_get, .{ .name = "ghostty_render_state_row_cells_get" });
+             @export(&c.render_state_row_cells_get_multi, .{ .name = "ghostty_render_state_row_cells_get_multi" });
++            @export(&c.render_state_row_cells_collect, .{ .name = "ghostty_render_state_row_cells_collect" });
+             @export(&c.render_state_row_cells_free, .{ .name = "ghostty_render_state_row_cells_free" });
+             @export(&c.render_state_free, .{ .name = "ghostty_render_state_free" });
+         }
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index 020771b73..552340262 100644
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -111,6 +111,7 @@ pub const render_state_row_cells_next = render.row_cells_next;
+ pub const render_state_row_cells_select = render.row_cells_select;
+ pub const render_state_row_cells_get = render.row_cells_get;
+ pub const render_state_row_cells_get_multi = render.row_cells_get_multi;
++pub const render_state_row_cells_collect = render.row_cells_collect;
+ pub const render_state_row_cells_free = render.row_cells_free;
+ 
+ pub const sgr_new = sgr.new;
 diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
+index c108456f2..8d13f50b1 100644
 --- a/src/terminal/c/render.zig
 +++ b/src/terminal/c/render.zig
-@@ -544,7 +544,131 @@
-         }
-     }
-     if (out_written) |w| w.* = count;
-+    return .success;
-+}
-+
+@@ -719,6 +719,130 @@ pub fn row_cells_get_multi(
+     return .success;
+ }
+ 
 +/// C: GhosttyRenderStatePackedCell
 +pub const PackedCell = extern struct {
 +    cp: u32 = 0,
@@ -130,7 +153,7 @@ diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
 +        dest[i] = empty;
 +    }
 +    if (out_len) |p| p.* = n;
-     return .success;
++    return .success;
 +}
 +
 +fn packCell(
@@ -201,28 +224,8 @@ diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
 +    out.bg_g = bg.g;
 +    out.bg_b = bg.b;
 +    return out;
- }
- 
- fn rowCellsGetTyped(
-diff --git a/src/lib_vt.zig b/src/lib_vt.zig
---- a/src/lib_vt.zig
-+++ b/src/lib_vt.zig
-@@ -291,6 +291,7 @@
-         @export(&c.render_state_row_cells_select, .{ .name = "ghostty_render_state_row_cells_select" });
-         @export(&c.render_state_row_cells_get, .{ .name = "ghostty_render_state_row_cells_get" });
-         @export(&c.render_state_row_cells_get_multi, .{ .name = "ghostty_render_state_row_cells_get_multi" });
-+        @export(&c.render_state_row_cells_collect, .{ .name = "ghostty_render_state_row_cells_collect" });
-         @export(&c.render_state_row_cells_free, .{ .name = "ghostty_render_state_row_cells_free" });
-         @export(&c.render_state_free, .{ .name = "ghostty_render_state_free" });
-         @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
-diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
---- a/src/terminal/c/main.zig
-+++ b/src/terminal/c/main.zig
-@@ -109,6 +109,7 @@
- pub const render_state_row_cells_select = render.row_cells_select;
- pub const render_state_row_cells_get = render.row_cells_get;
- pub const render_state_row_cells_get_multi = render.row_cells_get_multi;
-+pub const render_state_row_cells_collect = render.row_cells_collect;
- pub const render_state_row_cells_free = render.row_cells_free;
- 
- pub const sgr_new = sgr.new;
++}
++
+ inline fn rowCellsGetDispatch(
+     cells: *const RowCellsWrapper,
+     x: usize,

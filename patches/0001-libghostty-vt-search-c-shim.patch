@@ -153,23 +153,23 @@ index 000000000..eff90948c
 +
 +#endif /* GHOSTTY_VT_SEARCH_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 5b78b8cbe..634a39f4e 100644
+index ba97dae1e..6cd76e354 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -265,6 +265,11 @@ comptime {
-         @export(&c.formatter_format_buf, .{ .name = "ghostty_formatter_format_buf" });
-         @export(&c.formatter_format_alloc, .{ .name = "ghostty_formatter_format_alloc" });
-         @export(&c.formatter_free, .{ .name = "ghostty_formatter_free" });
+@@ -303,6 +303,11 @@ comptime {
+             @export(&c.render_state_row_cells_free, .{ .name = "ghostty_render_state_row_cells_free" });
+             @export(&c.render_state_free, .{ .name = "ghostty_render_state_free" });
+         }
 +        // Temporary ghosvt/shim until official libghostty-vt search C API (1.4.0).
 +        @export(&c.screen_search_new, .{ .name = "ghostty_screen_search_new" });
 +        @export(&c.screen_search_free, .{ .name = "ghostty_screen_search_free" });
 +        @export(&c.screen_search_match_count, .{ .name = "ghostty_screen_search_match_count" });
 +        @export(&c.screen_search_match_at, .{ .name = "ghostty_screen_search_match_at" });
-         @export(&c.terminal_selection_format_buf, .{ .name = "ghostty_terminal_selection_format_buf" });
-         @export(&c.terminal_selection_format_alloc, .{ .name = "ghostty_terminal_selection_format_alloc" });
-         @export(&c.render_state_new, .{ .name = "ghostty_render_state_new" });
+         @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
+         @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
+         @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index d6f9e6656..f2f031ba3 100644
+index a7b72aa05..020771b73 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
 @@ -8,6 +8,7 @@ pub const color = @import("color.zig");
@@ -180,7 +180,7 @@ index d6f9e6656..f2f031ba3 100644
  pub const grid_ref = @import("grid_ref.zig");
  pub const grid_ref_tracked = @import("grid_ref_tracked.zig");
  pub const io = @import("io.zig");
-@@ -82,6 +83,12 @@ pub const formatter_format_buf = formatter.format_buf;
+@@ -83,6 +84,12 @@ pub const formatter_format_buf = formatter.format_buf;
  pub const formatter_format_alloc = formatter.format_alloc;
  pub const formatter_free = formatter.free;
  

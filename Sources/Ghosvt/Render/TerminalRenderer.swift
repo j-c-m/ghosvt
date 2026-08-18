@@ -504,7 +504,7 @@ final class TerminalRenderer {
 
         var colors = GhosttyRenderStateColors()
         colors.size = MemoryLayout<GhosttyRenderStateColors>.size
-        _ = ghostty_render_state_colors_get(renderState, &colors)
+        _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors)
 
         var defFg = colors.foreground
         var defBg = colors.background
