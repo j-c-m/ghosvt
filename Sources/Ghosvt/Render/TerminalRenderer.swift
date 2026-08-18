@@ -82,6 +82,8 @@ final class TerminalRenderer {
     var lastBgCount = 0
     /// Glyph / overlay instance count packed after backgrounds.
     var lastFgCount = 0
+    /// Prefix of `lastFgCount` that uses `contentOffsetY` (ink, underlines, hover, cursor).
+    var lastScrolledFgCount = 0
     var lastLayoutKey: LayoutKey?
     var lastDefBg = (r: Theme.current.background.r, g: Theme.current.background.g, b: Theme.current.background.b)
     private(set) var lastDefFg = Theme.current.foreground
@@ -106,6 +108,7 @@ final class TerminalRenderer {
     func invalidatePackedInstances() {
         lastBgCount = 0
         lastFgCount = 0
+        lastScrolledFgCount = 0
         lastDrawnCount = 0
     }
 
@@ -525,7 +528,6 @@ final class TerminalRenderer {
         let searchHUDChanged = searchHUD != lastSearchHUD
         lastSearchHUD = searchHUD
         let layoutChanged = lastLayoutKey != layout
-        let visualChanged = abs(visualY - lastVisualY) > 0.05
         lastVisualY = visualY
 
         // Cursor can move without dirtying cells (e.g. ← at the shell prompt).
@@ -638,19 +640,15 @@ final class TerminalRenderer {
         let kitty = session.kittyCache
         let hasKitty = !kitty.isEmpty
 
-        // Cells stable: shellY is already baked into the last GPU upload.
-        // visualY / search-shift change must re-pack instances (shellY in oy).
-        // Kitty may still redraw without re-uploading cells.
+        // Cells stable: instance buffer is un-scrolled; `contentOffsetY` is shellY.
+        // visualY-only frames skip re-pack. Kitty still needs a new image upload.
         let linkHoverChanged = linkHover != lastLinkHover
         lastLinkHover = linkHover
-        // Open or close must re-pack: dismiss otherwise re-presents the dialog buffer.
         let quitChanged = quitConfirm != lastQuitConfirm
         lastQuitConfirm = quitConfirm
 
-        // Kitty rewrites the image instance buffer; stay on the upload path
-        // so that write lands in a free ring slot with the cells.
         let cellsStable = !needGridRebuild && !blinkChanged && !indicatorChanged
-            && !cursorChanged && !searchHUDChanged && !visualChanged
+            && !cursorChanged && !searchHUDChanged
             && !linkHoverChanged
             && !quitChanged
             && lastBgCount + lastFgCount > 0
@@ -659,11 +657,13 @@ final class TerminalRenderer {
             present(
                 bgCount: lastBgCount,
                 fgCount: lastFgCount,
+                scrolledFgCount: lastScrolledFgCount,
                 kitty: hasKitty ? kitty : nil,
                 drawable: drawable,
                 rpd: renderPassDescriptor,
                 pw: pw, ph: ph,
                 letterboxBg: letterboxBg,
+                contentOffsetY: shellY,
                 contentActive: false
             )
             return
@@ -684,7 +684,7 @@ final class TerminalRenderer {
         }
 
         appendCursor(
-            to: &overlayScratch,
+            to: &dyOverlayScratch,
             renderState: renderState,
             rowIter: rowIter,
             cells: cells,
@@ -695,7 +695,7 @@ final class TerminalRenderer {
             cellWInt: cellWInt,
             cellHInt: cellHInt,
             blinkOn: blinkOn,
-            visualY: shellY,
+            visualY: 0,
             windowFocused: windowFocused
         )
 
@@ -744,18 +744,19 @@ final class TerminalRenderer {
             bg: gridCells,
             inkByRow: glyphExtrasByRow,
             underlineByRow: underlineExtrasByRow,
-            dyOverlay: dyOverlayScratch,
-            overlay: overlayScratch,
-            dy: shellY
+            scrolledOverlay: dyOverlayScratch,
+            fixedOverlay: overlayScratch
         )
         present(
             bgCount: lastBgCount,
             fgCount: lastFgCount,
+            scrolledFgCount: lastScrolledFgCount,
             kitty: hasKitty ? kitty : nil,
             drawable: drawable,
             rpd: renderPassDescriptor,
             pw: pw, ph: ph,
             letterboxBg: letterboxBg,
+            contentOffsetY: shellY,
             contentActive: true
         )
     }
@@ -799,11 +800,13 @@ final class TerminalRenderer {
         uploadInstances(instances)
         lastBgCount = 0
         lastFgCount = instances.count
+        lastScrolledFgCount = instances.count
         lastDrawnCount = instances.count
         let letterboxBg = Theme.current.background
         present(
             bgCount: 0,
             fgCount: instances.count,
+            scrolledFgCount: instances.count,
             kitty: nil,
             drawable: drawable,
             rpd: renderPassDescriptor,
@@ -813,6 +816,7 @@ final class TerminalRenderer {
         )
         lastBgCount = 0
         lastFgCount = 0
+        lastScrolledFgCount = 0
         lastDrawnCount = 0
         lastLayoutKey = nil
     }
@@ -983,6 +987,7 @@ final class TerminalRenderer {
         present(
             bgCount: 0,
             fgCount: instances.count,
+            scrolledFgCount: instances.count,
             kitty: nil,
             drawable: drawable,
             rpd: renderPassDescriptor,
@@ -995,6 +1000,7 @@ final class TerminalRenderer {
         // until something dirties the VT (key/click).
         lastBgCount = 0
         lastFgCount = 0
+        lastScrolledFgCount = 0
         lastDrawnCount = 0
         lastLayoutKey = nil
     }

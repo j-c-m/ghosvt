@@ -50,7 +50,7 @@ struct CellInstance {
 struct FrameUniforms {
     var viewportX: Float
     var viewportY: Float
-    var _pad0: Float = 0
+    var contentOffsetY: Float = 0
     var _pad1: Float = 0
 
     static var stride: Int { 4 * MemoryLayout<Float>.size }

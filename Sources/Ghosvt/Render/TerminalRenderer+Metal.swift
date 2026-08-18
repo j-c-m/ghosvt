@@ -14,24 +14,25 @@ extension TerminalRenderer {
             lastDrawnCount = 0
             lastBgCount = 0
             lastFgCount = 0
+            lastScrolledFgCount = 0
             return
         }
         var off = 0
-        blitInstances(instances, to: raw, at: &off, dy: 0)
+        blitInstances(instances, to: raw, at: &off)
         lastDrawnCount = off
+        lastScrolledFgCount = off
     }
 
-    /// Pack `[bg | ink-by-row | underlines-by-row | dyOverlay | overlay]`.
-    /// Ink/underline stay per-row; no flatten into a host-side extra list.
+    /// Pack `[bg | ink-by-row | underlines-by-row | scrolled overlay | fixed overlay]`.
+    /// Scroll is `contentOffsetY` in the vertex shader, not baked into `oy`.
     func uploadGridLayers(
         bg: [CellInstance],
         inkByRow: [[CellInstance]],
         underlineByRow: [[CellInstance]],
-        dyOverlay: [CellInstance],
-        overlay: [CellInstance],
-        dy: Float
+        scrolledOverlay: [CellInstance],
+        fixedOverlay: [CellInstance]
     ) {
-        var extraN = dyOverlay.count + overlay.count
+        var extraN = scrolledOverlay.count + fixedOverlay.count
         for row in inkByRow { extraN += row.count }
         for row in underlineByRow { extraN += row.count }
         let total = bg.count + extraN
@@ -42,19 +43,21 @@ extension TerminalRenderer {
             lastDrawnCount = 0
             lastBgCount = 0
             lastFgCount = 0
+            lastScrolledFgCount = 0
             return
         }
         var off = 0
-        blitInstances(bg, to: raw, at: &off, dy: dy)
+        blitInstances(bg, to: raw, at: &off)
         lastBgCount = off
         for row in inkByRow {
-            blitInstances(row, to: raw, at: &off, dy: dy)
+            blitInstances(row, to: raw, at: &off)
         }
         for row in underlineByRow {
-            blitInstances(row, to: raw, at: &off, dy: dy)
+            blitInstances(row, to: raw, at: &off)
         }
-        blitInstances(dyOverlay, to: raw, at: &off, dy: dy)
-        blitInstances(overlay, to: raw, at: &off, dy: 0)
+        blitInstances(scrolledOverlay, to: raw, at: &off)
+        lastScrolledFgCount = off - lastBgCount
+        blitInstances(fixedOverlay, to: raw, at: &off)
         lastFgCount = off - lastBgCount
         lastDrawnCount = off
     }
@@ -62,26 +65,26 @@ extension TerminalRenderer {
     private func blitInstances(
         _ src: [CellInstance],
         to dest: UnsafeMutableRawPointer,
-        at offset: inout Int,
-        dy: Float
+        at offset: inout Int
     ) {
         guard !src.isEmpty else { return }
         let stride = MemoryLayout<CellInstance>.stride
         let dst = dest.advanced(by: offset * stride)
-        if dy == 0, stride == CellInstance.floatCount * MemoryLayout<Float>.size {
-            src.withUnsafeBytes { raw in
-                guard let p = raw.baseAddress else { return }
-                dst.copyMemory(from: p, byteCount: src.count * stride)
-            }
-        } else {
-            let floats = dst.assumingMemoryBound(to: Float.self)
-            for i in 0..<src.count {
-                var c = src[i]
-                c.oy += dy
-                c.write(to: floats, at: i)
-            }
+        src.withUnsafeBytes { raw in
+            guard let p = raw.baseAddress else { return }
+            dst.copyMemory(from: p, byteCount: src.count * stride)
         }
         offset += src.count
+    }
+
+    private func setFrameUniforms(
+        _ enc: MTLRenderCommandEncoder,
+        pw: Float,
+        ph: Float,
+        contentOffsetY: Float
+    ) {
+        var uni = FrameUniforms(viewportX: pw, viewportY: ph, contentOffsetY: contentOffsetY)
+        enc.setVertexBytes(&uni, length: FrameUniforms.stride, index: 1)
     }
 
     /// Minimum on-screen time for this frame within the display’s Adaptive-Sync range.
@@ -98,33 +101,22 @@ extension TerminalRenderer {
 
     /// Multi-pass present: Kitty z-layers interleaved with cell bg / ink.
     ///
-    /// Instance buffer layout: `[0 .. bgCount) backgrounds | [bgCount ..) glyphs+overlays`.
-    /// Draw order:
-    ///   1. below_bg images
-    ///   2. cell backgrounds
-    ///   3. below_text images
-    ///   4. glyphs + cursor + search HUD
-    ///   5. above_text images
+    /// Instance buffer: `[bg | scrolled fg | fixed fg]`.
+    /// Scrolled fg (ink, underlines, hover, cursor) uses `contentOffsetY`.
+    /// Fixed fg (HUD, indicator, quit) is drawn with offset 0.
     func present(
         bgCount: Int,
         fgCount: Int,
+        scrolledFgCount: Int,
         kitty: KittyGraphicsCache?,
         drawable: CAMetalDrawable,
         rpd: MTLRenderPassDescriptor,
         pw: Float,
         ph: Float,
         letterboxBg: GhosttyColorRgb,
+        contentOffsetY: Float = 0,
         contentActive: Bool = true
     ) {
-        // Only write uniforms on an acquired slot. cellsStable re-reads last slot.
-        if frames.pendingRelease, let ub = uniformBuffer {
-            var uni = FrameUniforms(viewportX: pw, viewportY: ph)
-            withUnsafeBytes(of: &uni) { raw in
-                ub.contents().copyMemory(from: raw.baseAddress!, byteCount: FrameUniforms.stride)
-            }
-        }
-
-        // Clear the full drawable so max-aspect letterbox bars match the TUI/terminal bg.
         rpd.colorAttachments[0].loadAction = .clear
         rpd.colorAttachments[0].clearColor = MTLClearColor(
             red: Double(letterboxBg.r) / 255,
@@ -141,37 +133,53 @@ extension TerminalRenderer {
             return
         }
 
-        enc.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
 
         if let kitty {
             drawImageQuads(enc, kitty.quads(for: .belowBg))
         }
 
+        let scrolled = min(max(scrolledFgCount, 0), fgCount)
+        let fixed = fgCount - scrolled
+
         enc.setRenderPipelineState(pipeline)
-        enc.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
         enc.setFragmentTexture(atlas.texture, index: 0)
         enc.setFragmentTexture(colorAtlas.texture, index: 1)
         enc.setFragmentSamplerState(sampler, index: 0)
+        setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: contentOffsetY)
         if bgCount > 0 {
+            enc.setVertexBuffer(instanceBuffer, offset: 0, index: 0)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: bgCount)
         }
 
         if let kitty {
+            setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
             drawImageQuads(enc, kitty.quads(for: .belowText))
-        }
-
-        // Glyph/overlay instances are packed after backgrounds.
-        if fgCount > 0 {
+            setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: contentOffsetY)
             enc.setRenderPipelineState(pipeline)
-            let byteOffset = bgCount * CellInstance.stride
-            enc.setVertexBuffer(instanceBuffer, offset: byteOffset, index: 0)
             enc.setFragmentTexture(atlas.texture, index: 0)
             enc.setFragmentTexture(colorAtlas.texture, index: 1)
             enc.setFragmentSamplerState(sampler, index: 0)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: fgCount)
+        }
+
+        if scrolled > 0 {
+            enc.setVertexBuffer(instanceBuffer, offset: bgCount * CellInstance.stride, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: scrolled)
+        }
+
+        if fixed > 0 {
+            setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
+            enc.setRenderPipelineState(pipeline)
+            enc.setFragmentTexture(atlas.texture, index: 0)
+            enc.setFragmentTexture(colorAtlas.texture, index: 1)
+            enc.setFragmentSamplerState(sampler, index: 0)
+            let byteOffset = (bgCount + scrolled) * CellInstance.stride
+            enc.setVertexBuffer(instanceBuffer, offset: byteOffset, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: fixed)
         }
 
         if let kitty {
+            setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
             drawImageQuads(enc, kitty.quads(for: .aboveText))
         }
 
@@ -421,7 +429,8 @@ extension TerminalRenderer {
 
     struct FrameUniforms {
         float2 viewport;
-        float2 _pad;
+        float contentOffsetY;
+        float _pad;
     };
 
     struct VertexOut {
@@ -450,6 +459,7 @@ extension TerminalRenderer {
         CellInstance c = cells[iid];
         float2 corner = corners[vid];
         float2 px = c.origin + corner * c.size;
+        px.y += uni.contentOffsetY;
         float2 ndc;
         ndc.x = (px.x / uni.viewport.x) * 2.0 - 1.0;
         ndc.y = 1.0 - (px.y / uni.viewport.y) * 2.0;
