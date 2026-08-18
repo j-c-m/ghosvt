@@ -50,9 +50,6 @@ final class TerminalRenderer {
     var gridCells: [CellInstance] = []
     /// Viewport cell content for cursor under-glyph (no second VT walk).
     var rowCellCache: [TerminalRowCell] = []
-    var underlineExtras: [CellInstance] = []
-    /// Multi-cell ligature / per-cell ink drawn after backgrounds.
-    var glyphExtras: [CellInstance] = []
     /// Per-viewport-row ink so a partial dirty pass can replace one row.
     var glyphExtrasByRow: [[CellInstance]] = []
     var underlineExtrasByRow: [[CellInstance]] = []
@@ -311,8 +308,6 @@ final class TerminalRenderer {
         lastLayoutKey = nil
         gridCells.removeAll(keepingCapacity: true)
         rowCellCache.removeAll(keepingCapacity: true)
-        glyphExtras.removeAll(keepingCapacity: true)
-        underlineExtras.removeAll(keepingCapacity: true)
         overlayScratch.removeAll(keepingCapacity: true)
         dyOverlayScratch.removeAll(keepingCapacity: true)
         runSegScratch.removeAll(keepingCapacity: true)
@@ -674,7 +669,7 @@ final class TerminalRenderer {
             return
         }
 
-        // Compose overlays without copying gridCells / glyphExtras.
+        // Compose overlays without copying gridCells / per-row ink.
         // below_bg → cell bg → below_text → glyphs → above_text → overlays.
         dyOverlayScratch.removeAll(keepingCapacity: true)
         overlayScratch.removeAll(keepingCapacity: true)
@@ -747,8 +742,8 @@ final class TerminalRenderer {
 
         uploadGridLayers(
             bg: gridCells,
-            ink: glyphExtras,
-            underlines: underlineExtras,
+            inkByRow: glyphExtrasByRow,
+            underlineByRow: underlineExtrasByRow,
             dyOverlay: dyOverlayScratch,
             overlay: overlayScratch,
             dy: shellY

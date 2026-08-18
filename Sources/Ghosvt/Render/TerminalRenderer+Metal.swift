@@ -21,16 +21,20 @@ extension TerminalRenderer {
         lastDrawnCount = off
     }
 
-    /// Pack `[bg | ink | underlines | dyOverlay | overlay]` without copying the grid.
+    /// Pack `[bg | ink-by-row | underlines-by-row | dyOverlay | overlay]`.
+    /// Ink/underline stay per-row; no flatten into a host-side extra list.
     func uploadGridLayers(
         bg: [CellInstance],
-        ink: [CellInstance],
-        underlines: [CellInstance],
+        inkByRow: [[CellInstance]],
+        underlineByRow: [[CellInstance]],
         dyOverlay: [CellInstance],
         overlay: [CellInstance],
         dy: Float
     ) {
-        let total = bg.count + ink.count + underlines.count + dyOverlay.count + overlay.count
+        var extraN = dyOverlay.count + overlay.count
+        for row in inkByRow { extraN += row.count }
+        for row in underlineByRow { extraN += row.count }
+        let total = bg.count + extraN
         frames.acquire()
         ensureInstanceCapacity(max(total, 1))
         guard let raw = instanceBuffer?.contents() else {
@@ -43,8 +47,12 @@ extension TerminalRenderer {
         var off = 0
         blitInstances(bg, to: raw, at: &off, dy: dy)
         lastBgCount = off
-        blitInstances(ink, to: raw, at: &off, dy: dy)
-        blitInstances(underlines, to: raw, at: &off, dy: dy)
+        for row in inkByRow {
+            blitInstances(row, to: raw, at: &off, dy: dy)
+        }
+        for row in underlineByRow {
+            blitInstances(row, to: raw, at: &off, dy: dy)
+        }
         blitInstances(dyOverlay, to: raw, at: &off, dy: dy)
         blitInstances(overlay, to: raw, at: &off, dy: 0)
         lastFgCount = off - lastBgCount

@@ -90,7 +90,6 @@ extension TerminalRenderer {
                 cellWInt: cellWInt,
                 cellHInt: cellHInt
             )
-            flattenInkExtras()
             if atlas.packGeneration == gen, colorAtlas.packGeneration == colorGen { break }
         }
     }
@@ -123,23 +122,6 @@ extension TerminalRenderer {
         if glyphExtrasByRow.count != layout.rows {
             glyphExtrasByRow = Array(repeating: [], count: layout.rows)
             underlineExtrasByRow = Array(repeating: [], count: layout.rows)
-        }
-    }
-
-    func flattenInkExtras() {
-        var glyphN = 0
-        var ulN = 0
-        for i in 0..<glyphExtrasByRow.count {
-            glyphN += glyphExtrasByRow[i].count
-            ulN += underlineExtrasByRow[i].count
-        }
-        glyphExtras.removeAll(keepingCapacity: true)
-        underlineExtras.removeAll(keepingCapacity: true)
-        glyphExtras.reserveCapacity(glyphN)
-        underlineExtras.reserveCapacity(ulN)
-        for i in 0..<glyphExtrasByRow.count {
-            glyphExtras.append(contentsOf: glyphExtrasByRow[i])
-            underlineExtras.append(contentsOf: underlineExtrasByRow[i])
         }
     }
 
@@ -1074,7 +1056,7 @@ extension TerminalRenderer {
                 fallbackFonts: nerdFallbackFonts(metrics: metrics)
             )
         }
-        // Cell bg stays in gridCells (step 1). Ink goes to glyphExtras so below_text
+        // Cell bg stays in gridCells (step 1). Ink goes to glyphExtrasByRow so below_text
         // Kitty images sit under wide glyphs (same order as shaped runs).
         let cellX = (layout.originX + layout.padPx + Float(col) * layout.cellW)
             .rounded(.towardZero)
