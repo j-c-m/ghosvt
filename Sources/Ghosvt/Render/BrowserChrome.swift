@@ -308,13 +308,15 @@ final class BrowserChrome: NSObject {
         openNewBrowserTab(url: url, onVT: index, activate: true, editAddress: false)
     }
 
-    /// Create a new tab on `vt` (opens a session if needed). Caps at `BrowserSession.maxTabs`.
+    /// Create a new tab on `vt` (opens a session if needed).
     @discardableResult
     func openNewBrowserTab(
         url: URL?,
         onVT index: Int,
         activate: Bool,
-        editAddress: Bool
+        editAddress: Bool,
+        configuration: WKWebViewConfiguration? = nil,
+        skipInitialLoad: Bool = false
     ) -> EmbeddedBrowserView? {
         ensureBrowserExtensionsLoaded()
         view.ensureOverlays()
@@ -335,16 +337,8 @@ final class BrowserChrome: NSObject {
             session = BrowserSession()
             view.overlays.slots[index].session = session
         }
-        if session.tabs.count >= BrowserSession.maxTabs {
-            fputs("ghosvt: browser tab cap (\(BrowserSession.maxTabs)) on vt=\(index)\n", stderr)
-            if let url, let active = session.activeBrowser {
-                active.load(url: url)
-                if activate { activateBrowserTab(onVT: index, tabIndex: session.activeTabIndex) }
-            }
-            return session.activeBrowser
-        }
 
-        let browser = makeBrowserTabView(onVT: index)
+        let browser = makeBrowserTabView(onVT: index, configuration: configuration)
         browser.pageZoom = view.pageZoomScale
         view.addSubview(browser)
         session.tabs.append(browser)
@@ -355,8 +349,10 @@ final class BrowserChrome: NSObject {
         if activate {
             session.activeTabIndex = tabIndex
         }
-        let loadURL = url ?? URL(string: "about:blank")!
-        browser.load(url: loadURL)
+        if !skipInitialLoad {
+            let loadURL = url ?? URL(string: "about:blank")!
+            browser.load(url: loadURL)
+        }
         showBrowserForActiveVT()
         view.layoutActiveBrowser()
         if activate {
@@ -371,8 +367,11 @@ final class BrowserChrome: NSObject {
         return browser
     }
 
-    func makeBrowserTabView(onVT index: Int) -> EmbeddedBrowserView {
-        let browser = EmbeddedBrowserView(frame: .zero)
+    func makeBrowserTabView(
+        onVT index: Int,
+        configuration: WKWebViewConfiguration? = nil
+    ) -> EmbeddedBrowserView {
+        let browser = EmbeddedBrowserView(frame: .zero, configuration: configuration)
         browser.onClose = { [weak self] in
             self?.dismissBrowser(onVT: index)
         }
@@ -410,6 +409,20 @@ final class BrowserChrome: NSObject {
         }
         browser.onOpenInNewTab = { [weak self] url in
             self?.openNewBrowserTab(url: url, onVT: index, activate: true, editAddress: false)
+        }
+        browser.onHostKey = { [weak view] event in
+            guard let view, let manager = view.manager else { return false }
+            return view.handleVtSwitch(event, manager: manager)
+        }
+        browser.onCreateChildWebView = { [weak self] config in
+            self?.openNewBrowserTab(
+                url: nil,
+                onVT: index,
+                activate: true,
+                editAddress: false,
+                configuration: config,
+                skipInitialLoad: true
+            )?.pageWebView
         }
         return browser
     }
@@ -524,6 +537,10 @@ final class BrowserChrome: NSObject {
     func dismissBrowser(onVT index: Int) {
         view.ensureOverlays()
         guard index >= 0, index < view.overlays.count else { return }
+        if let start = view.manager?.browserStartURL(for: index) {
+            resetBoundBrowser(onVT: index, start: start)
+            return
+        }
         openExtensionPopover?.close()
         openExtensionPopover = nil
         if #available(macOS 15.4, *) {
@@ -551,6 +568,20 @@ final class BrowserChrome: NSObject {
         // Terminal path must paint this turn (not wait for next key/mouse).
         // Async avoids re-entering draw from inside a key handler mid-frame.
         view.requestFrame()
+    }
+
+    /// Bound slot stays a browser: last close reloads the start URL.
+    private func resetBoundBrowser(onVT index: Int, start: URL) {
+        if let session = view.overlays[index].session, let active = session.activeBrowser {
+            active.load(url: start)
+            syncChromeFromBrowser(active, onVT: index)
+            showBrowserForActiveVT()
+            view.layoutActiveBrowser()
+            active.focusWebContent()
+            view.requestFrame()
+            return
+        }
+        openBrowser(url: start, onVT: index)
     }
 
     func showBrowserForActiveVT() {
@@ -1028,8 +1059,20 @@ final class BrowserChrome: NSObject {
             }
             return false
         }
-        if isCommandChord(event, keyCode: BrowserKeyCode.q, char: "q")
-            || isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
+        if isCommandChord(event, keyCode: BrowserKeyCode.q, char: "q") {
+            if view.manager?.isBrowserBound(i) == true {
+                NSApp.terminate(nil)
+                return true
+            }
+            dismissBrowser(onVT: i)
+            return true
+        }
+        if isCommandChord(event, keyCode: BrowserKeyCode.w, char: "w") {
+            if view.manager?.isBrowserBound(i) == true,
+               let session = view.overlays[i].session {
+                closeBrowserTab(onVT: i, tabIndex: session.activeTabIndex)
+                return true
+            }
             dismissBrowser(onVT: i)
             return true
         }
@@ -1195,7 +1238,7 @@ final class BrowserChrome: NSObject {
             return true
         }
         // Swallow remaining ⌘/⌃ so they never fall into the PTY as literal chars (e.g. "v").
-        // Leave VT-switch chords for routeKey (⌘1… / ⇧⌘[ ]).
+        // Leave VT-switch chords for routeKey (⌘F1… / ⇧⌘[ ]).
         if flags.contains(.command) || flags.contains(.control) {
             if let manager = view.manager,
                KeyBridge.vtSwitchIndex(from: event, vtCount: manager.config.vtCount) != nil {

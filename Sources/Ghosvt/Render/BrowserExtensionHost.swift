@@ -19,7 +19,6 @@ import CryptoKit
 @available(macOS 15.4, *)
 final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
     static let shared = BrowserExtensionHost()
-    static let maxTabsPerWindow = 8
 
     /// When true, also load Safari web-extension appexes from `/Applications`.
     private static let loadInstalledSafariExtensions = false

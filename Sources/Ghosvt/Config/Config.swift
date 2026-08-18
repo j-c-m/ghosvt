@@ -46,6 +46,8 @@ struct Config: Sendable {
     var embeddedBrowser: Bool = true
     /// Remote zip/xpi pins loaded on first browser open. Empty = no extensions.
     var webExtensions: [WebExtensionPin] = []
+    /// 0-based VT index → start URL. That slot skips login and opens the embed.
+    var vtBrowsers: [Int: URL] = [:]
     /// Ghostty theme slug (`theme = eighties-black`). Empty = no named file.
     var themeName: String = "eighties-black"
     /// Explicit color keys overlaid after the theme file.
@@ -72,6 +74,7 @@ struct Config: Sendable {
 
     static func load() -> Config {
         var cfg = Config()
+        var pendingVtBrowsers: [(oneBased: Int, url: URL)] = []
         let url = configFileURL()
         guard let data = try? String(contentsOf: url, encoding: .utf8) else {
             _ = Theme.resolve(from: cfg)
@@ -147,6 +150,12 @@ struct Config: Sendable {
                    let pin = parseWebExtension(value) {
                     cfg.webExtensions.append(pin)
                 }
+            case "vt-browser":
+                if let parsed = parseVtBrowser(value) {
+                    pendingVtBrowsers.append(parsed)
+                } else {
+                    fputs("ghosvt: vt-browser: cannot parse \(value)\n", stderr)
+                }
             case "theme":
                 cfg.themeName = value
             case "background", "foreground", "cursor-color", "cursor-text",
@@ -159,8 +168,46 @@ struct Config: Sendable {
                 break
             }
         }
+        applyVtBrowsers(pendingVtBrowsers, to: &cfg)
         _ = Theme.resolve(from: cfg)
         return cfg
+    }
+
+    /// Bind after `vt-count` is known so order in the file does not matter.
+    private static func applyVtBrowsers(_ pending: [(oneBased: Int, url: URL)], to cfg: inout Config) {
+        for item in pending {
+            if item.oneBased < 1 || item.oneBased > cfg.vtCount {
+                fputs(
+                    "ghosvt: vt-browser: VT \(item.oneBased) out of range (vt-count=\(cfg.vtCount))\n",
+                    stderr
+                )
+                continue
+            }
+            cfg.vtBrowsers[item.oneBased - 1] = item.url
+        }
+    }
+
+    /// `6` or `6:https://example.com`. Empty rest / `about:blank` → about:blank.
+    static func parseVtBrowser(_ value: String) -> (oneBased: Int, url: URL)? {
+        let t = value.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        let oneBased: Int
+        let rest: String
+        if let colon = t.firstIndex(of: ":") {
+            let left = t[..<colon].trimmingCharacters(in: .whitespaces)
+            guard let n = Int(left), n >= 1 else { return nil }
+            oneBased = n
+            rest = t[t.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        } else {
+            guard let n = Int(t), n >= 1 else { return nil }
+            oneBased = n
+            rest = ""
+        }
+        if rest.isEmpty || rest.lowercased() == "about:blank" {
+            return (oneBased, URL(string: "about:blank")!)
+        }
+        guard let url = UntrustedURL(rest).embeddableHTTPURL else { return nil }
+        return (oneBased, url)
     }
 
     /// `key = value` with Ghostty comments: `#` at line start, or after a complete value.

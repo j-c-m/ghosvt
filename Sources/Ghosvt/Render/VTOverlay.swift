@@ -38,7 +38,6 @@ struct VTBrowserChrome {
 final class BrowserSession {
     var tabs: [EmbeddedBrowserView] = []
     var activeTabIndex: Int = 0
-    static let maxTabs = 8
 
     var activeBrowser: EmbeddedBrowserView? {
         guard activeTabIndex >= 0, activeTabIndex < tabs.count else { return nil }

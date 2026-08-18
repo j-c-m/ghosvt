@@ -30,7 +30,20 @@ final class VtManager {
         sessions[activeIndex]
     }
 
+    func isBrowserBound(_ index: Int) -> Bool {
+        config.vtBrowsers[index] != nil
+    }
+
+    var isActiveBrowserBound: Bool {
+        isBrowserBound(activeIndex)
+    }
+
+    func browserStartURL(for index: Int) -> URL? {
+        config.vtBrowsers[index]
+    }
+
     func ensureActiveStarted(cols: UInt16, rows: UInt16, cellWidthPx: UInt32, cellHeightPx: UInt32) {
+        if isActiveBrowserBound { return }
         active.ensureStarted(cols: cols, rows: rows, cellWidthPx: cellWidthPx, cellHeightPx: cellHeightPx)
     }
 

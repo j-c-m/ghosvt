@@ -4,7 +4,7 @@ Fullscreen macOS multi-VT terminal on **libghostty-vt** + **Metal**.
 
 Experimental. Build from source. Not affiliated with Ghostty.
 
-Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-mode = login`** uses a getty banner and a full password prompt. **`shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**).
+Linux-style consoles: **⌘F1…** switch VTs; **⇧⌘[ / ⇧⌘]** previous / next. Default **`console-mode = login`** uses a getty banner and a full password prompt. **`shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**).
 
 ## Requirements
 
@@ -115,6 +115,8 @@ theme = eighties-black
 embedded-browser = true
 # web-extension = https://github.com/bitwarden/clients/releases/download/browser-v2026.7.0/dist-firefox-2026.7.0.zip
 # web-extension = https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.818.1458/uBOLite_2026.818.1458.safari.zip
+# vt-browser = 6
+# vt-browser = 7:https://example.com
 ```
 
 ### Options
@@ -141,6 +143,7 @@ embedded-browser = true
 | `search-foreground` / `search-background` | `#000000` / `#FFE082` | Same tokens as cursor |
 | `search-selected-foreground` / `search-selected-background` | `#000000` / `#F2A57E` | Same tokens as cursor |
 | `embedded-browser` | `true` | Embed via ⌘B / ⌘-click. When `false`: ⌘B off; ⌘-click opens the system browser |
+| `vt-browser` | *(none)* | Repeatable `N` or `N:https://…` (1-based VT). That slot skips login and opens the embed. Empty / `about:blank` → blank page. Last line for a given *N* wins. |
 | `web-extension` | *(none)* | Repeatable remote zip/xpi. See [Web extensions](#web-extensions). |
 | `scroll-spring-k` | `120` | Overscroll spring stiffness |
 | `scroll-spring-c` | `14` | Overscroll damping |
@@ -164,9 +167,8 @@ Firefox (and some Safari-lite) zips are just web files and a manifest. Those loa
 
 | Binding | Action |
 |---------|--------|
-| **⌘1…⌘9** | Switch to VT 1…9 |
 | **⌘F1…⌘F*n*** | Switch to VT 1…*n* |
-| **⌘← / ⌘→** | Previous / next VT |
+| **⇧⌘[ / ⇧⌘]** | Previous / next VT |
 | **⌘Page Up** | Smooth scroll up (older history); accelerates while held |
 | **⌘Page Down** | Smooth scroll down (toward bottom); accelerates while held |
 | **⌘C** | Copy selection |
@@ -185,6 +187,8 @@ Firefox (and some Safari-lite) zips are just web files and a manifest. Those loa
 | Mouse drag | Host selection (or app mouse when tracking; Shift forces host select) |
 
 VT switch shows a brief **VT *n*** label in the **upper-right** of the content area.
+
+A `vt-browser` slot is the embed, not a getty. First visit opens it (start URL or blank). ⌘W closes a tab; the last tab reloads the start URL. ⌘Q quits ghosvt.
 
 ## Display
 

@@ -2,47 +2,20 @@ import AppKit
 import CGhosttyVT
 
 enum KeyBridge {
-    /// ⌘1…⌘9 / ⌘0 or ⌘F1…⌘F12 → VT index (0-based), else nil.
+    /// ⌘F1…⌘F12 → VT index (0-based), else nil.
     static func vtSwitchIndex(from event: NSEvent, vtCount: Int) -> Int? {
         guard event.type == .keyDown || event.type == .keyUp else { return nil }
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        // Command required; do not treat Option/Control-only as VT switch.
         guard flags.contains(.command) else { return nil }
-        // Leave pure app quit alone (⌘Q handled elsewhere).
         if flags.contains(.shift) || flags.contains(.control) { return nil }
 
-        let keyCode = event.keyCode
-
-        // Main keyboard 1–9 (⌘0 is font-size reset, Ghostty-style — not VT 10).
-        let mainDigitKeys: [UInt16: Int] = [
-            18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
-            22: 6, 26: 7, 28: 8, 25: 9,
-        ]
-        // Numeric keypad 1–9
-        let padDigitKeys: [UInt16: Int] = [
-            83: 1, 84: 2, 85: 3, 86: 4, 87: 5,
-            88: 6, 89: 7, 91: 8, 92: 9,
-        ]
-        if let n = mainDigitKeys[keyCode] ?? padDigitKeys[keyCode], n >= 1, n <= vtCount {
-            return n - 1
-        }
-
-        if let raw = event.charactersIgnoringModifiers, raw.count == 1, let ch = raw.first {
-            if ch >= "1", ch <= "9" {
-                let n = Int(ch.asciiValue! - UInt8(ascii: "0"))
-                if n >= 1, n <= vtCount { return n - 1 }
-            }
-        }
-
-        // F1–F12
         let fKeys: [UInt16] = [
             122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,
         ]
-        if let idx = fKeys.firstIndex(of: keyCode), idx < vtCount {
+        if let idx = fKeys.firstIndex(of: event.keyCode), idx < vtCount {
             return idx
         }
-
         return nil
     }
 

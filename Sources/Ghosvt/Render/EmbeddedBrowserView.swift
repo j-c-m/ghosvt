@@ -6,7 +6,7 @@ import WebKit
 /// **Extension pages:** WebKit requires the context’s `webViewConfiguration` for
 /// extension base URLs (`safari-web-extension://…`), and a normal host configuration
 /// for http(s). Swaps the underlying `WKWebView` when crossing that boundary.
-final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
+final class EmbeddedBrowserView: NSView, WKNavigationDelegate, WKUIDelegate {
     var onClose: (() -> Void)?
     var onURLChange: ((String, Bool, Bool) -> Void)?
     /// Fired when the user interacts with page content (ends address-bar edit).
@@ -15,6 +15,10 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     var onNavigationStateChange: (() -> Void)?
     /// `target=_blank` / window.open — host may open a new tab; if nil, load in this view.
     var onOpenInNewTab: ((URL) -> Void)?
+    /// Host chords (VT switch) while this web view is first responder.
+    var onHostKey: ((NSEvent) -> Bool)?
+    /// `window.open` / `about:blank` target=_blank — must return a view using WebKit's config.
+    var onCreateChildWebView: ((WKWebViewConfiguration) -> WKWebView?)?
 
     private var webView: WKWebView
     private var titleObservation: NSKeyValueObservation?
@@ -55,9 +59,13 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
             || (window?.firstResponder as? NSView)?.isDescendant(of: webView) == true
     }
 
-    override init(frame frameRect: NSRect) {
-        let config = Self.makeNormalConfiguration()
-        webView = WKWebView(frame: .zero, configuration: config)
+    override convenience init(frame frameRect: NSRect) {
+        self.init(frame: frameRect, configuration: nil)
+    }
+
+    init(frame frameRect: NSRect, configuration: WKWebViewConfiguration?) {
+        let config = configuration ?? Self.makeNormalConfiguration()
+        webView = BrowserPageWebView(frame: .zero, configuration: config)
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.white.cgColor
@@ -237,6 +245,7 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if onHostKey?(event) == true { return true }
         if performStandardEditKey(event) { return true }
         if webView.performKeyEquivalent(with: event) { return true }
         return super.performKeyEquivalent(with: event)
@@ -271,6 +280,7 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
     private static func makeNormalConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.preferences.isElementFullscreenEnabled = true
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
         // Stock WKWebView omits `Version/… Safari/…`; sites UA-sniff and diverge from Safari.
         config.applicationNameForUserAgent = safariLikeUserAgentSuffix
         if #available(macOS 15.4, *) {
@@ -283,10 +293,17 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         titleObservation?.invalidate()
         loadingObservation?.invalidate()
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
         webView.removeFromSuperview()
 
         webView = wv
+        if let page = wv as? BrowserPageWebView {
+            page.onHostKey = { [weak self] event in
+                self?.onHostKey?(event) ?? false
+            }
+        }
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.autoresizingMask = [.width, .height]
         webView.setValue(true, forKey: "drawsBackground")
         if #available(macOS 13.3, *) {
@@ -334,7 +351,7 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
             config = Self.makeNormalConfiguration()
             isExtensionPageWebView = false
         }
-        let newView = WKWebView(frame: bounds, configuration: config)
+        let newView = BrowserPageWebView(frame: bounds, configuration: config)
         installWebView(newView)
         // Tab bridge holds weak browser; webView(for:) reads pageWebView live — no re-register needed.
         onNavigationStateChange?()
@@ -430,14 +447,33 @@ final class EmbeddedBrowserView: NSView, WKNavigationDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // target=_blank / window.open — open in a new tab when possible.
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
-            if let onOpenInNewTab {
-                onOpenInNewTab(url)
-            } else {
-                load(url: url)
+        if let url = navigationAction.request.url {
+            let scheme = url.scheme?.lowercased() ?? ""
+            if (scheme == "http" || scheme == "https"), url.host != nil {
+                if let onOpenInNewTab {
+                    onOpenInNewTab(url)
+                } else {
+                    load(url: url)
+                }
+                return nil
             }
         }
-        return nil
+        // about:blank / empty request: WebKit loads the real URL into the returned view.
+        return onCreateChildWebView?(configuration)
+    }
+}
+
+/// First responder is this view, not the metal host. Claim VT chords before WebKit.
+private final class BrowserPageWebView: WKWebView {
+    var onHostKey: ((NSEvent) -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if onHostKey?(event) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if onHostKey?(event) == true { return }
+        super.keyDown(with: event)
     }
 }

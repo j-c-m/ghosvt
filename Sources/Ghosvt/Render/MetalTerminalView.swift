@@ -245,6 +245,9 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         restorePreferredFirstResponder()
         rebindDisplay()
         spawnIfNeeded()
+        if window != nil {
+            ensureBoundBrowser()
+        }
         updateTrackingAreas()
         if window != nil {
             installFocusObservers()
@@ -525,7 +528,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     }
 
     private func spawnIfNeeded() {
-        guard let manager, let g = shellGridSize() else { return }
+        guard let manager, !manager.isActiveBrowserBound, let g = shellGridSize() else { return }
         manager.ensureActiveStarted(cols: g.cols, rows: g.rows, cellWidthPx: g.cellW, cellHeightPx: g.cellH)
         lastCols = g.cols
         lastRows = g.rows
@@ -1079,11 +1082,12 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = flags.contains(.command)
 
+        // Always before browser/WebKit — bound VTs focus the page, not the address bar.
+        if let manager, handleVtSwitch(event, manager: manager) { return .consumed }
+
         if isBrowserActive {
             if command {
                 if handleFontSizeKeys(event) { return .consumed }
-                // VT switch before address-bar swallow (⌘1… / ⇧⌘[ ] must leave a page).
-                if let manager, handleVtSwitch(event, manager: manager) { return .consumed }
                 if chrome.handleBrowserKeys(event) { return .consumed }
                 if chrome.handleBrowserPageEditKeys(event) { return .consumed }
                 if chrome.handleBrowserPageScrollKeys(event) { return .consumed }
@@ -1105,7 +1109,6 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         if handleFontSizeKeys(event) { return .consumed }
         if search.handleKeys(event) { return .consumed }
         if isSearchOpen, search.handleTyping(event) { return .consumed }
-        if let manager, handleVtSwitch(event, manager: manager) { return .consumed }
         if let manager, handleScrollPage(event, manager: manager) { return .consumed }
         if let manager, handleTerminalChords(event, manager: manager) { return .consumed }
 
@@ -1164,6 +1167,18 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         return false
     }
 
+    /// Open or restore a `vt-browser` slot on the active VT.
+    func ensureBoundBrowser() {
+        guard let manager, let url = manager.browserStartURL(for: manager.activeIndex) else { return }
+        ensureOverlays()
+        let i = manager.activeIndex
+        if i < overlays.count, overlays[i].session != nil {
+            chrome.showBrowserForActiveVT()
+            return
+        }
+        chrome.openBrowser(url: url, onVT: i)
+    }
+
     /// Activate the new VT; restore that VT’s search HUD / browser if open.
     private func afterVtSwitch(manager: VtManager) {
         search.cancelDebounce()
@@ -1176,6 +1191,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
                 cellWidthPx: g.cellW, cellHeightPx: g.cellH
             )
         }
+        ensureBoundBrowser()
         // Refresh matches against this session’s scrollback (coords can drift).
         if isSearchOpen, !search.needle.isEmpty {
             search.run(needle: search.needle, selectFirst: false)
@@ -1261,6 +1277,10 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
     /// shrink `height` so the top of the rect drops by chrome rows.
     /// Final frame is pixel-aligned so WebKit text is not rasterized on half-pixels.
     func layoutActiveBrowser() {
+        if isQuitConfirmOpen {
+            chrome.hideAllBrowserViews()
+            return
+        }
         guard let session = chrome.activeSession, let metrics else {
             chrome.hideAllBrowserViews()
             return
@@ -1495,6 +1515,8 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         }
         isQuitConfirmOpen = true
         quitConfirmCompletion = completion
+        chrome.hideAllBrowserViews()
+        window?.makeFirstResponder(self)
         requestFrame()
     }
 
@@ -1546,6 +1568,7 @@ final class MetalTerminalView: MTKView, NSMenuItemValidation {
         quitConfirmCompletion = nil
         // Drop packed GPU instances so the next frame cannot re-present the panel.
         renderer?.invalidatePackedInstances()
+        requestFrame()
         done?(confirmed)
     }
 
