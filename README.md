@@ -2,11 +2,12 @@
 
 Fullscreen macOS multi-VT terminal on **libghostty-vt** + **Metal**.
 
+Experimental. Build from source. Not affiliated with Ghostty.
+
 Linux-style consoles: **⌘1…⌘9 / ⌘F1…** switch VTs. Default **`console-mode = login`** uses a getty banner and a full password prompt. **`shell`** matches Ghostty (`login -flp` → shell, shows **Last login:**).
 
 ## Requirements
 
-- macOS 14+
 - Xcode / Swift 6 toolchain
 - Zig (same major as Ghostty; see [Ghostty build docs](https://ghostty.org/docs/install/build))
 - Non-sandboxed build (`login` needs a non-sandbox environment)
