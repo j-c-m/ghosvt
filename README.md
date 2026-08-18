@@ -153,7 +153,7 @@ Repeatable `web-extension` lines. Loaded on first browser open, not at launch. E
 
 URL plus optional `firefox-ua` / `safari-ua`. Omit the flag to infer from the manifest (`gecko` → Firefox UA, `safari` → honest).
 
-Safari `/Applications` appexes are not autoloaded. `nativeMessaging` is never granted.
+Safari `/Applications` appexes are not autoloaded. Install grants only the APIs and hosts in the manifest (`permissions`, `host_permissions`, and `content_scripts` matches). Optional APIs and hosts wait until the extension asks, and must be declared. `nativeMessaging` is never granted.
 
 Safari web extensions are usually an `.appex` plus a native Mac app. Safari launches that app and talks to it over `nativeMessaging`. ghosvt cannot host those native apps inside the embed, so those packages fail.
 

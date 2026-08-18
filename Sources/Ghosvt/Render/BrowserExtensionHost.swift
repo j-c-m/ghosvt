@@ -4,7 +4,8 @@ import CryptoKit
 // used from AppKit’s main thread (not from MTKView.draw).
 @preconcurrency import WebKit
 
-/// Process-wide `WKWebExtensionController` host: tab/window bridges, lifecycle, auto-grant.
+/// Process-wide `WKWebExtensionController` host: tab/window bridges, lifecycle,
+/// requested-only grants.
 /// Main thread only. Packages are either Safari `.appex` (`appExtensionBundle`) or
 /// unpacked directories with root `manifest.json` (`resourceBaseURL`).
 /// Base scheme: `safari-web-extension://`.
@@ -12,6 +13,8 @@ import CryptoKit
 /// **Load policy:** `web-extension` pins from ghosvt config, on first browser open
 /// (not app launch). Safari `/Applications` autoload is off.
 /// Firefox-flavored pins may spoof a desktop Firefox UA; Safari pins stay honest.
+/// Install grants `requestedPermissions` and `allRequestedMatchPatterns`.
+/// Optional APIs/hosts wait for a later prompt and must be declared.
 /// `nativeMessaging` is never granted.
 @available(macOS 15.4, *)
 final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
@@ -670,7 +673,7 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         context.uniqueIdentifier = id
         context.baseURL = URL(string: "\(Self.extensionBaseScheme)://\(id)/")!
         context.isInspectable = true
-        Self.grantAllRequested(on: context)
+        Self.grantRequested(on: context)
 
         if spoofFirefoxUA {
             firefoxUAContextIDs.insert(id)
@@ -791,34 +794,15 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         ))
     }
 
-    private static func grantAllRequested(on context: WKWebExtensionContext) {
+    /// Install-time grants: declared requested APIs and hosts (including content-script matches).
+    /// Never grants `nativeMessaging`.
+    private static func grantRequested(on context: WKWebExtensionContext) {
         let ext = context.webExtension
         var perms: [WKWebExtension.Permission: Date] = [:]
         for p in ext.requestedPermissions where p != .nativeMessaging {
             perms[p] = .distantFuture
         }
-        // Common APIs directory packages expect. Never grant nativeMessaging.
-        for extra: WKWebExtension.Permission in [
-            .activeTab,
-            .alarms,
-            .clipboardWrite,
-            .contextMenus,
-            .cookies,
-            .declarativeNetRequest,
-            .declarativeNetRequestWithHostAccess,
-            .menus,
-            .scripting,
-            .storage,
-            .unlimitedStorage,
-            .tabs,
-            .webNavigation,
-            .webRequest,
-        ] {
-            perms[extra] = .distantFuture
-        }
-        perms.removeValue(forKey: .nativeMessaging)
         context.grantedPermissions = perms
-        // Also set via status API so `browser.permissions` / runtime checks stay in sync.
         for p in perms.keys {
             context.setPermissionStatus(.grantedExplicitly, for: p, expirationDate: nil)
         }
@@ -828,16 +812,54 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for p in ext.requestedPermissionMatchPatterns {
             patterns[p] = .distantFuture
         }
-        let patternStrings = ["*://*/*", "<all_urls>", "http://*/*", "https://*/*", "*://*/*/*"]
-        for s in patternStrings {
-            if let pat = try? WKWebExtension.MatchPattern(string: s) {
-                patterns[pat] = .distantFuture
-            }
+        for p in ext.allRequestedMatchPatterns {
+            patterns[p] = .distantFuture
         }
         context.grantedPermissionMatchPatterns = patterns
         for pat in patterns.keys {
             context.setPermissionStatus(.grantedExplicitly, for: pat, expirationDate: nil)
         }
+
+        #if DEBUG
+        let permList = perms.keys.map { $0.rawValue }.sorted().joined(separator: ",")
+        let hostList = patterns.keys.map(\.string).sorted().joined(separator: ",")
+        fputs(
+            "ghosvt: webext granted requested perms=[\(permList)] hosts=[\(hostList)]\n",
+            stderr
+        )
+        #endif
+    }
+
+    /// Manifest-declared API permission (requested or optional). Never `nativeMessaging`.
+    private static func isDeclaredPermission(
+        _ permission: WKWebExtension.Permission,
+        in ext: WKWebExtension
+    ) -> Bool {
+        guard permission != .nativeMessaging else { return false }
+        return ext.requestedPermissions.contains(permission)
+            || ext.optionalPermissions.contains(permission)
+    }
+
+    /// Hosts the package declared (requested, optional, or content-script matches).
+    private static func declaredMatchPatterns(
+        in ext: WKWebExtension
+    ) -> Set<WKWebExtension.MatchPattern> {
+        ext.requestedPermissionMatchPatterns
+            .union(ext.optionalPermissionMatchPatterns)
+            .union(ext.allRequestedMatchPatterns)
+    }
+
+    /// True when a declared pattern is at least as broad as `pattern`.
+    private static func isDeclaredMatchPattern(
+        _ pattern: WKWebExtension.MatchPattern,
+        in ext: WKWebExtension
+    ) -> Bool {
+        declaredMatchPatterns(in: ext).contains { $0.matches(pattern) }
+    }
+
+    /// True when a declared pattern matches `url`.
+    private static func isDeclaredURL(_ url: URL, in ext: WKWebExtension) -> Bool {
+        declaredMatchPatterns(in: ext).contains { $0.matches(url) }
     }
 
     // MARK: - Registry / lifecycle
@@ -1099,9 +1121,15 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.Permission>, Date?) -> Void
     ) {
-        let allowed = permissions.filter { $0 != .nativeMessaging }
         if permissions.contains(.nativeMessaging) {
             fputs("ghosvt: webext denied nativeMessaging prompt\n", stderr)
+        }
+        let ext = extensionContext.webExtension
+        let allowed = Set(permissions.filter { Self.isDeclaredPermission($0, in: ext) })
+        let denied = permissions.subtracting(allowed)
+        if !denied.isEmpty {
+            let names = denied.map { $0.rawValue }.sorted().joined(separator: ",")
+            fputs("ghosvt: webext denied undeclared permission prompt [\(names)]\n", stderr)
         }
         completionHandler(allowed, nil)
     }
@@ -1113,7 +1141,16 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<URL>, Date?) -> Void
     ) {
-        completionHandler(urls, nil)
+        let ext = extensionContext.webExtension
+        let allowed = Set(urls.filter { Self.isDeclaredURL($0, in: ext) })
+        let denied = urls.subtracting(allowed)
+        if !denied.isEmpty {
+            fputs(
+                "ghosvt: webext denied undeclared URL access prompt count=\(denied.count)\n",
+                stderr
+            )
+        }
+        completionHandler(allowed, nil)
     }
 
     func webExtensionController(
@@ -1123,7 +1160,14 @@ final class BrowserExtensionHost: NSObject, WKWebExtensionControllerDelegate {
         for extensionContext: WKWebExtensionContext,
         completionHandler: @escaping (Set<WKWebExtension.MatchPattern>, Date?) -> Void
     ) {
-        completionHandler(matchPatterns, nil)
+        let ext = extensionContext.webExtension
+        let allowed = Set(matchPatterns.filter { Self.isDeclaredMatchPattern($0, in: ext) })
+        let denied = matchPatterns.subtracting(allowed)
+        if !denied.isEmpty {
+            let names = denied.map(\.string).sorted().joined(separator: ",")
+            fputs("ghosvt: webext denied undeclared match-pattern prompt [\(names)]\n", stderr)
+        }
+        completionHandler(allowed, nil)
     }
 
     func webExtensionController(
@@ -1489,7 +1533,7 @@ final class ExtensionTabBridge: NSObject, WKWebExtensionTab {
     }
 
     func shouldBypassPermissions(for context: WKWebExtensionContext) -> Bool {
-        true
+        false
     }
 
     func loadURL(
