@@ -211,6 +211,10 @@ extension TerminalRenderer {
 
     // MARK: - Run segmentation + shaped paint
 
+    private func packedCellHas(_ flags: UInt32, _ flag: GhosttyRenderStatePackedCellFlag) -> Bool {
+        flags & UInt32(truncatingIfNeeded: flag.rawValue) != 0
+    }
+
     func collectRowCells(
         cellsHandle: GhosttyRenderStateRowCells,
         layout: LayoutKey,
@@ -259,22 +263,32 @@ extension TerminalRenderer {
             let p = packedRowScratch[col]
             let flags = p.flags
             var text = ""
-            if flags & GHOSTTY_PACKED_CELL_HAS_GRAPHEME != 0,
+            if packedCellHas(flags, GHOSTTY_PACKED_CELL_HAS_GRAPHEME),
                ghostty_render_state_row_cells_select(cellsHandle, UInt16(col)) == GHOSTTY_SUCCESS {
                 text = cellTextUTF8(cellsHandle) ?? ""
             }
+            var fg = GhosttyColorRgb(r: p.fg_r, g: p.fg_g, b: p.fg_b)
+            var bg = GhosttyColorRgb(r: p.bg_r, g: p.bg_g, b: p.bg_b)
+            let inverse = packedCellHas(flags, GHOSTTY_PACKED_CELL_INVERSE)
+            if inverse {
+                swap(&fg, &bg)
+            }
+            var cp = p.cp
+            if cp == KittyVirtualUnicode.placeholder {
+                cp = 0
+            }
             dest[col] = TerminalRowCell(
                 text: text,
-                cp: p.cp,
-                isWideHead: flags & GHOSTTY_PACKED_CELL_WIDE_HEAD != 0,
-                isWideTail: flags & GHOSTTY_PACKED_CELL_WIDE_TAIL != 0,
-                fg: GhosttyColorRgb(r: p.fg_r, g: p.fg_g, b: p.fg_b),
-                bg: GhosttyColorRgb(r: p.bg_r, g: p.bg_g, b: p.bg_b),
-                bold: flags & GHOSTTY_PACKED_CELL_BOLD != 0,
-                italic: flags & GHOSTTY_PACKED_CELL_ITALIC != 0,
-                faint: flags & GHOSTTY_PACKED_CELL_FAINT != 0,
-                inverse: flags & GHOSTTY_PACKED_CELL_INVERSE != 0,
-                underline: flags & GHOSTTY_PACKED_CELL_UNDERLINE != 0
+                cp: cp,
+                isWideHead: packedCellHas(flags, GHOSTTY_PACKED_CELL_WIDE_HEAD),
+                isWideTail: packedCellHas(flags, GHOSTTY_PACKED_CELL_WIDE_TAIL),
+                fg: fg,
+                bg: bg,
+                bold: packedCellHas(flags, GHOSTTY_PACKED_CELL_BOLD),
+                italic: packedCellHas(flags, GHOSTTY_PACKED_CELL_ITALIC),
+                faint: packedCellHas(flags, GHOSTTY_PACKED_CELL_FAINT),
+                inverse: inverse,
+                underline: packedCellHas(flags, GHOSTTY_PACKED_CELL_UNDERLINE)
             )
             col += 1
         }
