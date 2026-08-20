@@ -63,7 +63,7 @@ final class TerminalRenderer {
     var dyOverlayScratch: [CellInstance] = []
     /// Reused run list for the current dirty row.
     var runSegScratch: [RunSeg] = []
-    /// Packed row from `ghostty_render_state_row_cells_collect`.
+    /// Packed row from `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_PACKED`.
     var packedRowScratch: [GhosttyRenderStatePackedCell] = []
     /// Featured primary faces for the current metrics + ligature flag (one create, then reuse).
     var paintFeat: (regular: CTFont, bold: CTFont, italic: CTFont, boldItalic: CTFont)?

@@ -148,10 +148,12 @@ if ((${#PATCHES[@]} > 0)) && command -v nm >/dev/null 2>&1; then
     echo "ghosvt: warning: ghostty_screen_search_new not found in ${ARTIFACT}" >&2
     echo "  search patches may not have linked; check exports" >&2
   fi
-  if ! printf '%s\n' "${_nm_out}" | grep -F 'ghostty_render_state_row_cells_collect' >/dev/null; then
-    echo "ghosvt: warning: ghostty_render_state_row_cells_collect not found in ${ARTIFACT}" >&2
-    echo "  row-collect patch may not have linked; check exports" >&2
+  _packed_h="${GHOSTTY}/zig-out/include/ghostty/vt/render.h"
+  if [[ ! -f "${_packed_h}" ]] || ! grep -F 'GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_PACKED' "${_packed_h}" >/dev/null; then
+    echo "ghosvt: warning: GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_PACKED not found in ${_packed_h}" >&2
+    echo "  row-cells packed patch may not have applied; check patches/" >&2
   fi
+  unset _packed_h
   unset _nm_out
 fi
 

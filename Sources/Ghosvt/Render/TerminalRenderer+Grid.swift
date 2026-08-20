@@ -181,6 +181,7 @@ extension TerminalRenderer {
                     count: n
                 )
                 collectRowCells(
+                    rowIter: iter,
                     cellsHandle: cellsHandle,
                     layout: layout,
                     defFg: defFg,
@@ -216,6 +217,7 @@ extension TerminalRenderer {
     }
 
     func collectRowCells(
+        rowIter: GhosttyRenderStateRowIterator,
         cellsHandle: GhosttyRenderStateRowCells,
         layout: LayoutKey,
         defFg: GhosttyColorRgb,
@@ -229,21 +231,20 @@ extension TerminalRenderer {
                 count: dest.count
             )
         }
-        var defFgVar = defFg
-        var defBgVar = defBg
         var written = 0
         let ok = packedRowScratch.withUnsafeMutableBufferPointer { buf -> Bool in
             guard let base = buf.baseAddress else { return false }
-            var len = 0
-            let r = ghostty_render_state_row_cells_collect(
-                cellsHandle,
-                &defFgVar,
-                &defBgVar,
-                base,
-                n,
-                &len
+            var packed = GhosttyRenderStatePackedCells()
+            packed.size = MemoryLayout<GhosttyRenderStatePackedCells>.size
+            packed.ptr = base
+            packed.cap = n
+            packed.len = 0
+            let r = ghostty_render_state_row_get(
+                rowIter,
+                GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_PACKED,
+                &packed
             )
-            written = len
+            written = packed.len
             return r == GHOSTTY_SUCCESS
         }
         guard ok else { return }
@@ -263,13 +264,13 @@ extension TerminalRenderer {
             let p = packedRowScratch[col]
             let flags = p.flags
             var text = ""
-            if packedCellHas(flags, GHOSTTY_PACKED_CELL_HAS_GRAPHEME),
+            if packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_HAS_GRAPHEME),
                ghostty_render_state_row_cells_select(cellsHandle, UInt16(col)) == GHOSTTY_SUCCESS {
                 text = cellTextUTF8(cellsHandle) ?? ""
             }
             var fg = GhosttyColorRgb(r: p.fg_r, g: p.fg_g, b: p.fg_b)
             var bg = GhosttyColorRgb(r: p.bg_r, g: p.bg_g, b: p.bg_b)
-            let inverse = packedCellHas(flags, GHOSTTY_PACKED_CELL_INVERSE)
+            let inverse = packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_INVERSE)
             if inverse {
                 swap(&fg, &bg)
             }
@@ -280,15 +281,15 @@ extension TerminalRenderer {
             dest[col] = TerminalRowCell(
                 text: text,
                 cp: cp,
-                isWideHead: packedCellHas(flags, GHOSTTY_PACKED_CELL_WIDE_HEAD),
-                isWideTail: packedCellHas(flags, GHOSTTY_PACKED_CELL_WIDE_TAIL),
+                isWideHead: packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_WIDE_HEAD),
+                isWideTail: packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_WIDE_TAIL),
                 fg: fg,
                 bg: bg,
-                bold: packedCellHas(flags, GHOSTTY_PACKED_CELL_BOLD),
-                italic: packedCellHas(flags, GHOSTTY_PACKED_CELL_ITALIC),
-                faint: packedCellHas(flags, GHOSTTY_PACKED_CELL_FAINT),
+                bold: packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_BOLD),
+                italic: packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_ITALIC),
+                faint: packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_FAINT),
                 inverse: inverse,
-                underline: packedCellHas(flags, GHOSTTY_PACKED_CELL_UNDERLINE)
+                underline: packedCellHas(flags, GHOSTTY_RENDER_STATE_PACKED_CELL_UNDERLINE)
             )
             col += 1
         }

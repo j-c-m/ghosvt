@@ -236,7 +236,7 @@ Refresh embedded fonts:
 | `macos/Ghosvt.xcodeproj` | App target (Swift + CGhosttyVT + resources) |
 | `macos/Assets.xcassets` | App icon |
 | `Vendor/ghostty.rev` | Pinned Ghostty commit |
-| `patches/*.patch` | Local libghostty-vt patches (search C shim) |
+| `patches/*.patch` | Local libghostty-vt patches (search C shim, packed row cells) |
 | `Vendor/ghostty/` | Working tree (gitignored) |
 
 ## License
