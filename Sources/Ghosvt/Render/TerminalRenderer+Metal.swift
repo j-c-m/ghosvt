@@ -102,8 +102,10 @@ extension TerminalRenderer {
     /// Multi-pass present: Kitty z-layers interleaved with cell bg / ink.
     ///
     /// Instance buffer: `[bg | scrolled fg | fixed fg]`.
-    /// Scrolled fg (ink, underlines, hover, cursor) uses `contentOffsetY`.
-    /// Fixed fg (HUD, indicator, quit) is drawn with offset 0.
+    /// Pass order: below_bg → cell bg → below_text → scrolled fg → above_text →
+    /// fixed fg (HUD, indicator, quit). Overlays must be last so Kitty z≥0
+    /// cannot cover them.
+    /// Scrolled fg uses `contentOffsetY`. Fixed fg uses offset 0.
     func present(
         bgCount: Int,
         fgCount: Int,
@@ -167,6 +169,11 @@ extension TerminalRenderer {
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: scrolled)
         }
 
+        if let kitty {
+            setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
+            drawImageQuads(enc, kitty.quads(for: .aboveText))
+        }
+
         if fixed > 0 {
             setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
             enc.setRenderPipelineState(pipeline)
@@ -176,11 +183,6 @@ extension TerminalRenderer {
             let byteOffset = (bgCount + scrolled) * CellInstance.stride
             enc.setVertexBuffer(instanceBuffer, offset: byteOffset, index: 0)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: fixed)
-        }
-
-        if let kitty {
-            setFrameUniforms(enc, pw: pw, ph: ph, contentOffsetY: 0)
-            drawImageQuads(enc, kitty.quads(for: .aboveText))
         }
 
         enc.endEncoding()
