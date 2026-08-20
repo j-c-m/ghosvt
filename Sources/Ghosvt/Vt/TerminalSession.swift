@@ -1427,6 +1427,14 @@ final class TerminalSession {
         syncIntegerViewport()
     }
 
+    /// Kitty storage generation. Bumped on transmit, place, and delete.
+    func kittyGeneration() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isLive, let terminal else { return 0 }
+        return KittyGraphicsCache.generation(of: terminal)
+    }
+
     /// Refresh Kitty placement geometry and textures (call on main after parse settles).
     func syncKittyGraphics(
         device: MTLDevice,

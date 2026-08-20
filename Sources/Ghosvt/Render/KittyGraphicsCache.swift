@@ -55,6 +55,28 @@ final class KittyGraphicsCache {
 
     var isEmpty: Bool { !hasAny }
 
+    /// Last storage generation synced into quads. 0 if never synced or empty.
+    var storageGeneration: UInt64 { lastStorageGeneration }
+
+    /// Storage-wide Kitty generation stamp. 0 if graphics are unavailable.
+    static func generation(of terminal: GhosttyTerminal) -> UInt64 {
+        var graphics: GhosttyKittyGraphics?
+        guard ghostty_terminal_get(
+            terminal,
+            GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            &graphics
+        ) == GHOSTTY_SUCCESS, let graphics else {
+            return 0
+        }
+        var generation: UInt64 = 0
+        _ = ghostty_kitty_graphics_get(
+            graphics,
+            GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,
+            &generation
+        )
+        return generation
+    }
+
     func quads(for layer: Layer) -> [DrawQuad] {
         switch layer {
         case .belowBg: return belowBg
@@ -75,6 +97,7 @@ final class KittyGraphicsCache {
         var graphics: GhosttyKittyGraphics?
         let gr = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics)
         guard gr == GHOSTTY_SUCCESS, let graphics else {
+            lastStorageGeneration = 0
             clearPlacements()
             return
         }

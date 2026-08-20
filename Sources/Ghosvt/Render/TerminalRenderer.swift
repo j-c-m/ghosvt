@@ -374,6 +374,11 @@ final class TerminalRenderer {
         _ = ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         if dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE { return true }
 
+        // Place / delete / transmit bump this without always dirtying cells (C=1, U=1).
+        if session.kittyGeneration() != session.kittyCache.storageGeneration {
+            return true
+        }
+
         if windowFocused, cursorBlinkOn(renderState: renderState) != lastBlinkOn { return true }
         if indicator != lastIndicator { return true }
         if searchHUD != lastSearchHUD { return true }
